@@ -349,9 +349,7 @@ function bindingCard(binding: IdentityBinding, api: IdentityApiClient, signal: A
     if (!confirm(`确认解除 ${binding.display_label ?? binding.provider_id}？由它建立的会话也会被撤销。`)) return;
     setButtonBusy(remove, true, "正在解除…");
     try {
-      await api.removeBinding(binding.binding_id, {
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      await executeHighRisk(api, signal, message, (controls) => api.removeBinding(binding.binding_id, controls));
       await renderBindings(main, api, signal, statePanel("success", "Binding 已解除", "外部主体已从服务端列表移除，相关认证能力不再有效。"));
     } catch (error) {
       replace(message, statePanel("error", "解除失败", errorMessage(error)));
@@ -375,9 +373,7 @@ function providerCard(provider: BindingProvider, api: IdentityApiClient, signal:
   add.addEventListener("click", async () => {
     setButtonBusy(add, true, "准备跳转…");
     try {
-      const result = await api.startBinding(provider.provider_id, {
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      const result = await executeHighRisk(api, signal, message, (controls) => api.startBinding(provider.provider_id, controls));
       navigateToHttpUrl(result.authorization_uri);
     } catch (error) {
       replace(message, statePanel("error", "无法开始绑定", errorMessage(error)));

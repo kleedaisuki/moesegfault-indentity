@@ -2,7 +2,7 @@
 
 ## 内联 Passkey 再认证
 
-增加/撤销 Passkey 和轮换恢复码等高风险操作以服务端的近期认证策略为准。首次请求如果返回结构化错误 `reauthentication_required`，前端会在当前页面中：
+增加/撤销 Passkey、建立/解除 Identity Binding 和轮换恢复码等高风险操作以服务端的近期认证策略为准。首次请求如果返回结构化错误 `reauthentication_required`，前端会在当前页面中：
 
 1. 以 `purpose=step_up` 创建认证事务；
 2. 请求一次 WebAuthn assertion；
@@ -15,7 +15,7 @@ CSRF token、ceremony transaction、assertion 和恢复码均不写入 `localSto
 
 ## Inline passkey step-up
 
-High-risk operations such as adding/revoking a passkey and rotating recovery codes defer recent-authentication policy to the server. When the first attempt returns the structured `reauthentication_required` code, the SPA:
+High-risk operations such as adding/revoking a passkey, establishing/removing an Identity Binding, and rotating recovery codes defer recent-authentication policy to the server. When the first attempt returns the structured `reauthentication_required` code, the SPA:
 
 1. starts an authentication transaction with `purpose=step_up`;
 2. obtains a WebAuthn assertion;
