@@ -1004,6 +1004,277 @@ pub async fn revoke_all(request: Request, context: RouteContext<()>) -> Result<R
     )
 }
 
+#[derive(Deserialize)]
+struct StartRecoveryRequest {
+    recovery_code: String,
+    authenticator_label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredRecovery {
+    state: RegistrationState,
+}
+
+/// 验证但不消费恢复码，并创建新 Passkey ceremony。
+/// Validates without consuming a recovery code and starts a new-Passkey ceremony.
+pub async fn start_recovery(mut request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    if let Err(error) = mutation_guard(&request, &context.env) {
+        return error_response(error, &correlation);
+    }
+    if !guard::validate_browser_csrf(&request, secret(&context.env, "CSRF_PEPPER")?.as_bytes()) {
+        return problem::response(
+            "invalid_request",
+            "CSRF validation failed",
+            403,
+            &correlation,
+        );
+    }
+    let input: StartRecoveryRequest = match request.json().await {
+        Ok(value) => value,
+        Err(_) => {
+            return problem::response("invalid_request", "Invalid JSON request", 400, &correlation);
+        }
+    };
+    let label = input.authenticator_label.trim();
+    let Some((public_id, recovery_secret)) = input.recovery_code.split_once('.') else {
+        return problem::response(
+            "invalid_transaction",
+            "Recovery material is invalid",
+            400,
+            &correlation,
+        );
+    };
+    if label.is_empty() || label.chars().count() > 80 {
+        return problem::response(
+            "invalid_request",
+            "Invalid authenticator label",
+            400,
+            &correlation,
+        );
+    }
+    let code_digest = SecretDigest::hmac(
+        secret(&context.env, "RECOVERY_CODE_PEPPER")?.as_bytes(),
+        recovery_secret.as_bytes(),
+    );
+    let db = context.d1("DB")?;
+    let Some(identity) = repository::recovery_identity(&db, public_id, &code_digest.0).await?
+    else {
+        return problem::response(
+            "invalid_transaction",
+            "Recovery material is invalid",
+            400,
+            &correlation,
+        );
+    };
+    let existing = repository::active_credential_ids(&db, &identity.principal_id)
+        .await?
+        .into_iter()
+        .map(CredentialId)
+        .collect::<Vec<_>>();
+    let (challenge, state) = webauthn(&context.env).start_registration(
+        &identity.webauthn_user_handle,
+        &identity.username,
+        &identity.display_name,
+        &existing,
+    );
+    let id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let challenge_digest = Sha256::digest(state.challenge.as_bytes());
+    let envelope = ceremony_state::seal(
+        &StoredRecovery { state },
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &id,
+        "recovery",
+    )?;
+    let browser_wire = guard::cookie(&request, guard::BROWSER_COOKIE)
+        .ok_or_else(|| Error::RustError("validated browser cookie disappeared".into()))?;
+    let csrf_wire = random_secret_wire();
+    let transaction_pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
+    let browser_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), browser_wire.as_bytes());
+    let csrf_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), csrf_wire.as_bytes());
+    let now = now_seconds();
+    let mut public_key = serde_json::to_value(challenge)?;
+    public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
+    public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
+    let public_key = registration_options_to_wire(public_key);
+    repository::insert_recovery_transaction(
+        &db,
+        &id,
+        &identity,
+        &browser_digest.0,
+        &csrf_digest.0,
+        &challenge_digest,
+        &rp_id(&context.env),
+        &guard::login_origin(&context.env),
+        label,
+        &envelope,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        &correlation,
+        now,
+        now + 300,
+    )
+    .await?;
+    json(
+        &TransactionResponse {
+            transaction_id: id,
+            csrf_token: csrf_wire,
+            public_key,
+            expires_at: date_time(now + 300),
+        },
+        201,
+        &correlation,
+        Some(&guard::login_origin(&context.env)),
+        None,
+    )
+}
+
+/// 原子完成恢复：新建 Passkey/session/codes 并撤销全部旧 authority。
+/// Atomically completes recovery by creating new authority and revoking all old authority.
+pub async fn finish_recovery(mut request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    if let Err(error) = mutation_guard(&request, &context.env) {
+        return error_response(error, &correlation);
+    }
+    let Some(id) = context.param("id") else {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            404,
+            &correlation,
+        );
+    };
+    let db = context.d1("DB")?;
+    let Some(tx) = repository::recovery_transaction(&db, id).await? else {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            404,
+            &correlation,
+        );
+    };
+    if tx.state != "pending" {
+        return problem::response(
+            "transaction_consumed",
+            "Transaction has already been consumed",
+            409,
+            &correlation,
+        );
+    }
+    if now_seconds() >= tx.expires_at {
+        return problem::response(
+            "transaction_expired",
+            "Transaction has expired",
+            410,
+            &correlation,
+        );
+    }
+    if guard::validate_transaction_secrets(
+        &request,
+        &tx.csrf_digest,
+        &tx.browser_binding_digest,
+        secret(&context.env, "TRANSACTION_PEPPER")?.as_bytes(),
+    )
+    .is_err()
+    {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            403,
+            &correlation,
+        );
+    }
+    let input: FinishRegistrationRequest = match request.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return problem::response("invalid_request", "Invalid JSON request", 400, &correlation);
+        }
+    };
+    let request_digest = Sha256::digest(serde_json::to_vec(&input.credential)?);
+    let Some(response) = input.credential.into_passkey() else {
+        commit_failed_recovery(&db, &tx, &request_digest, &correlation).await?;
+        return problem::response(
+            "authentication_failed",
+            "Credential verification failed",
+            400,
+            &correlation,
+        );
+    };
+    let stored: StoredRecovery = ceremony_state::open(
+        &tx.request_json,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &tx.transaction_id,
+        "recovery",
+    )?;
+    if Sha256::digest(stored.state.challenge.as_bytes())[..] != tx.challenge_digest {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            409,
+            &correlation,
+        );
+    }
+    let credential = match webauthn(&context.env).finish_registration(&stored.state, &response) {
+        Ok(v) => v,
+        Err(_) => {
+            commit_failed_recovery(&db, &tx, &request_digest, &correlation).await?;
+            return problem::response(
+                "authentication_failed",
+                "Credential verification failed",
+                400,
+                &correlation,
+            );
+        }
+    };
+    let now = now_seconds();
+    let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
+    let session_id = SessionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let session_wire = random_secret_wire();
+    let session_digest = SecretDigest::hmac(
+        secret(&context.env, "SESSION_PEPPER")?.as_bytes(),
+        session_wire.as_bytes(),
+    );
+    let recovery_pepper = secret(&context.env, "RECOVERY_CODE_PEPPER")?;
+    let (codes, code_rows) = new_recovery_codes(
+        recovery_pepper.as_bytes(),
+        8,
+        worker::Date::now().as_millis(),
+    );
+    let code_set_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    repository::commit_recovery(
+        &db,
+        &tx,
+        &request_digest,
+        &authenticator_id,
+        credential.id.as_bytes(),
+        credential.public_key_cose.as_bytes(),
+        credential.counter,
+        &credential.aaguid,
+        &serde_json::to_string(&credential.transports)?,
+        &session_id,
+        &session_digest.0,
+        &code_set_id,
+        &code_rows,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        &correlation,
+        now,
+    )
+    .await?;
+    let principal = repository::principal(&db, &tx.principal_id)
+        .await?
+        .ok_or_else(|| Error::RustError("recovered principal disappeared".into()))?;
+    let csrf = guard::session_csrf_token(
+        &session_wire,
+        secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+    );
+    json(
+        &serde_json::json!({"account":{"principal_id":principal.principal_id,"lifecycle_state":principal.lifecycle_state,"profile":{"display_name":principal.display_name,"locale":principal.locale},"identifiers":[],"created_at":date_time(now),"updated_at":date_time(now)},"authenticator":{"authenticator_id":authenticator_id,"label":tx.authenticator_label,"transports":credential.transports,"backup_eligible":false,"backup_state":false,"is_current":true,"created_at":date_time(now),"last_used_at":null,"revoked_at":null},"session":{"session_id":session_id,"authentication_method":"passkey","authenticator_id":authenticator_id,"binding_id":null,"amr":["passkey","recovery_code"],"acr":"urn:moesegfault:acr:passkey-uv","is_current":true,"authenticated_at":date_time(now),"last_seen_at":date_time(now),"expires_at":date_time(now+2_592_000),"revoked_at":null},"recovery_codes":codes,"csrf_token":csrf,"csrf_expires_at":date_time(now+43_200)}),
+        201,
+        &correlation,
+        Some(&guard::login_origin(&context.env)),
+        Some(&guard::session_cookie(&session_wire)),
+    )
+}
+
 pub async fn unavailable(_request: Request, _context: RouteContext<()>) -> Result<Response> {
     problem::response(
         "service_unavailable",
@@ -1031,6 +1302,23 @@ async fn commit_failed_credential(
     correlation: &str,
 ) -> Result<()> {
     repository::commit_webauthn_failure(
+        db,
+        tx,
+        request_digest,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        correlation,
+        now_seconds(),
+    )
+    .await
+}
+
+async fn commit_failed_recovery(
+    db: &D1Database,
+    tx: &repository::RecoveryTransactionRow,
+    request_digest: &[u8],
+    correlation: &str,
+) -> Result<()> {
+    repository::commit_recovery_failure(
         db,
         tx,
         request_digest,
@@ -1093,6 +1381,26 @@ fn random_bytes() -> Vec<u8> {
 }
 fn random_secret_wire() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes())
+}
+
+fn new_recovery_codes(
+    pepper: &[u8],
+    count: usize,
+    unix_millis: u64,
+) -> (Vec<String>, Vec<repository::NewRecoveryCode>) {
+    (0..count)
+        .map(|_| {
+            let public_id = TransactionId::new_v7(unix_millis).to_string();
+            let secret = random_secret_wire();
+            let wire = format!("{public_id}.{secret}");
+            let row = repository::NewRecoveryCode {
+                recovery_code_id: TransactionId::new_v7(unix_millis).to_string(),
+                public_id,
+                secret_digest: SecretDigest::hmac(pepper, secret.as_bytes()).0,
+            };
+            (wire, row)
+        })
+        .unzip()
 }
 fn date_time(seconds: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp(seconds)
@@ -1253,5 +1561,23 @@ mod tests {
         assert_eq!(wire["pub_key_cred_params"].as_array().unwrap().len(), 1);
         assert_eq!(wire["user"]["display_name"], "Klee");
         assert_eq!(wire["authenticator_selection"]["resident_key"], "required");
+    }
+
+    #[test]
+    fn recovery_code_generation_keeps_only_digests() {
+        let (wire, rows) =
+            new_recovery_codes(b"purpose-specific recovery pepper", 8, 1_700_000_000_000);
+        assert_eq!(wire.len(), 8);
+        assert_eq!(rows.len(), 8);
+        assert!(wire.iter().all(|code| code.split_once('.').is_some()));
+        for (code, row) in wire.iter().zip(rows.iter()) {
+            let (public, secret) = code.split_once('.').unwrap();
+            assert_eq!(public, row.public_id);
+            assert_eq!(
+                SecretDigest::hmac(b"purpose-specific recovery pepper", secret.as_bytes()).0,
+                row.secret_digest
+            );
+            assert!(!row.recovery_code_id.contains(secret));
+        }
     }
 }

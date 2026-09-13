@@ -42,7 +42,11 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         .post_async("/v1/principals/self/sessions/revoke-all", api::revoke_all)
         .get_async("/v1/principals/self/bindings", api::unavailable)
         .post_async("/v1/binding-transactions", api::unavailable)
-        .post_async("/v1/recovery-transactions", api::unavailable)
+        .post_async("/v1/recovery-transactions", api::start_recovery)
+        .post_async(
+            "/v1/recovery-transactions/:id/completion",
+            api::finish_recovery,
+        )
         .post_async("/v1/oauth/tokens", api::unavailable)
         .get_async("/v1/oauth/authorizations", api::unavailable)
         .post_async("/v1/oauth/revocations", api::unavailable)
