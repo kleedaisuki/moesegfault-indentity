@@ -186,5 +186,12 @@ jobs:
         with:
           name: login-assets-${{ github.sha }}
           path: apps/login/dist/
+      - name: Reject superseded deployment / 拒绝被新提交取代的发布
+        run: |
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA" || {
+            printf 'This run is stale: main is now %s, refusing to overwrite it with %s.\n' "$remote_sha" "$GITHUB_SHA" >&2
+            exit 1
+          }
       - name: Migrate, deploy serially, and smoke / 迁移、串行发布并冒烟检查
         run: scripts/release.sh

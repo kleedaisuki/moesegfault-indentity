@@ -17,7 +17,7 @@ retry_curl() {
 }
 
 retry_curl "$tmp_dir/identity.json" "$IDENTITY_URL/healthz"
-jq -e 'type == "object"' "$tmp_dir/identity.json" >/dev/null
+jq -e '.status == "ok" and .checks.d1 == "ok" and (.version | type == "string")' "$tmp_dir/identity.json" >/dev/null
 
 retry_curl "$tmp_dir/login.html" --dump-header "$tmp_dir/login.headers" "$LOGIN_URL/"
 grep -Eiq '^content-security-policy:' "$tmp_dir/login.headers"

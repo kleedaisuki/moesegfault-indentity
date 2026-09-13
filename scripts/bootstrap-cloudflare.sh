@@ -24,10 +24,12 @@ ensure_d1() {
   databases="$(npx --no-install wrangler d1 list --json)"
   actual_id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .uuid' <<<"$databases")"
   if [[ -z "$actual_id" ]]; then
-    # Creation is deliberately separate from application deployment. / 资源创建与应用发布故意分离。
-    npx --no-install wrangler d1 create "$name"
-    databases="$(npx --no-install wrangler d1 list --json)"
-    actual_id="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .uuid' <<<"$databases")"
+    # A newly created database receives a new UUID, so silently creating it can never satisfy
+    # the reviewed binding below. Create it deliberately, then commit its ID through review.
+    # 新数据库会获得新 UUID；静默创建不可能满足下方已评审绑定。请显式创建并评审提交新 ID。
+    printf 'missing pinned D1 / 缺少已固定 D1: %s; run `wrangler d1 create %s`, then review and update the pinned ID\n' \
+      "$name" "$name" >&2
+    exit 1
   fi
 
   if [[ "$actual_id" != "$expected_id" ]]; then
