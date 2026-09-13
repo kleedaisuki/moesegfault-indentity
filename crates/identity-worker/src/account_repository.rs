@@ -286,6 +286,108 @@ pub async fn update_account(
     account(db, principal_id).await
 }
 
+/// 将主体推进到 `pending_deletion`，并原子撤销其全部认证能力。
+/// Advances a principal to `pending_deletion` and atomically revokes all of its authentication authority.
+///
+/// 审计预先以旧 lifecycle state 为条件插入；随后任何语句失败都会回滚整个 D1 batch。
+/// 将 lifecycle state 放在认证器撤销之前，使数据库的“保留最后一个 Passkey”trigger
+/// 自然允许账户删除路径，无需额外特例。重复请求不会再次写审计或 outbox。
+/// The audit insert is gated by the old lifecycle state and any later failure rolls
+/// back the entire D1 batch. Moving lifecycle state before authenticator revocation
+/// lets the database's last-Passkey trigger naturally admit account deletion. A
+/// repeated request writes neither another audit nor another outbox row.
+pub async fn schedule_self_deletion(
+    db: &D1Database,
+    principal_id: &str,
+    audit_id: &str,
+    correlation_id: &str,
+    now: i64,
+) -> Result<()> {
+    db.batch(vec![
+        db.prepare(
+            "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
+             actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision) \
+             SELECT ?1,'identity.principal.deletion_scheduled',?2,?2,?3,?3,'success',?4,1 \
+             FROM principals WHERE principal_id=?3 AND lifecycle_state IN ('active','suspended')",
+        )
+        .bind(&[
+            text(audit_id),
+            integer(now),
+            text(principal_id),
+            text(correlation_id),
+        ])?,
+        db.prepare(
+            "UPDATE principals SET lifecycle_state='pending_deletion',updated_at=?2,\
+             state_changed_at=?2 WHERE principal_id=?1 AND lifecycle_state IN ('active','suspended')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE authenticators SET revoked_at=?2 WHERE principal_id=?1 AND revoked_at IS NULL \
+             AND EXISTS(SELECT 1 FROM principals WHERE principal_id=?1 \
+             AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE identity_bindings SET authentication_enabled=0,revoked_at=?2 \
+             WHERE principal_id=?1 AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE identity_sessions SET revoked_at=?2,revocation_reason='account_deletion' \
+             WHERE principal_id=?1 AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE oauth_authorization_codes SET revoked_at=?2 WHERE principal_id=?1 \
+             AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM principals WHERE principal_id=?1 \
+             AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE oauth_refresh_token_families SET revoked_at=?2,\
+             revocation_reason='account_deletion' WHERE principal_id=?1 AND revoked_at IS NULL \
+             AND EXISTS(SELECT 1 FROM principals WHERE principal_id=?1 \
+             AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE recovery_code_sets SET invalidated_at=?2 WHERE principal_id=?1 \
+             AND invalidated_at IS NULL AND EXISTS(SELECT 1 FROM principals WHERE principal_id=?1 \
+             AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE webauthn_transactions SET state='cancelled',consumed_at=?2,result_reference=NULL \
+             WHERE principal_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE recovery_transactions SET state='cancelled',consumed_at=?2 \
+             WHERE principal_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE binding_transactions SET state='cancelled',consumed_at=?2,result_binding_id=NULL \
+             WHERE principal_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE oauth_authorization_transactions SET state='denied',consumed_at=?2 \
+             WHERE principal_id=?1 AND state='authenticated' AND EXISTS(SELECT 1 FROM principals \
+             WHERE principal_id=?1 AND lifecycle_state='pending_deletion')",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        conditional_archive_outbox(db, audit_id, now)?,
+    ])
+    .await?;
+    Ok(())
+}
+
 /// 按创建顺序列出当前账户的标识符。/ Lists the account's identifiers in creation order.
 pub async fn identifiers(db: &D1Database, principal_id: &str) -> Result<Vec<IdentifierView>> {
     primary(db)?
@@ -719,15 +821,10 @@ pub async fn revoke_authenticator(
     let result = db
         .batch(vec![
             db.prepare(
-                "UPDATE authenticators SET revoked_at=?3 WHERE principal_id=?1 \
-                 AND authenticator_id=?2 AND revoked_at IS NULL",
-            )
-            .bind(&[text(principal_id), text(authenticator_id), integer(now)])?,
-            db.prepare(
                 "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
                  actor_principal_id,subject_principal_id,outcome,authenticator_id,correlation_id,policy_revision) \
                  SELECT ?1,'identity.authenticator.revoked',?2,?2,?3,?3,'success',?4,?5,1 \
-                 FROM authenticators WHERE principal_id=?3 AND authenticator_id=?4 AND revoked_at=?2",
+                 FROM authenticators WHERE principal_id=?3 AND authenticator_id=?4 AND revoked_at IS NULL",
             )
             .bind(&[
                 text(audit_id),
@@ -736,6 +833,11 @@ pub async fn revoke_authenticator(
                 text(authenticator_id),
                 text(correlation_id),
             ])?,
+            db.prepare(
+                "UPDATE authenticators SET revoked_at=?3 WHERE principal_id=?1 \
+                 AND authenticator_id=?2 AND revoked_at IS NULL",
+            )
+            .bind(&[text(principal_id), text(authenticator_id), integer(now)])?,
             db.prepare(
                 "UPDATE identity_sessions SET revoked_at=COALESCE(revoked_at,?3),\
                  revocation_reason=COALESCE(revocation_reason,'authenticator_revoked') \
@@ -756,7 +858,7 @@ pub async fn revoke_authenticator(
         ])
         .await;
     match result {
-        Ok(results) if changed(results.first())? => Ok(RevokeAuthenticatorOutcome::Revoked),
+        Ok(results) if changed(results.get(1))? => Ok(RevokeAuthenticatorOutcome::Revoked),
         Ok(_) => Ok(RevokeAuthenticatorOutcome::NotFound),
         Err(error) if is_last_authenticator_error(&error) => {
             Ok(RevokeAuthenticatorOutcome::LastAuthenticator)
@@ -801,16 +903,10 @@ pub async fn revoke_session(
     let results = db
         .batch(vec![
             db.prepare(
-                "UPDATE identity_sessions SET revoked_at=COALESCE(revoked_at,?3),\
-                 revocation_reason=COALESCE(revocation_reason,'user_requested') \
-                 WHERE principal_id=?1 AND session_id=?2",
-            )
-            .bind(&[text(principal_id), text(session_id), integer(now)])?,
-            db.prepare(
                 "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
                  actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) \
                  SELECT ?1,'identity.session.revoked',?2,?2,?3,?3,'success',?4,1,'{\"scope\":\"single\"}' \
-                 FROM identity_sessions WHERE principal_id=?3 AND session_id=?5",
+                 FROM identity_sessions WHERE principal_id=?3 AND session_id=?5 AND revoked_at IS NULL",
             )
             .bind(&[
                 text(audit_id),
@@ -820,6 +916,11 @@ pub async fn revoke_session(
                 text(session_id),
             ])?,
             db.prepare(
+                "UPDATE identity_sessions SET revoked_at=?3,revocation_reason='user_requested' \
+                 WHERE principal_id=?1 AND session_id=?2 AND revoked_at IS NULL",
+            )
+            .bind(&[text(principal_id), text(session_id), integer(now)])?,
+            db.prepare(
                 "UPDATE oauth_refresh_token_families SET revoked_at=COALESCE(revoked_at,?3),\
                  revocation_reason=COALESCE(revocation_reason,'identity_session_revoked') \
                  WHERE principal_id=?1 AND identity_session_id=?2",
@@ -828,7 +929,7 @@ pub async fn revoke_session(
             conditional_archive_outbox(db, audit_id, now)?,
         ])
         .await?;
-    changed(results.first())
+    changed(results.get(1))
 }
 
 /// 撤销账户全部 Identity session 和 refresh-token families。
@@ -842,22 +943,12 @@ pub async fn revoke_all(
 ) -> Result<()> {
     db.batch(vec![
         db.prepare(
-            "UPDATE identity_sessions SET revoked_at=COALESCE(revoked_at,?2),\
-             revocation_reason=COALESCE(revocation_reason,'user_requested_all') \
-             WHERE principal_id=?1",
-        )
-        .bind(&[text(principal_id), integer(now)])?,
-        db.prepare(
-            "UPDATE oauth_refresh_token_families SET revoked_at=COALESCE(revoked_at,?2),\
-             revocation_reason=COALESCE(revocation_reason,'user_requested_all') \
-             WHERE principal_id=?1",
-        )
-        .bind(&[text(principal_id), integer(now)])?,
-        db.prepare(
             "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
              actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) \
              SELECT ?1,'identity.session.revoked',?2,?2,?3,?3,'success',?4,1,'{\"scope\":\"all\"}' \
-             FROM principals WHERE principal_id=?3",
+             FROM principals p WHERE p.principal_id=?3 AND (EXISTS(SELECT 1 FROM identity_sessions \
+             WHERE principal_id=?3 AND revoked_at IS NULL) OR EXISTS(SELECT 1 FROM oauth_refresh_token_families \
+             WHERE principal_id=?3 AND revoked_at IS NULL))",
         )
         .bind(&[
             text(audit_id),
@@ -865,6 +956,16 @@ pub async fn revoke_all(
             text(principal_id),
             text(correlation_id),
         ])?,
+        db.prepare(
+            "UPDATE identity_sessions SET revoked_at=?2,revocation_reason='user_requested_all' \
+             WHERE principal_id=?1 AND revoked_at IS NULL",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
+        db.prepare(
+            "UPDATE oauth_refresh_token_families SET revoked_at=?2,revocation_reason='user_requested_all' \
+             WHERE principal_id=?1 AND revoked_at IS NULL",
+        )
+        .bind(&[text(principal_id), integer(now)])?,
         conditional_archive_outbox(db, audit_id, now)?,
     ])
     .await?;
@@ -1114,7 +1215,14 @@ fn result_changed(result: &worker::D1Result) -> Result<bool> {
 
 fn is_last_authenticator_error(error: &Error) -> bool {
     match error {
-        Error::D1(error) => error.to_string().contains("last_authenticator"),
+        // D1Error 的 Display 会格式化可能为空的 JavaScript `cause`，从而 panic；直接读取
+        // 外层 Error.message，workerd 会把 SQLite trigger 文本放在这里。
+        // D1Error's Display formats a possibly-null JavaScript `cause` and can panic.
+        // Read the outer Error.message directly; workerd includes the SQLite trigger text there.
+        Error::D1(error) => <worker::D1Error as AsRef<worker::js_sys::Error>>::as_ref(error)
+            .message()
+            .as_string()
+            .is_some_and(|message| message.contains("last_authenticator")),
         _ => false,
     }
 }
