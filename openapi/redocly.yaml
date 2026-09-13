@@ -1,0 +1,11 @@
+# OpenAPI lint policy / OpenAPI 检查策略
+extends:
+  - recommended
+
+rules:
+  # Every operation already declares a reusable `default` RFC 9457 Problem response.
+  # Repeating an arbitrary 4XX response would imply an inaccurate status contract;
+  # OAuth/OIDC endpoints instead declare their protocol-specific error responses.
+  # 每个操作已通过 default 声明可复用 RFC 9457 Problem；重复任意 4XX
+  # 会伪造不准确的状态契约，OAuth/OIDC 则显式使用协议错误。
+  operation-4xx-response: off
