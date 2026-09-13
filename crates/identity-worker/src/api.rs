@@ -61,7 +61,7 @@ pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Resul
             "authentication": true,
             "sessions": true,
             "account_read": true,
-            "recovery": false,
+            "recovery": true,
             "bindings": false,
             "oauth_issuance": false,
             "audit_archive": true,
@@ -72,6 +72,21 @@ pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Resul
         Some(&guard::login_origin(&context.env)),
         None,
     )
+}
+
+/// 返回不含 capability secret 的公开注册策略。
+/// Returns the public registration policy without capability secrets.
+pub async fn registration_policy(_request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let Some(policy) = repository::registration_policy(&context.d1("DB")?).await? else {
+        return problem::response(
+            "internal_error",
+            "Registration policy is unavailable",
+            500,
+            &correlation,
+        );
+    };
+    public_json(&policy, &correlation)
 }
 
 pub async fn browser_context(request: Request, context: RouteContext<()>) -> Result<Response> {
@@ -389,6 +404,9 @@ async fn finish_registration_inner(
             &correlation,
         );
     };
+    if tx.kind == "authenticator_addition" {
+        return crate::account::finish_authenticator_registration(request, context, tx).await;
+    }
     if tx.kind != "account_registration" || tx.principal_id.is_some() {
         return problem::response(
             "invalid_transaction",
@@ -856,146 +874,6 @@ pub async fn finish_authentication(
     )
 }
 
-pub async fn get_self(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    let Some(session) = authenticated_session(&request, &context.env).await? else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    let Some(principal) = repository::principal(&context.d1("DB")?, &session.principal_id).await?
-    else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    let csrf_token = session_csrf(&request, &context.env)?;
-    json(
-        &serde_json::json!({"principal_id":principal.principal_id,"state":principal.lifecycle_state,"display_name":principal.display_name,"locale":principal.locale,"username":principal.username,"csrf_token":csrf_token}),
-        200,
-        &correlation,
-        Some(&guard::login_origin(&context.env)),
-        None,
-    )
-}
-
-pub async fn list_authenticators(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    let Some(session) = authenticated_session(&request, &context.env).await? else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    let values = repository::authenticators(&context.d1("DB")?, &session.principal_id).await?;
-    json(
-        &serde_json::json!({"authenticators":values}),
-        200,
-        &correlation,
-        Some(&guard::login_origin(&context.env)),
-        None,
-    )
-}
-
-pub async fn list_sessions(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    let Some(current) = authenticated_session(&request, &context.env).await? else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    let mut values = repository::sessions(&context.d1("DB")?, &current.principal_id).await?;
-    let payload:Vec<_>=values.drain(..).map(|s|serde_json::json!({"session_id":s.session_id,"authenticator_id":s.authenticator_id,"authenticated_at":s.authenticated_at,"last_seen_at":s.last_seen_at,"expires_at":s.expires_at,"revoked_at":s.revoked_at,"current":s.session_id==current.session_id})).collect();
-    json(
-        &serde_json::json!({"sessions":payload}),
-        200,
-        &correlation,
-        Some(&guard::login_origin(&context.env)),
-        None,
-    )
-}
-
-pub async fn revoke_session(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    if let Err(error) = mutation_guard(&request, &context.env) {
-        return error_response(error, &correlation);
-    }
-    let Some(current) = authenticated_session(&request, &context.env).await? else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    if !valid_session_csrf(&request, &context.env)? {
-        return problem::response(
-            "invalid_request",
-            "CSRF validation failed",
-            403,
-            &correlation,
-        );
-    }
-    let Some(id) = context.param("id") else {
-        return problem::response("invalid_request", "Invalid session", 400, &correlation);
-    };
-    repository::revoke_session(&context.d1("DB")?, &current.principal_id, id, now_seconds())
-        .await?;
-    json(
-        &serde_json::json!({"revoked":true}),
-        200,
-        &correlation,
-        Some(&guard::login_origin(&context.env)),
-        if id == &current.session_id {
-            Some(guard::clear_session_cookie())
-        } else {
-            None
-        },
-    )
-}
-
-pub async fn revoke_all(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    if let Err(error) = mutation_guard(&request, &context.env) {
-        return error_response(error, &correlation);
-    }
-    let Some(current) = authenticated_session(&request, &context.env).await? else {
-        return problem::response(
-            "authentication_failed",
-            "Authentication is required",
-            401,
-            &correlation,
-        );
-    };
-    if !valid_session_csrf(&request, &context.env)? {
-        return problem::response(
-            "invalid_request",
-            "CSRF validation failed",
-            403,
-            &correlation,
-        );
-    }
-    repository::revoke_all(&context.d1("DB")?, &current.principal_id, now_seconds()).await?;
-    json(
-        &serde_json::json!({"revoked":true}),
-        200,
-        &correlation,
-        Some(&guard::login_origin(&context.env)),
-        Some(guard::clear_session_cookie()),
-    )
-}
-
 #[derive(Deserialize)]
 struct StartRecoveryRequest {
     recovery_code: String,
@@ -1267,15 +1145,6 @@ pub async fn finish_recovery(mut request: Request, context: RouteContext<()>) ->
     )
 }
 
-pub async fn unavailable(_request: Request, _context: RouteContext<()>) -> Result<Response> {
-    problem::response(
-        "service_unavailable",
-        "This feature is not enabled in this release",
-        503,
-        &correlation_id(),
-    )
-}
-
 async fn authenticated_session(
     request: &Request,
     env: &Env,
@@ -1319,26 +1188,6 @@ async fn commit_failed_recovery(
         now_seconds(),
     )
     .await
-}
-
-fn session_csrf(request: &Request, env: &Env) -> Result<String> {
-    let wire = guard::cookie(request, guard::SESSION_COOKIE)
-        .ok_or_else(|| Error::RustError("authenticated request lost its session cookie".into()))?;
-    Ok(guard::session_csrf_token(
-        &wire,
-        secret(env, "CSRF_PEPPER")?.as_bytes(),
-    ))
-}
-
-fn valid_session_csrf(request: &Request, env: &Env) -> Result<bool> {
-    let Some(wire) = guard::cookie(request, guard::SESSION_COOKIE) else {
-        return Ok(false);
-    };
-    Ok(guard::validate_session_csrf(
-        request,
-        &wire,
-        secret(env, "CSRF_PEPPER")?.as_bytes(),
-    ))
 }
 
 fn webauthn(env: &Env) -> Webauthn {
