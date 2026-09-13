@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1SessionConstraint, Result, wasm_bindgen::JsValue};
 
+use crate::repository;
+
 /// 满足近期 Passkey 再认证要求的当前会话。
 /// Current session satisfying the recent-Passkey step-up requirement.
 #[derive(Debug, Deserialize)]
@@ -68,7 +70,8 @@ pub async fn recent_passkey_session(
     now: i64,
     earliest_authentication: i64,
 ) -> Result<Option<StepUpSession>> {
-    db.with_session_constraint(D1SessionConstraint::FirstPrimary)?
+    let session = db
+        .with_session_constraint(D1SessionConstraint::FirstPrimary)?
         .prepare(
             "SELECT s.session_id,s.principal_id FROM identity_sessions s \
              JOIN principals p ON p.principal_id=s.principal_id \
@@ -82,8 +85,14 @@ pub async fn recent_passkey_session(
             integer(now),
             integer(earliest_authentication),
         ])?
-        .first(None)
-        .await
+        .first::<StepUpSession>(None)
+        .await?;
+    if let Some(session) = &session {
+        if let Err(error) = repository::touch_session(db, &session.session_id, now).await {
+            worker::console_error!("session_touch_failed error={error}");
+        }
+    }
+    Ok(session)
 }
 
 /// 读取任意有效会话，供只读 Binding 资源使用。
@@ -93,7 +102,8 @@ pub async fn current_session(
     session_digest: &[u8],
     now: i64,
 ) -> Result<Option<StepUpSession>> {
-    db.with_session_constraint(D1SessionConstraint::FirstPrimary)?
+    let session = db
+        .with_session_constraint(D1SessionConstraint::FirstPrimary)?
         .prepare(
             "SELECT s.session_id,s.principal_id FROM identity_sessions s \
              JOIN principals p ON p.principal_id=s.principal_id \
@@ -102,8 +112,14 @@ pub async fn current_session(
                AND p.lifecycle_state='active'",
         )
         .bind(&[blob(session_digest), integer(now)])?
-        .first(None)
-        .await
+        .first::<StepUpSession>(None)
+        .await?;
+    if let Some(session) = &session {
+        if let Err(error) = repository::touch_session(db, &session.session_id, now).await {
+            worker::console_error!("session_touch_failed error={error}");
+        }
+    }
+    Ok(session)
 }
 
 /// 验证显式 Worker 配置与 deployment-owned D1 外键目标完全一致。

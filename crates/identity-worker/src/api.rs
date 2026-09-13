@@ -470,7 +470,7 @@ async fn finish_registration_inner(
             &correlation,
         );
     };
-    let credential =
+    let mut credential =
         match webauthn(&context.env).finish_registration(&stored.state, &registration_response) {
             Ok(value) => value,
             Err(_) => {
@@ -483,6 +483,7 @@ async fn finish_registration_inner(
                 );
             }
         };
+    canonicalize_transports(&mut credential.transports);
     let principal_id = PrincipalId::new_v4().to_string();
     let identifier_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -1433,7 +1434,8 @@ pub async fn finish_recovery(mut request: Request, context: RouteContext<()>) ->
             &correlation,
         );
     }
-    let credential = match webauthn(&context.env).finish_registration(&stored.state, &response) {
+    let mut credential = match webauthn(&context.env).finish_registration(&stored.state, &response)
+    {
         Ok(v) => v,
         Err(_) => {
             commit_failed_recovery(&db, &tx, &request_digest, &correlation).await?;
@@ -1445,6 +1447,7 @@ pub async fn finish_recovery(mut request: Request, context: RouteContext<()>) ->
             );
         }
     };
+    canonicalize_transports(&mut credential.transports);
     let now = now_seconds();
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let session_id = SessionId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -1645,6 +1648,13 @@ fn rename(value: &mut serde_json::Value, from: &str, to: &str) {
         object.insert(to.to_owned(), item);
     }
 }
+
+/// 对 transport hints 排序去重，使存储与 OpenAPI `uniqueItems` 保持一致。
+/// Sorts and deduplicates transport hints to preserve the OpenAPI `uniqueItems` contract.
+fn canonicalize_transports(transports: &mut Vec<String>) {
+    transports.sort_unstable();
+    transports.dedup();
+}
 fn secret(env: &Env, name: &str) -> Result<String> {
     env.secret(name)
         .map(|s| s.to_string())
@@ -1752,6 +1762,17 @@ mod tests {
         assert_eq!(wire["pub_key_cred_params"].as_array().unwrap().len(), 1);
         assert_eq!(wire["user"]["display_name"], "Klee");
         assert_eq!(wire["authenticator_selection"]["resident_key"], "required");
+    }
+
+    #[test]
+    fn transports_are_canonicalized_for_storage_and_wire_contract() {
+        let mut transports = vec![
+            "hybrid".to_owned(),
+            "internal".to_owned(),
+            "hybrid".to_owned(),
+        ];
+        canonicalize_transports(&mut transports);
+        assert_eq!(transports, ["hybrid", "internal"]);
     }
 
     #[test]

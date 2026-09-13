@@ -532,9 +532,24 @@ pub async fn current_session(
     digest: &[u8],
     now: i64,
 ) -> Result<Option<CurrentSession>> {
-    db.with_session_constraint(D1SessionConstraint::FirstPrimary)?
+    let session = db
+        .with_session_constraint(D1SessionConstraint::FirstPrimary)?
         .prepare("SELECT s.session_id,s.principal_id FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id WHERE s.session_digest=?1 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'")
-        .bind(&[blob(digest),integer(now)])?.first(None).await
+        .bind(&[blob(digest),integer(now)])?.first::<CurrentSession>(None).await?;
+    if let Some(session) = &session {
+        if let Err(error) = touch_session(db, &session.session_id, now).await {
+            worker::console_error!("session_touch_failed error={error}");
+        }
+    }
+    Ok(session)
+}
+
+/// 节流推进活动 session 的空闲期限，但不越过绝对期限。
+/// Throttles active-session idle extension without crossing absolute expiry.
+pub(crate) async fn touch_session(db: &D1Database, session_id: &str, now: i64) -> Result<()> {
+    db.prepare("UPDATE identity_sessions SET last_seen_at=?2,idle_expires_at=MIN(absolute_expires_at,?2+43200) WHERE session_id=?1 AND revoked_at IS NULL AND last_seen_at<=?2-300 AND idle_expires_at>?2 AND absolute_expires_at>?2")
+        .bind(&[text(session_id),integer(now)])?.run().await?;
+    Ok(())
 }
 
 pub async fn principal(db: &D1Database, id: &str) -> Result<Option<PrincipalView>> {

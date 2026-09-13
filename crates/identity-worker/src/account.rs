@@ -629,7 +629,8 @@ pub(crate) async fn finish_authenticator_registration(
             &correlation,
         );
     };
-    let credential = match webauthn(&context.env).finish_registration(&stored.state, &response) {
+    let mut credential = match webauthn(&context.env).finish_registration(&stored.state, &response)
+    {
         Ok(credential) => credential,
         Err(_) => {
             commit_addition_failure(context, &transaction, &request_digest, &correlation).await?;
@@ -641,6 +642,7 @@ pub(crate) async fn finish_authenticator_registration(
             );
         }
     };
+    canonicalize_transports(&mut credential.transports);
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let db = context.d1("DB")?;
     repository::commit_addition(
@@ -1195,6 +1197,13 @@ fn rename(value: &mut serde_json::Value, from: &str, to: &str) {
     }
 }
 
+/// 对 transport hints 排序去重，使存储与 OpenAPI `uniqueItems` 保持一致。
+/// Sorts and deduplicates transport hints to preserve the OpenAPI `uniqueItems` contract.
+fn canonicalize_transports(transports: &mut Vec<String>) {
+    transports.sort_unstable();
+    transports.dedup();
+}
+
 fn session_csrf(request: &Request, env: &Env) -> Result<String> {
     let wire = guard::cookie(request, guard::SESSION_COOKIE)
         .ok_or_else(|| Error::RustError("authenticated request lost its session cookie".into()))?;
@@ -1364,5 +1373,16 @@ mod tests {
         assert_eq!(json["profile"]["avatar_url"], serde_json::Value::Null);
         assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
         assert!(!json.to_string().contains("private/r2/key"));
+    }
+
+    #[test]
+    fn addition_transports_are_stable_and_unique() {
+        let mut transports = vec![
+            "internal".to_owned(),
+            "hybrid".to_owned(),
+            "internal".to_owned(),
+        ];
+        canonicalize_transports(&mut transports);
+        assert_eq!(transports, ["hybrid", "internal"]);
     }
 }

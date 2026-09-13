@@ -247,7 +247,7 @@ pub async fn current_session(
     digest: &[u8],
     now: i64,
 ) -> Result<Option<AccountSession>> {
-    primary(db)?
+    let session = primary(db)?
         .prepare(
             "SELECT s.session_id,s.principal_id,s.authenticator_id,s.auth_method,s.authenticated_at \
              FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id \
@@ -255,8 +255,14 @@ pub async fn current_session(
              AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'",
         )
         .bind(&[blob(digest), integer(now)])?
-        .first(None)
-        .await
+        .first::<AccountSession>(None)
+        .await?;
+    if let Some(session) = &session {
+        if let Err(error) = repository::touch_session(db, &session.session_id, now).await {
+            worker::console_error!("session_touch_failed error={error}");
+        }
+    }
+    Ok(session)
 }
 
 /// 读取一个人类账户；不存在的 profile 不会被伪造成空资料。
@@ -1163,7 +1169,7 @@ pub async fn revoke_session(
             db.prepare(
                 "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
                  actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) \
-                 SELECT ?1,'identity.session.revoked',?2,?2,?3,?3,'success',?4,1,'{\"scope\":\"single\"}' \
+                 SELECT ?1,'identity.session.revoked',?2,?2,?3,?3,'success',?4,1,json_object('scope','single','session_id',?5) \
                  FROM identity_sessions WHERE principal_id=?3 AND session_id=?5 AND revoked_at IS NULL",
             )
             .bind(&[
