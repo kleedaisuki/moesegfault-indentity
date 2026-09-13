@@ -1089,6 +1089,12 @@ async fn pairwise(
     repo::ensure_pairwise_subject(db, sector, pid, &subject, revision, now).await
 }
 
+/// 仅当签发开关、私钥与对应公开 JWK 全部一致时报告 OIDC 可用。
+/// Reports OIDC availability only when the enable flag, private key, and matching public JWK agree.
+pub(crate) fn is_enabled(env: &Env) -> bool {
+    issuance_config(env).is_some()
+}
+
 fn issuance_config(env: &Env) -> Option<(String, String, String, Value)> {
     if env.var("OAUTH_ENABLED").ok()?.to_string() != "true" {
         return None;

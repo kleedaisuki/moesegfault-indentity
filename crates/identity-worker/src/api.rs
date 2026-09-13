@@ -63,7 +63,7 @@ pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Resul
             "account_read": true,
             "recovery": true,
             "bindings": crate::bindings::is_enabled(&context.env),
-            "oauth_issuance": false,
+            "oauth_issuance": crate::oauth::is_enabled(&context.env),
             "audit_archive": true,
             "api_revision": 1,
         }),

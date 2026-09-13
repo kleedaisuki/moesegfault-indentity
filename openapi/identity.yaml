@@ -82,6 +82,35 @@ paths:
         '200': {$ref: '#/components/responses/Health'}
         '503': {$ref: '#/components/responses/Health'}
 
+  /v1/meta/capabilities:
+    get:
+      tags: [operations]
+      operationId: getCapabilities
+      summary: Report the runtime features that are fully configured
+      responses:
+        '200':
+          description: Effective capability flags; optional integrations remain false until their complete configuration is valid.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [passkeys, registration, authentication, sessions, account_read, recovery, bindings, oauth_issuance, audit_archive, api_revision]
+                properties:
+                  passkeys: {type: boolean}
+                  registration: {type: boolean}
+                  authentication: {type: boolean}
+                  sessions: {type: boolean}
+                  account_read: {type: boolean}
+                  recovery: {type: boolean}
+                  bindings: {type: boolean}
+                  oauth_issuance: {type: boolean}
+                  audit_archive: {type: boolean}
+                  api_revision: {type: integer, minimum: 1}
+        default: {$ref: '#/components/responses/Problem'}
+
   /v1/browser-context:
     get:
       tags: [ceremonies]
