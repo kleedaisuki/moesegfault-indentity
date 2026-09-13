@@ -173,9 +173,16 @@ pub async fn authorize(request: Request, context: RouteContext<()>) -> Result<Re
         );
     }
     let db = context.d1("DB")?;
-    if repo::client(&db, client_id).await?.is_none()
-        || !repo::exact_redirect(&db, client_id, redirect_uri).await?
-    {
+    let Some(client) = repo::client(&db, client_id).await? else {
+        return protocol_problem(
+            "invalid_redirect_uri",
+            "Client or redirect URI is invalid",
+            400,
+            &correlation,
+        );
+    };
+    let redirects = repo::redirect_registrations(&db, client_id).await?;
+    if !authorization_redirect_allowed(&client, redirect_uri, &redirects) {
         return protocol_problem(
             "invalid_redirect_uri",
             "Client or redirect URI is invalid",
@@ -730,6 +737,40 @@ async fn exchange_code(
     } else {
         None
     };
+    let request_digest =
+        Sha256::digest(format!("{}\0{}\0{}", client.client_id, code, verifier).as_bytes());
+    let refresh_exp = now + config_seconds(env, "REFRESH_TOKEN_TTL_SECONDS", 2_592_000, 31_536_000);
+    if let Err(_error) = repo::consume_code(
+        db,
+        &grant,
+        &request_digest,
+        refresh
+            .as_ref()
+            .map(|(_, f, t, d)| (f.as_str(), t.as_str(), d.0.as_slice())),
+        now,
+        refresh_exp,
+    )
+    .await
+    {
+        match repo::authorization_code(db, &digest.0).await? {
+            None => {
+                return oauth_problem(
+                    "invalid_grant",
+                    "Authorization code was already consumed",
+                    400,
+                    correlation,
+                );
+            }
+            Some(_) => {
+                return oauth_problem(
+                    "invalid_grant",
+                    "Authorization authority is no longer active",
+                    400,
+                    correlation,
+                );
+            }
+        }
+    }
     let tokens = sign_tokens(
         key,
         kid,
@@ -749,31 +790,6 @@ async fn exchange_code(
         config_seconds(env, "TOKEN_TTL_SECONDS", 300, 300),
     )
     .await?;
-    let request_digest =
-        Sha256::digest(format!("{}\0{}\0{}", client.client_id, code, verifier).as_bytes());
-    let refresh_exp = now + config_seconds(env, "REFRESH_TOKEN_TTL_SECONDS", 2_592_000, 31_536_000);
-    if let Err(error) = repo::consume_code(
-        db,
-        &grant,
-        &request_digest,
-        refresh
-            .as_ref()
-            .map(|(_, f, t, d)| (f.as_str(), t.as_str(), d.0.as_slice())),
-        now,
-        refresh_exp,
-    )
-    .await
-    {
-        if repo::authorization_code(db, &digest.0).await?.is_none() {
-            return oauth_problem(
-                "invalid_grant",
-                "Authorization code was already consumed",
-                400,
-                correlation,
-            );
-        }
-        return Err(error);
-    }
     token_response(tokens, refresh.map(|v| v.0), correlation)
 }
 
@@ -848,6 +864,35 @@ async fn exchange_refresh(
         new_wire.as_bytes(),
     );
     let new_id = Uuid::now_v7().to_string();
+    if let Err(error) = repo::rotate_refresh(
+        db,
+        &grant,
+        &new_id,
+        &new_digest.0,
+        now,
+        grant.absolute_expires_at,
+    )
+    .await
+    {
+        if let Some(current) = repo::refresh_grant(db, &digest.0).await? {
+            if current.token_state != "active" {
+                repo::revoke_family_for_reuse(db, &grant.refresh_token_family_id, now).await?;
+                return oauth_problem(
+                    "invalid_grant",
+                    "Refresh-token reuse detected",
+                    400,
+                    correlation,
+                );
+            }
+            return oauth_problem(
+                "invalid_grant",
+                "Refresh-token authority is no longer active",
+                400,
+                correlation,
+            );
+        }
+        return Err(error);
+    }
     let tokens = sign_tokens(
         key,
         kid,
@@ -867,30 +912,6 @@ async fn exchange_refresh(
         config_seconds(env, "TOKEN_TTL_SECONDS", 300, 300),
     )
     .await?;
-    if let Err(error) = repo::rotate_refresh(
-        db,
-        &grant,
-        &new_id,
-        &new_digest.0,
-        now,
-        grant.absolute_expires_at,
-    )
-    .await
-    {
-        if repo::refresh_grant(db, &digest.0)
-            .await?
-            .is_some_and(|current| current.token_state != "active")
-        {
-            repo::revoke_family_for_reuse(db, &grant.refresh_token_family_id, now).await?;
-            return oauth_problem(
-                "invalid_grant",
-                "Refresh-token reuse detected",
-                400,
-                correlation,
-            );
-        }
-        return Err(error);
-    }
     token_response(tokens, Some(new_wire), correlation)
 }
 
@@ -1142,6 +1163,47 @@ fn unique_fields(input: &str, max: usize) -> std::result::Result<BTreeMap<String
 fn only_fields(fields: &BTreeMap<String, String>, allowed: &[&str]) -> bool {
     fields.keys().all(|name| allowed.contains(&name.as_str()))
 }
+
+/// 应用 RFC 8252 loopback 端口例外；其他 URI 仍为精确字符串匹配。
+/// Applies the RFC 8252 loopback-port exception; every other URI remains an exact string match.
+fn authorization_redirect_allowed(
+    client: &repo::OAuthClient,
+    requested: &str,
+    registrations: &[repo::RedirectRegistration],
+) -> bool {
+    registrations.iter().any(|registered| {
+        if registered.match_mode == "exact" {
+            return registered.redirect_uri == requested;
+        }
+        client.client_type == "native"
+            && registered.match_mode == "native_loopback_any_port"
+            && loopback_redirect_matches(&registered.redirect_uri, requested)
+    })
+}
+
+fn loopback_redirect_matches(registered: &str, requested: &str) -> bool {
+    let (Ok(registered_url), Ok(requested_url)) =
+        (url::Url::parse(registered), url::Url::parse(requested))
+    else {
+        return false;
+    };
+    let host = registered_url.host_str();
+    registered_url.scheme() == "http"
+        && requested_url.scheme() == "http"
+        && matches!(host, Some("127.0.0.1" | "::1" | "[::1]"))
+        && requested_url.host_str() == host
+        && requested_url.username() == registered_url.username()
+        && requested_url.password() == registered_url.password()
+        && loopback_uri_tail(registered) == loopback_uri_tail(requested)
+        && requested_url.fragment().is_none()
+        && registered_url.fragment().is_none()
+}
+
+fn loopback_uri_tail(uri: &str) -> Option<&str> {
+    let authority = uri.strip_prefix("http://")?;
+    let path = authority.find('/')?;
+    Some(&authority[path..])
+}
 fn canonical_scopes(input: &str) -> Option<String> {
     if input.len() > 1024 {
         return None;
@@ -1224,7 +1286,10 @@ fn random_secret() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 fn correlation_id() -> String {
-    Uuid::new_v4().to_string()
+    correlation_id_at(worker::Date::now().as_millis())
+}
+fn correlation_id_at(unix_millis: u64) -> String {
+    TransactionId::new_v7(unix_millis).to_string()
 }
 fn append_query(base: &str, items: &[(&str, &str)]) -> Result<String> {
     let mut url = url::Url::parse(base)
@@ -1361,5 +1426,57 @@ mod tests {
         let mut private = public;
         private["d"] = json!("secret");
         assert!(!publishable_jwk(&private, "k1"));
+    }
+
+    #[test]
+    fn native_loopback_redirect_changes_only_port() {
+        let client = repo::OAuthClient {
+            client_id: "native".into(),
+            client_type: "native".into(),
+            token_endpoint_auth_method: "none".into(),
+        };
+        let registrations = [repo::RedirectRegistration {
+            redirect_uri: "http://127.0.0.1:49152/callback?channel=desktop".into(),
+            match_mode: "native_loopback_any_port".into(),
+        }];
+        assert!(authorization_redirect_allowed(
+            &client,
+            "http://127.0.0.1:61234/callback?channel=desktop",
+            &registrations,
+        ));
+        assert!(loopback_redirect_matches(
+            "http://[::1]:49152/callback",
+            "http://[::1]:61234/callback",
+        ));
+        for rejected in [
+            "http://localhost:61234/callback?channel=desktop",
+            "http://127.0.0.1:61234/other?channel=desktop",
+            "http://127.0.0.1:61234/a/../callback?channel=desktop",
+            "http://127.0.0.1:61234/%63allback?channel=desktop",
+            "http://127.0.0.1:61234/callback?channel=web",
+            "https://127.0.0.1:61234/callback?channel=desktop",
+        ] {
+            assert!(!authorization_redirect_allowed(
+                &client,
+                rejected,
+                &registrations,
+            ));
+        }
+        let confidential = repo::OAuthClient {
+            client_id: "server".into(),
+            client_type: "confidential".into(),
+            token_endpoint_auth_method: "private_key_jwt".into(),
+        };
+        assert!(!authorization_redirect_allowed(
+            &confidential,
+            "http://127.0.0.1:61234/callback?channel=desktop",
+            &registrations,
+        ));
+    }
+
+    #[test]
+    fn correlation_id_is_uuid_v7() {
+        let parsed = Uuid::parse_str(&correlation_id_at(1_700_000_000_123)).unwrap();
+        assert_eq!(parsed.get_version_num(), 7);
     }
 }

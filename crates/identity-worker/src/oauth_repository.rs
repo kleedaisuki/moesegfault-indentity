@@ -7,6 +7,12 @@
 use serde::Deserialize;
 use worker::{D1Database, D1SessionConstraint, Result, wasm_bindgen::JsValue};
 
+const CODE_CONSUME_SQL: &str = "INSERT INTO oauth_authorization_code_uses(authorization_code_id,request_digest,used_at) SELECT c.authorization_code_id,?2,?3 FROM oauth_authorization_codes c JOIN identity_sessions s ON s.session_id=c.identity_session_id JOIN principals p ON p.principal_id=c.principal_id JOIN oauth_clients o ON o.client_id=c.client_id WHERE c.authorization_code_id=?1 AND c.client_id=?4 AND c.principal_id=?5 AND c.identity_session_id=?6 AND c.consumed_at IS NULL AND c.revoked_at IS NULL AND c.expires_at>?3 AND s.principal_id=c.principal_id AND s.revoked_at IS NULL AND s.idle_expires_at>?3 AND s.absolute_expires_at>?3 AND p.lifecycle_state='active' AND o.state='enabled'";
+const REFRESH_ROTATE_INSERT_SQL: &str = "INSERT INTO oauth_refresh_tokens(refresh_token_id,refresh_token_family_id,token_digest,generation,issued_at,expires_at,state) SELECT ?1,f.refresh_token_family_id,?3,?4,?5,?6,'revoked' FROM oauth_refresh_token_families f JOIN identity_sessions s ON s.session_id=f.identity_session_id JOIN principals p ON p.principal_id=f.principal_id JOIN oauth_clients c ON c.client_id=f.client_id WHERE f.refresh_token_family_id=?2 AND f.client_id=?7 AND f.principal_id=?8 AND f.identity_session_id=?9 AND f.revoked_at IS NULL AND f.absolute_expires_at>?5 AND s.principal_id=f.principal_id AND s.revoked_at IS NULL AND s.idle_expires_at>?5 AND s.absolute_expires_at>?5 AND p.lifecycle_state='active' AND c.state='enabled' AND EXISTS(SELECT 1 FROM oauth_refresh_tokens old WHERE old.refresh_token_id=?10 AND old.refresh_token_family_id=f.refresh_token_family_id AND old.state='active' AND old.expires_at>?5)";
+const REFRESH_ROTATE_GUARD_SQL: &str = "INSERT INTO oauth_refresh_tokens(refresh_token_id,refresh_token_family_id,token_digest,generation,issued_at,expires_at,state) SELECT '__invalid_refresh_commit_guard__',?2,x'',-1,0,0,'revoked' WHERE NOT EXISTS(SELECT 1 FROM oauth_refresh_tokens WHERE refresh_token_id=?1 AND refresh_token_family_id=?2 AND state='active')";
+const AUTHORIZATION_RELINK_DELETE_SQL: &str = "DELETE FROM webauthn_authorization_links WHERE authorization_transaction_id=?1 AND EXISTS(SELECT 1 FROM oauth_authorization_transactions WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>?2)";
+const AUTHORIZATION_RELINK_INSERT_SQL: &str = "INSERT INTO webauthn_authorization_links(webauthn_transaction_id,authorization_transaction_id) SELECT ?1,authorization_transaction_id FROM oauth_authorization_transactions WHERE authorization_transaction_id=?2 AND state='awaiting_authentication' AND expires_at>?3";
+
 /// 已启用 OAuth client 及其部署策略。/ Enabled OAuth client and deployment policy.
 #[derive(Debug, Deserialize)]
 pub struct OAuthClient {
@@ -84,6 +90,13 @@ pub struct ClientKey {
     pub public_jwk_json: String,
 }
 
+/// Client 的一条 authorization redirect 登记。/ One registered authorization redirect for a client.
+#[derive(Debug, Deserialize)]
+pub struct RedirectRegistration {
+    pub redirect_uri: String,
+    pub match_mode: String,
+}
+
 /// 根据 client ID 读取活动配置。/ Reads enabled configuration by client ID.
 pub async fn client(db: &D1Database, client_id: &str) -> Result<Option<OAuthClient>> {
     primary(db)?
@@ -93,10 +106,18 @@ pub async fn client(db: &D1Database, client_id: &str) -> Result<Option<OAuthClie
         .await
 }
 
-/// 精确验证 authorization redirect URI。/ Exactly validates an authorization redirect URI.
-pub async fn exact_redirect(db: &D1Database, client_id: &str, uri: &str) -> Result<bool> {
-    Ok(primary(db)?.prepare("SELECT 1 AS found FROM oauth_redirect_uris WHERE client_id=?1 AND redirect_uri=?2 AND match_mode='exact'")
-        .bind(&[text(client_id), text(uri)])?.first::<i64>(Some("found")).await?.is_some())
+/// 读取 client 的 redirect 登记；匹配策略由纯协议层执行。
+/// Reads a client's redirect registrations; the pure protocol layer applies matching policy.
+pub async fn redirect_registrations(
+    db: &D1Database,
+    client_id: &str,
+) -> Result<Vec<RedirectRegistration>> {
+    primary(db)?
+        .prepare("SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id=?1")
+        .bind(&[text(client_id)])?
+        .all()
+        .await?
+        .results()
 }
 
 /// 精确验证登记的 post-logout redirect URI。/ Exactly validates a registered post-logout redirect URI.
@@ -159,16 +180,27 @@ pub async fn link_webauthn_authorization(
     webauthn_transaction_id: &str,
     now: i64,
 ) -> Result<bool> {
-    let result = db.prepare("INSERT INTO webauthn_authorization_links(webauthn_transaction_id,authorization_transaction_id) SELECT ?1,authorization_transaction_id FROM oauth_authorization_transactions WHERE authorization_transaction_id=?2 AND state='awaiting_authentication' AND expires_at>?3")
-        .bind(&[text(webauthn_transaction_id),text(authorization_transaction_id),integer(now)])?.run().await?;
-    Ok(result
-        .meta()?
+    let results = db
+        .batch(vec![
+            db.prepare(AUTHORIZATION_RELINK_DELETE_SQL)
+                .bind(&[text(authorization_transaction_id), integer(now)])?,
+            db.prepare(AUTHORIZATION_RELINK_INSERT_SQL).bind(&[
+                text(webauthn_transaction_id),
+                text(authorization_transaction_id),
+                integer(now),
+            ])?,
+        ])
+        .await?;
+    Ok(results
+        .get(1)
+        .and_then(|result| result.meta().ok())
+        .flatten()
         .and_then(|meta| meta.changes)
         .is_some_and(|changes| changes > 0))
 }
 
-/// 将关联 authorization transaction 推进到 authenticated，并返回其 ID。
-/// Advances a linked authorization transaction to authenticated and returns its ID.
+/// 读取已与新 session 原子提交的 authorization transaction ID。
+/// Reads the authorization transaction ID atomically committed with the new session.
 pub async fn authenticate_linked_authorization(
     db: &D1Database,
     webauthn_transaction_id: &str,
@@ -180,11 +212,9 @@ pub async fn authenticate_linked_authorization(
     struct Link {
         authorization_transaction_id: String,
     }
-    let Some(link) = primary(db)?.prepare("SELECT authorization_transaction_id FROM webauthn_authorization_links WHERE webauthn_transaction_id=?1")
-        .bind(&[text(webauthn_transaction_id)])?.first::<Link>(None).await? else { return Ok(None); };
-    let changed = db.prepare("UPDATE oauth_authorization_transactions SET principal_id=?2,identity_session_id=?3,state='authenticated' WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>?4")
-        .bind(&[text(&link.authorization_transaction_id),text(principal_id),text(identity_session_id),integer(now)])?.run().await?.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
-    Ok((changed > 0).then_some(link.authorization_transaction_id))
+    primary(db)?.prepare("SELECT l.authorization_transaction_id FROM webauthn_authorization_links l JOIN oauth_authorization_transactions a ON a.authorization_transaction_id=l.authorization_transaction_id WHERE l.webauthn_transaction_id=?1 AND a.state='authenticated' AND a.principal_id=?2 AND a.identity_session_id=?3 AND a.expires_at>?4")
+        .bind(&[text(webauthn_transaction_id),text(principal_id),text(identity_session_id),integer(now)])?.first::<Link>(None).await
+        .map(|row| row.map(|link| link.authorization_transaction_id))
 }
 
 /// 读取 authorization transaction（primary-first）。/ Reads an authorization transaction primary-first.
@@ -209,7 +239,7 @@ pub async fn issue_authorization_code(
     expires_at: i64,
 ) -> Result<bool> {
     let statements = vec![
-        db.prepare("UPDATE oauth_authorization_transactions SET state='completed',consumed_at=?2 WHERE authorization_transaction_id=?1 AND state='authenticated' AND identity_session_id=?3 AND principal_id=?4 AND expires_at>?2")
+        db.prepare("UPDATE oauth_authorization_transactions SET state='completed',consumed_at=?2 WHERE authorization_transaction_id=?1 AND state='authenticated' AND identity_session_id=?3 AND principal_id=?4 AND expires_at>?2 AND EXISTS(SELECT 1 FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id JOIN oauth_clients c ON c.client_id=oauth_authorization_transactions.client_id WHERE s.session_id=?3 AND s.principal_id=?4 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 AND s.absolute_expires_at>?2 AND p.lifecycle_state='active' AND c.state='enabled')")
             .bind(&[text(&tx.authorization_transaction_id),integer(now),text(session_id),text(principal_id)])?,
         db.prepare("INSERT INTO oauth_authorization_codes(authorization_code_id,code_digest,authorization_transaction_id,client_id,principal_id,identity_session_id,redirect_uri,scope,nonce,code_challenge,code_challenge_method,issued_at,expires_at) SELECT ?1,?2,authorization_transaction_id,client_id,principal_id,identity_session_id,redirect_uri,scope,nonce,code_challenge,code_challenge_method,?4,?5 FROM oauth_authorization_transactions WHERE authorization_transaction_id=?3 AND state='completed' AND consumed_at=?4")
             .bind(&[text(code_id),blob(code_digest),text(&tx.authorization_transaction_id),integer(now),integer(expires_at)])?,
@@ -243,14 +273,24 @@ pub async fn consume_code(
     now: i64,
     refresh_expires_at: i64,
 ) -> Result<()> {
-    let mut statements = vec![db.prepare("INSERT INTO oauth_authorization_code_uses(authorization_code_id,request_digest,used_at) VALUES(?1,?2,?3)")
-        .bind(&[text(&grant.authorization_code_id),blob(request_digest),integer(now)])?];
+    let mut statements = vec![db.prepare(CODE_CONSUME_SQL).bind(&[
+        text(&grant.authorization_code_id),
+        blob(request_digest),
+        integer(now),
+        text(&grant.client_id),
+        text(&grant.principal_id),
+        text(&grant.identity_session_id),
+    ])?];
     if let Some((family_id, token_id, token_digest)) = family {
-        statements.push(db.prepare("INSERT INTO oauth_refresh_token_families(refresh_token_family_id,client_id,principal_id,identity_session_id,scope,audience,created_at,absolute_expires_at) VALUES(?1,?2,?3,?4,?5,?2,?6,?7)")
-            .bind(&[text(family_id),text(&grant.client_id),text(&grant.principal_id),text(&grant.identity_session_id),text(&grant.scope),integer(now),integer(refresh_expires_at)])?);
-        statements.push(db.prepare("INSERT INTO oauth_refresh_tokens(refresh_token_id,refresh_token_family_id,token_digest,generation,issued_at,expires_at,state) VALUES(?1,?2,?3,0,?4,?5,'active')")
+        statements.push(db.prepare("INSERT INTO oauth_refresh_token_families(refresh_token_family_id,client_id,principal_id,identity_session_id,scope,audience,created_at,absolute_expires_at) SELECT ?1,?2,?3,?4,?5,?2,?6,?7 WHERE EXISTS(SELECT 1 FROM oauth_authorization_code_uses WHERE authorization_code_id=?8 AND request_digest=?9 AND used_at=?6)")
+            .bind(&[text(family_id),text(&grant.client_id),text(&grant.principal_id),text(&grant.identity_session_id),text(&grant.scope),integer(now),integer(refresh_expires_at),text(&grant.authorization_code_id),blob(request_digest)])?);
+        statements.push(db.prepare("INSERT INTO oauth_refresh_tokens(refresh_token_id,refresh_token_family_id,token_digest,generation,issued_at,expires_at,state) SELECT ?1,?2,?3,0,?4,?5,'active' WHERE EXISTS(SELECT 1 FROM oauth_refresh_token_families WHERE refresh_token_family_id=?2)")
             .bind(&[text(token_id),text(family_id),blob(token_digest),integer(now),integer(refresh_expires_at)])?);
     }
+    // 故意非法的 row 把零行 gate 转为事务失败，从而回滚整个 D1 batch。
+    // The invalid row turns a zero-row gate into failure and rolls back the batch.
+    statements.push(db.prepare("INSERT INTO oauth_authorization_code_uses(authorization_code_id,request_digest,used_at) SELECT '__invalid_code_commit_guard__',x'',0 WHERE NOT EXISTS(SELECT 1 FROM oauth_authorization_code_uses WHERE authorization_code_id=?1 AND request_digest=?2 AND used_at=?3)")
+        .bind(&[text(&grant.authorization_code_id),blob(request_digest),integer(now)])?);
     db.batch(statements).await?;
     Ok(())
 }
@@ -280,12 +320,16 @@ pub async fn rotate_refresh(
     expires_at: i64,
 ) -> Result<()> {
     db.batch(vec![
-        db.prepare("INSERT INTO oauth_refresh_tokens(refresh_token_id,refresh_token_family_id,token_digest,generation,issued_at,expires_at,state) VALUES(?1,?2,?3,?4,?5,?6,'revoked')")
-            .bind(&[text(new_token_id),text(&grant.refresh_token_family_id),blob(new_digest),integer(grant.generation+1),integer(now),integer(expires_at)])?,
-        db.prepare("UPDATE oauth_refresh_tokens SET state='rotated',consumed_at=?2,replacement_token_id=?3 WHERE refresh_token_id=?1 AND state='active'")
-            .bind(&[text(&grant.refresh_token_id),integer(now),text(new_token_id)])?,
-        db.prepare("UPDATE oauth_refresh_tokens SET state='active' WHERE refresh_token_id=?1 AND state='revoked'")
-            .bind(&[text(new_token_id)])?,
+        db.prepare(REFRESH_ROTATE_INSERT_SQL)
+            .bind(&[text(new_token_id),text(&grant.refresh_token_family_id),blob(new_digest),integer(grant.generation+1),integer(now),integer(expires_at),text(&grant.client_id),text(&grant.principal_id),text(&grant.identity_session_id),text(&grant.refresh_token_id)])?,
+        db.prepare("UPDATE oauth_refresh_tokens SET state='rotated',consumed_at=?2,replacement_token_id=?3 WHERE refresh_token_id=?1 AND refresh_token_family_id=?4 AND state='active' AND EXISTS(SELECT 1 FROM oauth_refresh_tokens replacement WHERE replacement.refresh_token_id=?3 AND replacement.refresh_token_family_id=?4 AND replacement.state='revoked')")
+            .bind(&[text(&grant.refresh_token_id),integer(now),text(new_token_id),text(&grant.refresh_token_family_id)])?,
+        db.prepare("UPDATE oauth_refresh_tokens SET state='active' WHERE refresh_token_id=?1 AND refresh_token_family_id=?2 AND state='revoked' AND EXISTS(SELECT 1 FROM oauth_refresh_tokens old WHERE old.refresh_token_id=?3 AND old.state='rotated' AND old.replacement_token_id=?1)")
+            .bind(&[text(new_token_id),text(&grant.refresh_token_family_id),text(&grant.refresh_token_id)])?,
+        // commit-time authority gate 未产生活动 token 时，用非法 CHECK/FK 值回滚。
+        // Invalid CHECK/FK values roll back when the authority gate produced no active token.
+        db.prepare(REFRESH_ROTATE_GUARD_SQL)
+            .bind(&[text(new_token_id),text(&grant.refresh_token_family_id)])?,
     ]).await?;
     Ok(())
 }
@@ -368,4 +412,48 @@ fn blob(value: &[u8]) -> JsValue {
 }
 fn optional_text(value: Option<&str>) -> JsValue {
     value.map_or(JsValue::NULL, JsValue::from_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_commits_gate_every_mutable_authority() {
+        for clause in [
+            "f.revoked_at IS NULL",
+            "f.absolute_expires_at>?5",
+            "s.revoked_at IS NULL",
+            "s.idle_expires_at>?5",
+            "s.absolute_expires_at>?5",
+            "p.lifecycle_state='active'",
+            "c.state='enabled'",
+            "old.state='active'",
+        ] {
+            assert!(
+                REFRESH_ROTATE_INSERT_SQL.contains(clause),
+                "missing {clause}"
+            );
+        }
+        assert!(REFRESH_ROTATE_GUARD_SQL.contains("WHERE NOT EXISTS"));
+        for clause in [
+            "c.consumed_at IS NULL",
+            "s.revoked_at IS NULL",
+            "p.lifecycle_state='active'",
+            "o.state='enabled'",
+        ] {
+            assert!(CODE_CONSUME_SQL.contains(clause), "missing {clause}");
+        }
+    }
+
+    #[test]
+    fn authorization_relink_is_limited_to_pending_transactions() {
+        for sql in [
+            AUTHORIZATION_RELINK_DELETE_SQL,
+            AUTHORIZATION_RELINK_INSERT_SQL,
+        ] {
+            assert!(sql.contains("state='awaiting_authentication'"));
+            assert!(sql.contains("expires_at>"));
+        }
+    }
 }
