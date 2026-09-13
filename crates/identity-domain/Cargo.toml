@@ -10,7 +10,7 @@ publish = false
 base64 = "0.22.1"
 hmac = "0.12.1"
 serde = { version = "1.0.219", features = ["derive"] }
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 subtle = "2.6.1"
 thiserror = "2.0.16"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v7", "js"] }
