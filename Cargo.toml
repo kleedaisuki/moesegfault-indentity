@@ -3,6 +3,10 @@ members = [
   "crates/identity-domain",
   "crates/identity-worker",
 ]
+# Vendored third-party source remains independently testable, avoiding example-only
+# development dependencies in this lockfile. / 第三方 vendored 源码保持独立测试，
+# 避免将仅供示例使用的开发依赖引入本工作区锁文件。
+exclude = ["crates/vendor/passkey-auth-worker"]
 resolver = "3"
 
 [workspace.package]

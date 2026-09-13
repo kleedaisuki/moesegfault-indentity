@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel previous in-flight runs of the same workflow on the same ref -
+# saves CI minutes when commits land in quick succession.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Surface warnings as build noise but do NOT fail the build on them
+  # here; clippy has its own job that DOES gate.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Test matrix: build + test across every supported (OS, arch) combination.
+  # All runners listed are first-class GitHub-hosted; no QEMU/cross.
+  # -------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }} / ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,   arch: x86_64,  runner: ubuntu-24.04 }
+          - { os: linux,   arch: aarch64, runner: ubuntu-24.04-arm }
+          # macos-13 (Intel) skipped: GitHub-hosted Intel-mac runners
+          # have multi-minute queue depths and are scheduled for
+          # retirement. Apple-Silicon coverage via macos-14 is enough
+          # for the macOS audience that still matters.
+          - { os: macos,   arch: aarch64, runner: macos-14 }
+          - { os: windows, arch: x86_64,  runner: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+
+      # actions-rust-lang/setup-rust-toolchain handles the PATH/shim
+      # issue that dtolnay/rust-toolchain has on macOS aarch64 runners
+      # (where the pre-installed rustup-init shadows the freshly
+      # installed cargo). Also wraps Swatinem/rust-cache internally.
+      - name: Install Rust (stable)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build
+        run: cargo build --all-targets --verbose
+
+      - name: Test
+        run: cargo test --all-targets --verbose
+
+      - name: Doc-tests
+        run: cargo test --doc --verbose
+
+  # -------------------------------------------------------------------------
+  # Formatting check. Cheap, run on a single Linux box.
+  # -------------------------------------------------------------------------
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # -------------------------------------------------------------------------
+  # Lint. Treated as gating; new clippy lints can break CI.
+  # -------------------------------------------------------------------------
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # -------------------------------------------------------------------------
+  # MSRV check: confirms the crate still builds on the rust-version we
+  # claim in Cargo.toml (1.85). Linux-only - the toolchain matters, not
+  # the OS.
+  # -------------------------------------------------------------------------
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "1.85"
+      - run: cargo build --all-targets
+
+  # -------------------------------------------------------------------------
+  # Docs build sanity check. Catches broken doc links / examples before
+  # docs.rs picks them up.
+  # -------------------------------------------------------------------------
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: cargo doc --no-deps --all-features
