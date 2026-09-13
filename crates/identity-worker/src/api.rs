@@ -273,8 +273,14 @@ pub async fn start_registration(
         );
     };
 
-    let browser_wire = guard::cookie(&request, guard::BROWSER_COOKIE)
-        .ok_or_else(|| Error::RustError("validated browser cookie disappeared".into()))?;
+    let Some(browser_wire) = guard::cookie(&request, guard::BROWSER_COOKIE) else {
+        return problem::response(
+            "invalid_request",
+            "Browser context is required",
+            403,
+            &correlation,
+        );
+    };
     let csrf_wire = random_secret_wire();
     let transaction_pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
     let browser_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), browser_wire.as_bytes());
@@ -554,20 +560,14 @@ async fn finish_registration_inner(
 struct StoredAuthentication {
     state: AuthenticationState,
     policy_revision: i64,
+    #[serde(default)]
+    initiating_session_id: Option<String>,
 }
 
 pub async fn start_authentication(request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
     if let Err(error) = mutation_guard(&request, &context.env) {
         return error_response(error, &correlation);
-    }
-    if !guard::validate_browser_csrf(&request, secret(&context.env, "CSRF_PEPPER")?.as_bytes()) {
-        return problem::response(
-            "invalid_request",
-            "CSRF validation failed",
-            403,
-            &correlation,
-        );
     }
     let mut request = request;
     let input: StartAuthenticationRequest = match request.json().await {
@@ -576,53 +576,136 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
             return problem::response("invalid_request", "Invalid JSON request", 400, &correlation);
         }
     };
-    if input.purpose != "login" {
+    let db = context.d1("DB")?;
+    let (kind, principal_id, initiating_session_id, credentials) = match input.purpose.as_str() {
+        "login" => {
+            if !guard::validate_browser_csrf(
+                &request,
+                secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+            ) {
+                return problem::response(
+                    "invalid_request",
+                    "CSRF validation failed",
+                    403,
+                    &correlation,
+                );
+            }
+            ("authentication", None, None, Vec::new())
+        }
+        "step_up" => {
+            if input.authorization_transaction_id.is_some() {
+                return problem::response(
+                    "invalid_request",
+                    "Step-up cannot resume an OAuth authorization",
+                    400,
+                    &correlation,
+                );
+            }
+            if !guard::validate_browser_csrf(
+                &request,
+                secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+            ) {
+                return problem::response(
+                    "invalid_request",
+                    "CSRF validation failed",
+                    403,
+                    &correlation,
+                );
+            }
+            let Some(session) = authenticated_session(&request, &context.env).await? else {
+                return problem::response(
+                    "authentication_failed",
+                    "Authentication is required",
+                    401,
+                    &correlation,
+                );
+            };
+            let credentials = repository::active_credential_ids(&db, &session.principal_id)
+                .await?
+                .into_iter()
+                .map(CredentialId)
+                .collect();
+            (
+                "step_up",
+                Some(session.principal_id),
+                Some(session.session_id),
+                credentials,
+            )
+        }
+        _ => {
+            return problem::response(
+                "invalid_request",
+                "Invalid authentication purpose",
+                400,
+                &correlation,
+            );
+        }
+    };
+    let Some(browser_wire) = guard::cookie(&request, guard::BROWSER_COOKIE) else {
         return problem::response(
-            "service_unavailable",
-            "Step-up is not enabled",
-            503,
+            "invalid_request",
+            "Browser context is required",
+            403,
             &correlation,
         );
-    }
-    let browser_wire = guard::cookie(&request, guard::BROWSER_COOKIE)
-        .ok_or_else(|| Error::RustError("validated browser cookie disappeared".into()))?;
+    };
     let csrf_wire = random_secret_wire();
     let pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
     let browser_digest = SecretDigest::hmac(pepper.as_bytes(), browser_wire.as_bytes());
     let csrf_digest = SecretDigest::hmac(pepper.as_bytes(), csrf_wire.as_bytes());
-    let (challenge, state) = webauthn(&context.env).start_authentication(&[]);
+    let (challenge, state) = webauthn(&context.env).start_authentication(&credentials);
     let id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredAuthentication {
         state,
         policy_revision: 1,
+        initiating_session_id,
     };
     let stored_envelope = ceremony_state::seal(
         &stored,
         &secret(&context.env, "TRANSACTION_STATE_KEY")?,
         &id,
-        "authentication",
+        kind,
     )?;
     let now = now_seconds();
     let expires_at = now + 300;
-    let db = context.d1("DB")?;
-    repository::insert_webauthn_transaction(
-        &db,
-        &id,
-        "authentication",
-        None,
-        None,
-        &Sha256::digest(stored.state.challenge.as_bytes()),
-        &browser_digest.0,
-        &csrf_digest.0,
-        &rp_id(&context.env),
-        &guard::login_origin(&context.env),
-        &stored_envelope,
-        1,
-        now,
-        expires_at,
-    )
-    .await?;
-    if let Some(authorization_id) = input.authorization_transaction_id.as_deref()
+    let challenge_digest = Sha256::digest(stored.state.challenge.as_bytes());
+    if let Some(principal_id) = principal_id.as_deref() {
+        crate::account_repository::insert_step_up_transaction(
+            &db,
+            &id,
+            principal_id,
+            &challenge_digest,
+            &browser_digest.0,
+            &csrf_digest.0,
+            &rp_id(&context.env),
+            &guard::login_origin(&context.env),
+            &stored_envelope,
+            1,
+            now,
+            expires_at,
+        )
+        .await?;
+    } else {
+        repository::insert_webauthn_transaction(
+            &db,
+            &id,
+            kind,
+            None,
+            None,
+            &challenge_digest,
+            &browser_digest.0,
+            &csrf_digest.0,
+            &rp_id(&context.env),
+            &guard::login_origin(&context.env),
+            &stored_envelope,
+            1,
+            now,
+            expires_at,
+        )
+        .await?;
+    }
+    if kind == "authentication"
+        && let Some(authorization_id) = input.authorization_transaction_id.as_deref()
         && !oauth_repository::link_webauthn_authorization(&db, authorization_id, &id, now).await?
     {
         return problem::response(
@@ -647,6 +730,7 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StartAuthenticationRequest {
     purpose: String,
     #[serde(default)]
@@ -712,6 +796,9 @@ pub async fn finish_authentication(
             &correlation,
         );
     };
+    if tx.kind == "step_up" {
+        return finish_step_up(request, &context, tx).await;
+    }
     if tx.kind != "authentication" || tx.principal_id.is_some() {
         return problem::response(
             "invalid_transaction",
@@ -790,6 +877,14 @@ pub async fn finish_authentication(
         &tx.transaction_id,
         &tx.kind,
     )?;
+    if Sha256::digest(stored.state.challenge.as_bytes())[..] != tx.challenge_digest {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            409,
+            &correlation,
+        );
+    }
     let aaguid: [u8; 16] = row
         .aaguid
         .clone()
@@ -846,16 +941,29 @@ pub async fn finish_authentication(
         now_seconds(),
     )
     .await?;
-    let principal = repository::principal(&db, &row.principal_id)
+    let account = crate::account_repository::account(&db, &row.principal_id)
         .await?
         .ok_or_else(|| Error::RustError("authenticated principal disappeared".into()))?;
+    let identifiers = account
+        .identifiers
+        .into_iter()
+        .map(|identifier| {
+            serde_json::json!({
+                "identifier_id": identifier.identifier_id,
+                "kind": identifier.kind,
+                "value": identifier.value,
+                "created_at": date_time(identifier.created_at),
+                "updated_at": date_time(identifier.updated_at),
+            })
+        })
+        .collect::<Vec<_>>();
     let csrf_token = guard::session_csrf_token(
         &session_wire,
         secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
     );
     let now = now_seconds();
     let mut response = serde_json::json!({
-        "account": {"principal_id":principal.principal_id,"lifecycle_state":principal.lifecycle_state,"profile":{"display_name":principal.display_name,"locale":principal.locale},"identifiers":[],"created_at":date_time(now),"updated_at":date_time(now)},
+        "account": {"principal_id":account.principal_id,"lifecycle_state":account.lifecycle_state,"profile":{"display_name":account.display_name,"avatar_url":null,"locale":account.locale},"identifiers":identifiers,"created_at":date_time(account.created_at),"updated_at":date_time(account.updated_at)},
         "session":{"session_id":session_id,"authentication_method":"passkey","authenticator_id":row.authenticator_id,"binding_id":null,"amr":["passkey"],"acr":"urn:moesegfault:acr:passkey-uv","is_current":true,"authenticated_at":date_time(now),"last_seen_at":date_time(now),"expires_at":date_time(now+2_592_000),"revoked_at":null},
         "csrf_token":csrf_token,"csrf_expires_at":date_time(now+43_200)
     });
@@ -872,6 +980,248 @@ pub async fn finish_authentication(
         Some(&guard::login_origin(&context.env)),
         Some(&guard::session_cookie(&session_wire)),
     )
+}
+
+/// 完成绑定到现有账户 session 的 Passkey step-up，并轮换 session authority。
+/// Completes a Passkey step-up bound to an existing account session and rotates its authority.
+async fn finish_step_up(
+    mut request: Request,
+    context: &RouteContext<()>,
+    tx: repository::WebauthnTransactionRow,
+) -> Result<Response> {
+    let correlation = correlation_id();
+    let now = now_seconds();
+    if tx.kind != "step_up" || tx.principal_id.is_none() {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            404,
+            &correlation,
+        );
+    }
+    if let Some(response) = transaction_problem(&tx, now, &correlation)? {
+        return Ok(response);
+    }
+    if guard::validate_transaction_secrets(
+        &request,
+        &tx.csrf_digest,
+        &tx.browser_binding_digest,
+        secret(&context.env, "TRANSACTION_PEPPER")?.as_bytes(),
+    )
+    .is_err()
+    {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            403,
+            &correlation,
+        );
+    }
+    let stored: StoredAuthentication = ceremony_state::open(
+        &tx.request_json,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &tx.transaction_id,
+        &tx.kind,
+    )?;
+    if Sha256::digest(stored.state.challenge.as_bytes())[..] != tx.challenge_digest {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            409,
+            &correlation,
+        );
+    }
+    let Some(initiating_session_id) = stored.initiating_session_id.as_deref() else {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            409,
+            &correlation,
+        );
+    };
+    let Some(current) = authenticated_session(&request, &context.env).await? else {
+        return problem::response(
+            "authentication_failed",
+            "Authentication is required",
+            401,
+            &correlation,
+        );
+    };
+    if current.session_id != initiating_session_id
+        || Some(current.principal_id.as_str()) != tx.principal_id.as_deref()
+    {
+        return problem::response(
+            "invalid_transaction",
+            "Invalid transaction",
+            403,
+            &correlation,
+        );
+    }
+    let input: FinishAuthenticationRequest = match request.json().await {
+        Ok(input) => input,
+        Err(_) => {
+            return problem::response("invalid_request", "Invalid JSON request", 400, &correlation);
+        }
+    };
+    let request_digest = Sha256::digest(serde_json::to_vec(&input.credential)?);
+    let Some(authentication_response) = input.credential.into_passkey() else {
+        commit_failed_step_up(context, &tx, &request_digest, &correlation).await?;
+        return problem::response(
+            "authentication_failed",
+            "Credential verification failed",
+            401,
+            &correlation,
+        );
+    };
+    let credential_id = match CredentialId::from_b64url(&authentication_response.id) {
+        Ok(credential_id) => credential_id,
+        Err(_) => {
+            commit_failed_step_up(context, &tx, &request_digest, &correlation).await?;
+            return problem::response(
+                "authentication_failed",
+                "Credential verification failed",
+                401,
+                &correlation,
+            );
+        }
+    };
+    let db = context.d1("DB")?;
+    let Some(row) = repository::credential_by_id(&db, credential_id.as_bytes()).await? else {
+        commit_failed_step_up(context, &tx, &request_digest, &correlation).await?;
+        return problem::response(
+            "authentication_failed",
+            "Credential verification failed",
+            401,
+            &correlation,
+        );
+    };
+    if row.lifecycle_state != "active"
+        || Some(row.principal_id.as_str()) != tx.principal_id.as_deref()
+    {
+        commit_failed_step_up(context, &tx, &request_digest, &correlation).await?;
+        return problem::response(
+            "authentication_failed",
+            "Credential verification failed",
+            401,
+            &correlation,
+        );
+    }
+    let aaguid: [u8; 16] = row
+        .aaguid
+        .clone()
+        .try_into()
+        .map_err(|_| Error::RustError("invalid stored AAGUID".into()))?;
+    let saved = PasskeyCredential {
+        id: CredentialId(row.credential_id.clone()),
+        public_key_cose: CosePublicKey(row.public_key_cose.clone()),
+        counter: row.sign_count,
+        transports: serde_json::from_str(&row.transports_json)?,
+        aaguid,
+    };
+    let outcome = match webauthn(&context.env).finish_authentication(
+        &stored.state,
+        &authentication_response,
+        &saved,
+    ) {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            commit_failed_step_up(context, &tx, &request_digest, &correlation).await?;
+            return problem::response(
+                "authentication_failed",
+                "Credential verification failed",
+                401,
+                &correlation,
+            );
+        }
+    };
+    let replacement_session_id = SessionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let replacement_wire = random_secret_wire();
+    let replacement_digest = SecretDigest::hmac(
+        secret(&context.env, "SESSION_PEPPER")?.as_bytes(),
+        replacement_wire.as_bytes(),
+    );
+    crate::account_repository::commit_step_up(
+        &db,
+        &tx,
+        initiating_session_id,
+        &request_digest,
+        &row,
+        outcome.new_counter,
+        &replacement_session_id,
+        &replacement_digest.0,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        &correlation,
+        now,
+    )
+    .await?;
+    let account = crate::account_repository::account(&db, &row.principal_id)
+        .await?
+        .ok_or_else(|| Error::RustError("authenticated principal disappeared".into()))?;
+    let identifiers = account
+        .identifiers
+        .into_iter()
+        .map(|identifier| {
+            serde_json::json!({
+                "identifier_id": identifier.identifier_id,
+                "kind": identifier.kind,
+                "value": identifier.value,
+                "created_at": date_time(identifier.created_at),
+                "updated_at": date_time(identifier.updated_at),
+            })
+        })
+        .collect::<Vec<_>>();
+    let csrf_token = guard::session_csrf_token(
+        &replacement_wire,
+        secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+    );
+    json(
+        &serde_json::json!({
+            "account": {
+                "principal_id": account.principal_id,
+                "lifecycle_state": account.lifecycle_state,
+                "profile": {"display_name": account.display_name, "avatar_url": null, "locale": account.locale},
+                "identifiers": identifiers,
+                "created_at": date_time(account.created_at),
+                "updated_at": date_time(account.updated_at)
+            },
+            "session": {
+                "session_id": replacement_session_id,
+                "authentication_method": "passkey",
+                "authenticator_id": row.authenticator_id,
+                "binding_id": null,
+                "amr": ["passkey"],
+                "acr": "urn:moesegfault:acr:passkey-uv",
+                "is_current": true,
+                "authenticated_at": date_time(now),
+                "last_seen_at": date_time(now),
+                "expires_at": date_time(now + 2_592_000),
+                "revoked_at": null
+            },
+            "csrf_token": csrf_token,
+            "csrf_expires_at": date_time(now + 43_200)
+        }),
+        200,
+        &correlation,
+        Some(&guard::login_origin(&context.env)),
+        Some(&guard::session_cookie(&replacement_wire)),
+    )
+}
+
+async fn commit_failed_step_up(
+    context: &RouteContext<()>,
+    tx: &repository::WebauthnTransactionRow,
+    request_digest: &[u8],
+    correlation: &str,
+) -> Result<()> {
+    crate::account_repository::commit_step_up_failure(
+        &context.d1("DB")?,
+        tx,
+        request_digest,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        correlation,
+        now_seconds(),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
