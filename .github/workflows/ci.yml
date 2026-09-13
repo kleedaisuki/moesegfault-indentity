@@ -60,7 +60,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: identity-worker-${{ github.sha }}
-          path: crates/identity-worker/build/worker/
+          # The shim imports ../index.js and that module loads index_bg.wasm, so the
+          # complete worker-build output is one indivisible artifact.
+          # shim 会导入 ../index.js，后者还会加载 index_bg.wasm，因此必须整体提升制品。
+          path: crates/identity-worker/build/
           if-no-files-found: error
           retention-days: 7
 
@@ -143,7 +146,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: identity-worker-${{ github.sha }}
-          path: crates/identity-worker/build/worker/
+          path: crates/identity-worker/build/
       - name: Download login artifact / 下载 Login 制品
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -185,7 +188,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: identity-worker-${{ github.sha }}
-          path: crates/identity-worker/build/worker/
+          path: crates/identity-worker/build/
       - name: Download tested login artifact / 下载已测 Login 制品
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
