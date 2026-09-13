@@ -6,6 +6,9 @@ use worker::{
     Conditional, D1Database, D1SessionConstraint, Env, Error, Result, wasm_bindgen::JsValue,
 };
 
+const OAUTH_AUTHENTICATE_SQL: &str = "UPDATE oauth_authorization_transactions SET principal_id=?2,identity_session_id=?3,state='authenticated' WHERE authorization_transaction_id=(SELECT authorization_transaction_id FROM webauthn_authorization_links WHERE webauthn_transaction_id=?1) AND state='awaiting_authentication' AND expires_at>?4";
+const OAUTH_AUTHENTICATE_GUARD_SQL: &str = "INSERT INTO webauthn_authorization_links(webauthn_transaction_id,authorization_transaction_id) SELECT l.webauthn_transaction_id,l.authorization_transaction_id FROM webauthn_authorization_links l WHERE l.webauthn_transaction_id=?1 AND NOT EXISTS(SELECT 1 FROM oauth_authorization_transactions a WHERE a.authorization_transaction_id=l.authorization_transaction_id AND a.state='authenticated' AND a.principal_id=?2 AND a.identity_session_id=?3 AND a.expires_at>?4)";
+
 /// D1 中待完成的 WebAuthn 事务。/ Pending WebAuthn transaction stored in D1.
 #[derive(Debug, Deserialize)]
 pub struct WebauthnTransactionRow {
@@ -404,6 +407,14 @@ pub async fn commit_authentication(
             .bind(&[text(audit_id),integer(now),text(&credential.principal_id),text(&credential.authenticator_id),text(correlation),integer(tx_policy(tx))])?,
         db.prepare("INSERT INTO audit_archive_outbox(audit_event_id,r2_object_key,next_attempt_at) VALUES(?1,?2,?3)")
             .bind(&[text(audit_id),text(&format!("security-audit/{}/{audit_id}.json", day_bucket(now))),integer(now)])?,
+        // 若 ceremony 关联 OAuth，则 authorization 与新 Identity session 同批推进。
+        // If linked to OAuth, advance authorization with the new Identity session.
+        db.prepare(OAUTH_AUTHENTICATE_SQL)
+            .bind(&[text(&tx.transaction_id),text(&credential.principal_id),text(session_id),integer(now)])?,
+        // 未推进的关联事务故意重插已有 link，以 UNIQUE 失败回滚整个批次。
+        // A linked but non-advanced transaction re-inserts its link to roll back the batch.
+        db.prepare(OAUTH_AUTHENTICATE_GUARD_SQL)
+            .bind(&[text(&tx.transaction_id),text(&credential.principal_id),text(session_id),integer(now)])?,
     ];
     db.batch(statements).await?;
     Ok(())
@@ -606,5 +617,13 @@ mod tests {
     #[test]
     fn archive_key_uses_stable_day_bucket() {
         assert_eq!(day_bucket(172_800), "unix-day-2");
+    }
+
+    #[test]
+    fn oauth_authentication_commit_has_transactional_rollback_guard() {
+        assert!(OAUTH_AUTHENTICATE_SQL.contains("state='awaiting_authentication'"));
+        assert!(OAUTH_AUTHENTICATE_SQL.contains("expires_at>?4"));
+        assert!(OAUTH_AUTHENTICATE_GUARD_SQL.contains("NOT EXISTS"));
+        assert!(OAUTH_AUTHENTICATE_GUARD_SQL.contains("identity_session_id=?3"));
     }
 }
