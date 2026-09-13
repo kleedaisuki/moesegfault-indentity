@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust quality and Worker build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository / 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cache Cargo data / 缓存 Cargo 数据
+        uses: actions/cache@55cc8345863c7c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-
+      - name: Confirm pinned toolchain / 确认固定工具链
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed | grep -Fx wasm32-unknown-unknown
+      - name: Install pinned build and policy tools / 安装固定构建与策略工具
+        run: |
+          command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
+      - name: Format / 格式检查
+        run: cargo fmt --all -- --check
+      - name: Lint / 静态检查
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test / 单元测试
+        run: cargo test --workspace --all-features --locked
+      - name: Check WebAssembly target / 检查 WebAssembly 目标
+        run: cargo check --package identity-worker --target wasm32-unknown-unknown --locked
+      - name: Check dependency policy / 检查依赖策略
+        run: cargo deny --locked check
+      - name: Build identity Worker / 构建 Identity Worker
+        working-directory: crates/identity-worker
+        run: worker-build --release
+      - name: Upload identity artifact / 上传 Identity 制品
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: identity-worker-${{ github.sha }}
+          path: crates/identity-worker/build/worker/
+          if-no-files-found: error
+          retention-days: 7
+
+  login:
+    name: Login frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository / 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js / 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies / 安装锁定依赖
+        run: npm ci --ignore-scripts
+      - name: Audit high-impact advisories / 审查高影响依赖公告
+        run: npm audit --audit-level=high
+      - name: Lint and typecheck / 静态检查
+        run: npm run lint:login
+      - name: Test / 测试
+        run: npm run test:login
+      - name: Build / 构建
+        run: npm run build:login
+      - name: Upload login artifact / 上传 Login 制品
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: login-assets-${{ github.sha }}
+          path: apps/login/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  contracts:
+    name: Contracts, migrations, and scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository / 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js / 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked tooling / 安装锁定工具
+        run: npm ci --ignore-scripts
+      - name: Lint OpenAPI / 检查 OpenAPI
+        run: npm run lint:openapi
+      - name: Apply migrations to fresh local D1 / 在全新本地 D1 执行迁移
+        run: npm run migrate:local
+      - name: Lint automation scripts / 检查自动化脚本
+        run: shellcheck scripts/*.sh
+
+  package:
+    name: Wrangler deployment dry-runs
+    needs: [rust, login, contracts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository / 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js / 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked tooling / 安装锁定工具
+        run: npm ci --ignore-scripts
+      - name: Download identity artifact / 下载 Identity 制品
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: identity-worker-${{ github.sha }}
+          path: crates/identity-worker/build/worker/
+      - name: Download login artifact / 下载 Login 制品
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: login-assets-${{ github.sha }}
+          path: apps/login/dist/
+      - name: Dry-run both deployment units / 演练两个发布单元
+        run: |
+          npm run package:identity
+          npm run dry-run:login
+
+  deploy-production:
+    name: Deploy production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: cloudflare-deployment
+      url: https://login.moesegfault.dev
+    concurrency:
+      group: cloudflare-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      RELEASE_MESSAGE: GitHub ${{ github.sha }}
+    steps:
+      - name: Check out tested revision / 检出已测试版本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js / 配置 Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+      - name: Install locked deployment tooling / 安装锁定发布工具
+        run: npm ci --ignore-scripts
+      - name: Download tested identity artifact / 下载已测 Identity 制品
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: identity-worker-${{ github.sha }}
+          path: crates/identity-worker/build/worker/
+      - name: Download tested login artifact / 下载已测 Login 制品
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: login-assets-${{ github.sha }}
+          path: apps/login/dist/
+      - name: Migrate, deploy serially, and smoke / 迁移、串行发布并冒烟检查
+        run: scripts/release.sh

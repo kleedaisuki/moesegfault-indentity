@@ -1,0 +1,29 @@
+# Rust / Rust
+/target/
+**/target/
+
+# Node and generated assets / Node 与构建产物
+/node_modules/
+**/node_modules/
+/dist/
+**/dist/
+*.tsbuildinfo
+
+# Cloudflare local state and secrets / Cloudflare 本地状态与密钥
+/.wrangler/
+**/.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Local tools and editors / 本地工具与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test output / 测试产物
+/coverage/
+**/coverage/

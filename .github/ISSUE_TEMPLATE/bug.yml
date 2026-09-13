@@ -1,0 +1,35 @@
+name: Bug report / 缺陷报告
+description: Report a reproducible behavior regression / 报告可复现的行为回归
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior / 实际行为
+      description: Do not include cookies, tokens, challenges, recovery codes, or personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction / 复现步骤
+      description: Include the public correlation ID when available, never credentials.
+    validations:
+      required: true
+  - type: dropdown
+    id: unit
+    attributes:
+      label: Deployment unit / 发布单元
+      options:
+        - identity Worker
+        - login frontend
+        - local development or CI
+    validations:
+      required: true

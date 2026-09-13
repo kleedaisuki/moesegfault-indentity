@@ -1,0 +1,25 @@
+name: Feature proposal / 功能建议
+description: Propose a scoped product or protocol change / 建议有边界的产品或协议变更
+title: "proposal: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem / 用户问题
+      description: Describe the decision or capability gap before a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 建议行为
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Boundaries and alternatives / 边界与备选方案
+      description: Explain identity/login ownership, compatibility, and rejected simpler options.
+    validations:
+      required: true

@@ -1,0 +1,80 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "moesegfault-identity-staging",
+  "main": "./crates/identity-worker/build/worker/shim.mjs",
+  "compatibility_date": "2026-09-13",
+  "workers_dev": false,
+  "preview_urls": false,
+  "minify": true,
+  "routes": [
+    {
+      "pattern": "identity-staging.moesegfault.dev",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "ISSUER": "https://identity-staging.moesegfault.dev",
+    "LOGIN_ORIGIN": "https://login-staging.moesegfault.dev",
+    "PUBLIC_JWKS": "{\"keys\":[]}",
+    "WEBAUTHN_RP_ID": "login-staging.moesegfault.dev"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "moesegfault-identity-staging",
+      "database_id": "c4042bd4-bb4a-4cf7-aa7f-04cf1a5d6ad9",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "AUDIT_ARCHIVE",
+      "bucket_name": "moesegfault-identity-audit-staging"
+    }
+  ],
+  "triggers": {
+    "crons": []
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "env": {
+    "production": {
+      "name": "moesegfault-identity",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "identity.moesegfault.dev",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "production",
+        "ISSUER": "https://identity.moesegfault.dev",
+        "LOGIN_ORIGIN": "https://login.moesegfault.dev",
+        "PUBLIC_JWKS": "{\"keys\":[]}",
+        "WEBAUTHN_RP_ID": "login.moesegfault.dev"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moesegfault-identity-production",
+          "database_id": "b3f4a7dd-4415-417d-a1eb-47c36a47ad24",
+          "migrations_dir": "./migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "AUDIT_ARCHIVE",
+          "bucket_name": "moesegfault-identity-audit-production"
+        }
+      ],
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      }
+    }
+  }
+}

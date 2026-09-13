@@ -1,0 +1,6 @@
+# Local-only Worker variables; copy to .dev.vars. / 仅限本地的 Worker 变量，请复制为 .dev.vars。
+ENVIRONMENT=development
+ISSUER=http://localhost:8787
+LOGIN_ORIGIN=http://localhost:5173
+PUBLIC_JWKS={"keys":[]}
+WEBAUTHN_RP_ID=localhost

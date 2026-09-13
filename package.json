@@ -1,0 +1,30 @@
+{
+  "name": "moesegfault-identity-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build and deployment tooling for moeSegFault Identity",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "workspaces": [
+    "apps/login"
+  ],
+  "scripts": {
+    "build:identity": "worker-build --release crates/identity-worker",
+    "build:login": "npm run build --workspace=@moesegfault/login",
+    "lint:login": "npm run lint --workspace=@moesegfault/login",
+    "test:login": "npm run test --workspace=@moesegfault/login -- --run",
+    "typecheck:login": "npm run typecheck --workspace=@moesegfault/login",
+    "lint:openapi": "redocly lint --config openapi/redocly.yaml openapi/identity.yaml",
+    "migrate:local": "wrangler d1 migrations apply moesegfault-identity-staging --local --persist-to=.wrangler/ci --config wrangler.identity.jsonc",
+    "package:identity": "wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc",
+    "dry-run:identity": "npm run build:identity && npm run package:identity",
+    "dry-run:login": "wrangler deploy --dry-run --outdir=dist/dry-run/login --env production --config wrangler.login.jsonc"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.52.1",
+    "wrangler": "4.131.1"
+  }
+}

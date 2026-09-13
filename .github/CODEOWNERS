@@ -1,0 +1,9 @@
+# Default review owner / 默认审查负责人
+* @kleedaisuki
+
+# Deployment contracts require explicit owner review. / 发布契约需负责人显式审查。
+/.github/workflows/ @kleedaisuki
+/infra/ @kleedaisuki
+/migrations/ @kleedaisuki
+/wrangler.identity.jsonc @kleedaisuki
+/wrangler.login.jsonc @kleedaisuki
