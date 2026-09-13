@@ -1,5 +1,6 @@
 import "./styles.css";
 import { IdentityApiClient } from "./api/client";
+import { resolveIdentityOrigin } from "./environment";
 import { renderPage } from "./pages";
 import { installRouter, resolveRoute } from "./router";
 import { captureAndScrubTransaction } from "./transaction";
@@ -9,7 +10,7 @@ import { createShell } from "./ui/shell";
 // Scrub the transaction handle before constructing anything that may issue requests.
 captureAndScrubTransaction(window.location, window.history);
 
-const apiOrigin = import.meta.env.VITE_IDENTITY_API_ORIGIN ?? "https://identity.moesegfault.dev";
+const apiOrigin = resolveIdentityOrigin(window.location, import.meta.env.VITE_IDENTITY_API_ORIGIN);
 const api = new IdentityApiClient(apiOrigin);
 const mount = document.querySelector<HTMLElement>("#app");
 if (!mount) throw new Error("缺少 #app 挂载点 / Missing #app mount point");
