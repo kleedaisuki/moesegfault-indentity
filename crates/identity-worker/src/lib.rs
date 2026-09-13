@@ -23,6 +23,13 @@ use worker::*;
 /// Worker fetch entry point; request state comes from bindings, never mutable globals.
 #[event(fetch)]
 pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
+    let request_origin = request.headers().get("origin")?;
+    let login_origin = env.var("LOGIN_ORIGIN").ok().map(|value| value.to_string());
+    let credentialed_cors = request_origin
+        .as_deref()
+        .zip(login_origin.as_deref())
+        .is_some_and(|(actual, expected)| actual == expected);
+
     macro_rules! idempotent {
         ($handler:path, $operation:ident, $caller:ident, $policy:ident) => {
             |request, context| async move {
@@ -39,7 +46,7 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         };
     }
 
-    Router::new()
+    let response = Router::new()
         .get_async("/healthz", api::health)
         .get_async("/.well-known/openid-configuration", oauth::discovery)
         .get_async("/.well-known/jwks.json", oauth::jwks)
@@ -233,7 +240,25 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         .get_async("/v1/oidc/logout-requests", oauth::logout_get)
         .post_async("/v1/oidc/logout-requests", oauth::logout_post)
         .run(request, env)
-        .await
+        .await?;
+
+    // CORS belongs at the response boundary, not in success-only helpers. This guarantees
+    // that the trusted Login SPA can read Problem Details and correlation IDs as well.
+    // CORS 属于统一响应边界而不是仅成功 helper；这样可信 Login SPA 也能读取错误详情与关联 ID。
+    if credentialed_cors {
+        let headers = response.headers();
+        headers.set(
+            "access-control-allow-origin",
+            request_origin.as_deref().unwrap_or_default(),
+        )?;
+        headers.set("access-control-allow-credentials", "true")?;
+        headers.set(
+            "access-control-expose-headers",
+            "x-moesegfault-correlation-id",
+        )?;
+        headers.set("vary", "Origin")?;
+    }
+    Ok(response)
 }
 
 /// 定时归档不可变安全审计；失败留在 outbox，绝不阻塞登录。
