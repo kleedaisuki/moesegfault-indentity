@@ -40,6 +40,9 @@ pub struct AuthorizationCodeGrant {
     pub code_challenge: String,
     pub expires_at: i64,
     pub authenticated_at: i64,
+    pub session_idle_expires_at: i64,
+    pub session_absolute_expires_at: i64,
+    pub session_revoked_at: Option<i64>,
     pub amr_json: String,
     pub acr: String,
     pub display_name: String,
@@ -63,6 +66,9 @@ pub struct RefreshGrant {
     pub absolute_expires_at: i64,
     pub family_revoked_at: Option<i64>,
     pub authenticated_at: i64,
+    pub session_idle_expires_at: i64,
+    pub session_absolute_expires_at: i64,
+    pub session_revoked_at: Option<i64>,
     pub amr_json: String,
     pub acr: String,
     pub display_name: String,
@@ -222,7 +228,7 @@ pub async fn authorization_code(
     db: &D1Database,
     digest: &[u8],
 ) -> Result<Option<AuthorizationCodeGrant>> {
-    primary(db)?.prepare("SELECT c.authorization_code_id,c.client_id,c.principal_id,c.identity_session_id,c.redirect_uri,c.scope,c.nonce,c.code_challenge,c.expires_at,s.authenticated_at,s.amr_json,s.acr,h.display_name,i.value AS username,o.sector_identifier,o.subject_salt_revision FROM oauth_authorization_codes c JOIN identity_sessions s ON s.session_id=c.identity_session_id JOIN human_profiles h ON h.principal_id=c.principal_id JOIN identifiers i ON i.principal_id=c.principal_id AND i.kind='username' JOIN oauth_clients o ON o.client_id=c.client_id WHERE c.code_digest=?1 AND c.consumed_at IS NULL AND c.revoked_at IS NULL")
+    primary(db)?.prepare("SELECT c.authorization_code_id,c.client_id,c.principal_id,c.identity_session_id,c.redirect_uri,c.scope,c.nonce,c.code_challenge,c.expires_at,s.authenticated_at,s.idle_expires_at AS session_idle_expires_at,s.absolute_expires_at AS session_absolute_expires_at,s.revoked_at AS session_revoked_at,s.amr_json,s.acr,h.display_name,i.value AS username,o.sector_identifier,o.subject_salt_revision FROM oauth_authorization_codes c JOIN identity_sessions s ON s.session_id=c.identity_session_id JOIN human_profiles h ON h.principal_id=c.principal_id JOIN identifiers i ON i.principal_id=c.principal_id AND i.kind='username' JOIN oauth_clients o ON o.client_id=c.client_id WHERE c.code_digest=?1 AND c.consumed_at IS NULL AND c.revoked_at IS NULL")
         .bind(&[blob(digest)])?.first(None).await
 }
 
@@ -252,7 +258,7 @@ pub async fn consume_code(
 /// 读取 refresh token，包括已轮换 token，以支持重用检测。
 /// Reads a refresh token, including rotated tokens, so reuse can be detected.
 pub async fn refresh_grant(db: &D1Database, digest: &[u8]) -> Result<Option<RefreshGrant>> {
-    primary(db)?.prepare("SELECT t.refresh_token_id,t.refresh_token_family_id,t.generation,t.state AS token_state,t.expires_at AS token_expires_at,f.client_id,f.principal_id,f.identity_session_id,f.scope,f.absolute_expires_at,f.revoked_at AS family_revoked_at,s.authenticated_at,s.amr_json,s.acr,h.display_name,i.value AS username,o.sector_identifier,o.subject_salt_revision FROM oauth_refresh_tokens t JOIN oauth_refresh_token_families f ON f.refresh_token_family_id=t.refresh_token_family_id JOIN identity_sessions s ON s.session_id=f.identity_session_id JOIN human_profiles h ON h.principal_id=f.principal_id JOIN identifiers i ON i.principal_id=f.principal_id AND i.kind='username' JOIN oauth_clients o ON o.client_id=f.client_id WHERE t.token_digest=?1")
+    primary(db)?.prepare("SELECT t.refresh_token_id,t.refresh_token_family_id,t.generation,t.state AS token_state,t.expires_at AS token_expires_at,f.client_id,f.principal_id,f.identity_session_id,f.scope,f.absolute_expires_at,f.revoked_at AS family_revoked_at,s.authenticated_at,s.idle_expires_at AS session_idle_expires_at,s.absolute_expires_at AS session_absolute_expires_at,s.revoked_at AS session_revoked_at,s.amr_json,s.acr,h.display_name,i.value AS username,o.sector_identifier,o.subject_salt_revision FROM oauth_refresh_tokens t JOIN oauth_refresh_token_families f ON f.refresh_token_family_id=t.refresh_token_family_id JOIN identity_sessions s ON s.session_id=f.identity_session_id JOIN human_profiles h ON h.principal_id=f.principal_id JOIN identifiers i ON i.principal_id=f.principal_id AND i.kind='username' JOIN oauth_clients o ON o.client_id=f.client_id WHERE t.token_digest=?1")
         .bind(&[blob(digest)])?.first(None).await
 }
 

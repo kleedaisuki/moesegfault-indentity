@@ -155,6 +155,8 @@ pub async fn authorize(request: Request, context: RouteContext<()>) -> Result<Re
     };
     if client_id.len() > 255
         || redirect_uri.len() > 2048
+        || url::Url::parse(redirect_uri).is_err()
+        || url::Url::parse(redirect_uri).is_ok_and(|url| url.fragment().is_some())
         || state.len() < 8
         || state.len() > 1024
         || nonce.len() < 8
@@ -182,7 +184,7 @@ pub async fn authorize(request: Request, context: RouteContext<()>) -> Result<Re
         );
     }
     let scopes = match canonical_scopes(scope) {
-        Some(value) if value.split(' ').any(|v| v == "openid") => value,
+        Some(value) if value.split(' ').next() == Some("openid") => value,
         _ => {
             return authorization_error(
                 redirect_uri,
@@ -300,7 +302,7 @@ pub async fn resume(request: Request, context: RouteContext<()>) -> Result<Respo
     );
     let now = now_seconds();
     let code_id = Uuid::now_v7().to_string();
-    if !repo::issue_authorization_code(
+    let issued = repo::issue_authorization_code(
         &db,
         &tx,
         &code_id,
@@ -310,7 +312,12 @@ pub async fn resume(request: Request, context: RouteContext<()>) -> Result<Respo
         now,
         now + config_seconds(&context.env, "AUTHORIZATION_CODE_TTL_SECONDS", 60, 600),
     )
-    .await?
+    .await;
+    if matches!(&issued, Ok(false))
+        || (issued.is_err()
+            && repo::authorization_transaction(&db, id)
+                .await?
+                .is_some_and(|current| current.state == "completed"))
     {
         return protocol_problem(
             "transaction_consumed",
@@ -319,6 +326,7 @@ pub async fn resume(request: Request, context: RouteContext<()>) -> Result<Respo
             &correlation,
         );
     }
+    issued?;
     let location = append_query(
         &tx.redirect_uri,
         &[
@@ -537,7 +545,25 @@ pub async fn userinfo(request: Request, context: RouteContext<()>) -> Result<Res
 
 /// 处理 GET RP-Initiated Logout。/ Handles GET RP-Initiated Logout.
 pub async fn logout_get(request: Request, context: RouteContext<()>) -> Result<Response> {
-    let fields = unique_fields(request.url()?.query().unwrap_or_default(), 4).unwrap_or_default();
+    let correlation = correlation_id();
+    let fields = match unique_fields(request.url()?.query().unwrap_or_default(), 4) {
+        Ok(fields)
+            if only_fields(
+                &fields,
+                &["id_token_hint", "post_logout_redirect_uri", "state"],
+            ) =>
+        {
+            fields
+        }
+        _ => {
+            return protocol_problem(
+                "invalid_request",
+                "Malformed logout request",
+                400,
+                &correlation,
+            );
+        }
+    };
     logout(request, context, fields).await
 }
 
@@ -555,6 +581,17 @@ pub async fn logout_post(mut request: Request, context: RouteContext<()>) -> Res
             );
         }
     };
+    if !only_fields(
+        &fields,
+        &["id_token_hint", "post_logout_redirect_uri", "state"],
+    ) {
+        return protocol_problem(
+            "invalid_request",
+            "Unexpected logout parameter",
+            400,
+            &correlation,
+        );
+    }
     logout(request, context, fields).await
 }
 
@@ -658,6 +695,9 @@ async fn exchange_code(
     if grant.client_id != client.client_id
         || grant.redirect_uri != *redirect
         || grant.expires_at <= now_seconds()
+        || grant.session_revoked_at.is_some()
+        || grant.session_idle_expires_at <= now_seconds()
+        || grant.session_absolute_expires_at <= now_seconds()
         || !bool::from(expected.as_bytes().ct_eq(grant.code_challenge.as_bytes()))
     {
         return oauth_problem(
@@ -782,6 +822,9 @@ async fn exchange_refresh(
         || grant.family_revoked_at.is_some()
         || grant.token_expires_at <= now
         || grant.absolute_expires_at <= now
+        || grant.session_revoked_at.is_some()
+        || grant.session_idle_expires_at <= now
+        || grant.session_absolute_expires_at <= now
     {
         return oauth_problem(
             "invalid_grant",
@@ -919,7 +962,7 @@ async fn authenticate_client(
         .await?
         .ok_or_else(|| Error::RustError("unknown client".into()))?;
     if client.client_type == "native" && client.token_endpoint_auth_method == "none" {
-        if fields.contains_key("client_assertion") {
+        if fields.contains_key("client_assertion") || fields.contains_key("client_assertion_type") {
             return Err(Error::RustError("native assertion not accepted".into()));
         }
         return Ok(client);
@@ -999,10 +1042,10 @@ async fn verify_our_jwt(wire: &str, env: &Env, require_access: bool) -> Result<V
     if c.get("iss").and_then(Value::as_str) != Some(issuer(env).as_str()) {
         return Err(Error::RustError("invalid claims".into()));
     }
-    if require_access
-        && (c.get("exp").and_then(Value::as_i64).unwrap_or(0) <= now_seconds()
-            || c.get("token_use").and_then(Value::as_str) != Some("access")
-            || audience_one(&c).is_none())
+    let expected_use = if require_access { "access" } else { "id" };
+    if c.get("token_use").and_then(Value::as_str) != Some(expected_use)
+        || audience_one(&c).is_none()
+        || (require_access && c.get("exp").and_then(Value::as_i64).unwrap_or(0) <= now_seconds())
     {
         return Err(Error::RustError("invalid access-token claims".into()));
     }
@@ -1130,7 +1173,10 @@ fn is_top_navigation(request: &Request) -> bool {
 }
 fn bearer(request: &Request) -> Option<String> {
     let value = guard::header(request.headers(), "authorization")?;
-    let token = value.strip_prefix("Bearer ")?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
     (!token.is_empty() && !token.bytes().any(|b| b.is_ascii_whitespace())).then(|| token.to_owned())
 }
 fn aud_contains(claims: &Value, expected: &str) -> bool {
