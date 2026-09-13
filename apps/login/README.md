@@ -9,7 +9,7 @@
 3. 完成事务并用服务端返回的新 CSRF token 替换页面内状态；
 4. 使用**新幂等键**重试原操作一次。
 
-前端不对普通 `403` 猜测再认证语义，也不无限重试。同页并发请求共享一次 ceremony，避免重叠的浏览器提示。
+前端不对普通 `403` 猜测再认证语义，也不无限重试。同页并发请求共享一次 ceremony，避免重叠的浏览器提示。如果其他标签页轮换了共享 session cookie，精确的 CSRF 验证错误会让当前标签页刷新内存 CSRF，并仅重试一次。
 
 CSRF token、ceremony transaction、assertion 和恢复码均不写入 `localStorage`、`sessionStorage`、IndexedDB 或 Service Worker cache。它们只存在于当前 JavaScript Realm，恢复码仅在用户明确复制或下载时离开内存。
 
@@ -22,7 +22,7 @@ High-risk operations such as adding/revoking a passkey, establishing/removing an
 3. completes the transaction and replaces the in-memory CSRF token with the server result; and
 4. retries the original operation once with a **fresh idempotency key**.
 
-The client never guesses step-up semantics from a generic `403` and never retries indefinitely. Concurrent requests in the same page share one ceremony to avoid overlapping browser prompts.
+The client never guesses step-up semantics from a generic `403` and never retries indefinitely. Concurrent requests in the same page share one ceremony to avoid overlapping browser prompts. If another tab rotates the shared session cookie, an exact CSRF-validation response causes this tab to refresh its in-memory CSRF value and retry once.
 
 CSRF tokens, ceremony transactions, assertions, and recovery codes are never written to `localStorage`, `sessionStorage`, IndexedDB, or a Service Worker cache. They exist only in the current JavaScript realm; recovery codes leave memory only when the user explicitly copies or downloads them.
 

@@ -31,6 +31,12 @@ export interface RequestControls {
   signal?: AbortSignal;
 }
 
+/** 状态变更必须携带的认证与重试控制。Authentication and retry controls required for state changes. */
+export interface MutationControls extends RequestControls {
+  csrfToken: string;
+  idempotencyKey: string;
+}
+
 /** 可注入的 Fetch 签名，便于隔离浏览器与测试。Injectable Fetch signature for browser/test isolation. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -93,7 +99,7 @@ export class IdentityApiClient {
   }
 
   /** 完成首个 Passkey 注册。Completes initial passkey registration. */
-  public completeRegistration(transactionId: string, credential: PublicKeyCredentialJson, controls: RequestControls) {
+  public completeRegistration(transactionId: string, credential: PublicKeyCredentialJson, controls: MutationControls) {
     return this.#request<RegistrationResult>(
       `/v1/registration-transactions/${encodeURIComponent(transactionId)}/completion`,
       { method: "POST", body: { credential }, ...controls },
@@ -109,7 +115,7 @@ export class IdentityApiClient {
   }
 
   /** 完成 Passkey assertion。Completes a passkey assertion. */
-  public completeAuthentication(transactionId: string, credential: PublicKeyCredentialJson, controls: RequestControls) {
+  public completeAuthentication(transactionId: string, credential: PublicKeyCredentialJson, controls: MutationControls) {
     return this.#request<AuthenticationResult>(
       `/v1/authentication-transactions/${encodeURIComponent(transactionId)}/completion`,
       { method: "POST", body: { credential }, ...controls },
@@ -138,7 +144,7 @@ export class IdentityApiClient {
   }
 
   /** 修改可展示资料。Updates display-only profile fields. */
-  public updatePrincipal(input: { display_name: string }, controls: RequestControls) {
+  public updatePrincipal(input: { display_name: string }, controls: MutationControls) {
     return this.#request<Account>("/v1/principals/self", { method: "PATCH", contentType: "application/merge-patch+json", body: input, ...controls });
   }
 
@@ -151,7 +157,7 @@ export class IdentityApiClient {
   }
 
   /** 创建增加 Passkey 的事务；调用者为每次尝试提供新幂等键。Starts an add-passkey transaction with a caller-owned attempt key. */
-  public startAuthenticatorRegistration(authenticatorLabel: string, controls: RequestControls) {
+  public startAuthenticatorRegistration(authenticatorLabel: string, controls: MutationControls) {
     return this.#request<CeremonyTransaction<PublicKeyCredentialCreationOptionsJson>>(
       "/v1/principals/self/authenticators/registration-transactions",
       { method: "POST", body: { authenticator_label: authenticatorLabel }, ...controls },
@@ -159,7 +165,7 @@ export class IdentityApiClient {
   }
 
   /** 完成增加 Passkey，不把首次注册的恢复码语义泄露给调用处。Completes an add-passkey transaction without initial-registration secret semantics. */
-  public completeAuthenticatorRegistration(transactionId: string, credential: PublicKeyCredentialJson, controls: RequestControls) {
+  public completeAuthenticatorRegistration(transactionId: string, credential: PublicKeyCredentialJson, controls: MutationControls) {
     return this.#request<AuthenticatorRegistrationResult>(
       `/v1/registration-transactions/${encodeURIComponent(transactionId)}/completion`,
       { method: "POST", body: { credential }, ...controls },
@@ -167,7 +173,7 @@ export class IdentityApiClient {
   }
 
   /** 重命名单个 Passkey。Renames a passkey. */
-  public renameAuthenticator(authenticatorId: string, label: string, controls: RequestControls) {
+  public renameAuthenticator(authenticatorId: string, label: string, controls: MutationControls) {
     return this.#request<Authenticator>(
       `/v1/principals/self/authenticators/${encodeURIComponent(authenticatorId)}`,
       { method: "PATCH", contentType: "application/merge-patch+json", body: { label }, ...controls },
@@ -175,7 +181,7 @@ export class IdentityApiClient {
   }
 
   /** 撤销单个 Passkey。Revokes one passkey. */
-  public revokeAuthenticator(authenticatorId: string, controls: RequestControls) {
+  public revokeAuthenticator(authenticatorId: string, controls: MutationControls) {
     return this.#request<void>(`/v1/principals/self/authenticators/${encodeURIComponent(authenticatorId)}`, {
       method: "DELETE",
       ...controls,
@@ -199,7 +205,7 @@ export class IdentityApiClient {
   }
 
   /** 发起外部 Binding，返回后端验证过的导航 URL。Starts an external binding and returns a server-approved navigation URL. */
-  public startBinding(providerId: string, controls: RequestControls) {
+  public startBinding(providerId: string, controls: MutationControls) {
     return this.#request<BindingTransactionResult>("/v1/binding-transactions", {
       method: "POST",
       body: { provider_id: providerId },
@@ -208,7 +214,7 @@ export class IdentityApiClient {
   }
 
   /** 解除外部 Binding。Removes an external identity binding. */
-  public removeBinding(bindingId: string, controls: RequestControls) {
+  public removeBinding(bindingId: string, controls: MutationControls) {
     return this.#request<void>(`/v1/principals/self/bindings/${encodeURIComponent(bindingId)}`, {
       method: "DELETE",
       ...controls,
@@ -224,7 +230,7 @@ export class IdentityApiClient {
   }
 
   /** 撤销指定 Identity Session。Revokes one identity session. */
-  public revokeSession(sessionId: string, controls: RequestControls) {
+  public revokeSession(sessionId: string, controls: MutationControls) {
     return this.#request<void>(`/v1/principals/self/sessions/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
       ...controls,
@@ -232,12 +238,12 @@ export class IdentityApiClient {
   }
 
   /** 撤销全部 Identity Sessions。Revokes all identity sessions. */
-  public revokeAllSessions(controls: RequestControls) {
+  public revokeAllSessions(controls: MutationControls) {
     return this.#request<void>("/v1/principals/self/sessions", { method: "DELETE", ...controls });
   }
 
   /** 轮换并一次返回恢复代码。Rotates and returns recovery codes exactly once. */
-  public rotateRecoveryCodes(controls: RequestControls) {
+  public rotateRecoveryCodes(controls: MutationControls) {
     return this.#request<RecoveryCodeRotation>("/v1/principals/self/recovery-codes/rotations", {
       method: "POST",
       body: {},

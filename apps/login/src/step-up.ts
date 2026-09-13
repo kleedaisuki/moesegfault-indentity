@@ -1,10 +1,10 @@
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
-import type { RequestControls } from "./api/client";
+import type { MutationControls } from "./api/client";
 import type { PublicKeyCredentialJson, PublicKeyCredentialRequestOptionsJson } from "./api/types";
 import { getPasskey } from "./webauthn/ceremony";
 
 /** 高风险请求始终具有当前 CSRF、本次幂等键与取消信号。High-risk controls always carry current CSRF, an attempt key, and cancellation. */
-export interface HighRiskRequestControls extends RequestControls {
+export interface HighRiskRequestControls extends MutationControls {
   csrfToken: string;
   idempotencyKey: string;
   signal: AbortSignal;
@@ -19,6 +19,7 @@ export type AssertionProvider = (
 /** 协调器的内存令牌与浏览器上下文端口。In-memory token and browser-context ports used by the coordinator. */
 export interface StepUpPorts {
   readSessionCsrf(signal: AbortSignal): Promise<string>;
+  refreshSessionCsrf(signal: AbortSignal): Promise<string>;
   readBrowserCsrf(signal: AbortSignal): Promise<string>;
   rememberSessionCsrf(token: string): void;
   getAssertion?: AssertionProvider;
@@ -49,7 +50,7 @@ export class InlineStepUpCoordinator {
   readonly #api: IdentityApiClient;
   readonly #ports: StepUpPorts;
   #generation = 0;
-  #inFlight?: Promise<string>;
+  #inFlight?: { signal: AbortSignal; promise: Promise<string> };
 
   /** 为单个 Identity API 客户端创建页面级协调器。Creates a page-scoped coordinator for one Identity API client. */
   public constructor(api: IdentityApiClient, ports: StepUpPorts) {
@@ -67,28 +68,52 @@ export class InlineStepUpCoordinator {
   ): Promise<T> {
     const observedGeneration = this.#generation;
     const csrfToken = await this.#ports.readSessionCsrf(execution.signal);
+    let failure: unknown;
     try {
       return await operation(requestControls(csrfToken, execution.signal));
     } catch (error) {
-      if (!isReauthenticationRequired(error)) throw error;
+      failure = error;
     }
 
-    execution.onStepUpRequired?.();
-    const retryCsrf = observedGeneration === this.#generation
+    // Another tab may have rotated the shared HttpOnly session cookie while this
+    // tab still holds the old per-tab CSRF value. Refresh and retry once before
+    // deciding whether a passkey ceremony is required.
+    if (isCsrfValidationFailed(failure)) {
+      const refreshedCsrf = await this.#ports.refreshSessionCsrf(execution.signal);
+      try {
+        return await operation(requestControls(refreshedCsrf, execution.signal));
+      } catch (error) {
+        failure = error;
+      }
+    }
+    if (!isReauthenticationRequired(failure)) throw failure;
+
+    const needsCeremony = observedGeneration === this.#generation;
+    if (needsCeremony) execution.onStepUpRequired?.();
+    const retryCsrf = needsCeremony
       ? await this.#stepUp(execution.signal)
-      : await this.#ports.readSessionCsrf(execution.signal);
+      : await this.#ports.refreshSessionCsrf(execution.signal);
     return operation(requestControls(retryCsrf, execution.signal));
   }
 
-  /** 共享同页并发请求的一次 ceremony，成功后原子替换内存 CSRF。Shares one ceremony across same-page callers and replaces in-memory CSRF after success. */
+  /** 共享 ceremony；若旧路由取消了它，新路由会独立重启。Shares a ceremony, restarting independently when an old route cancels it. */
   async #stepUp(signal: AbortSignal): Promise<string> {
-    if (this.#inFlight) return this.#inFlight;
-    const attempt = this.#performStepUp(signal);
-    this.#inFlight = attempt;
+    const current = this.#inFlight;
+    if (current) {
+      try {
+        return await waitForSharedCeremony(current.promise, signal);
+      } catch (error) {
+        if (current.signal === signal || signal.aborted) throw error;
+        if (this.#inFlight === current) this.#inFlight = undefined;
+        return this.#stepUp(signal);
+      }
+    }
+    const flight = { signal, promise: this.#performStepUp(signal) };
+    this.#inFlight = flight;
     try {
-      return await attempt;
+      return await flight.promise;
     } finally {
-      if (this.#inFlight === attempt) this.#inFlight = undefined;
+      if (this.#inFlight === flight) this.#inFlight = undefined;
     }
   }
 
@@ -113,7 +138,31 @@ export function isReauthenticationRequired(error: unknown): boolean {
   return error instanceof ApiError && error.problem?.error_code === "reauthentication_required";
 }
 
+/** 精确识别 cookie 轮换后的旧 CSRF，允许跨标签页恢复。Recognizes stale CSRF after cookie rotation so another tab can recover. */
+export function isCsrfValidationFailed(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.problem?.error_code === "invalid_request"
+    && error.problem.title === "CSRF validation failed";
+}
+
 /** 为每次初试或重试现场创建新幂等键。Creates a fresh idempotency key at each initial or retry attempt. */
 function requestControls(csrfToken: string, signal: AbortSignal): HighRiskRequestControls {
   return { csrfToken, idempotencyKey: createIdempotencyKey(), signal };
+}
+
+/** 让等待者可独立取消，但不中断其他调用者共享的 ceremony。Lets a waiter cancel independently without aborting the shared ceremony. */
+function waitForSharedCeremony<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => {
+      cleanup();
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+    const cleanup = () => signal.removeEventListener("abort", aborted);
+    signal.addEventListener("abort", aborted, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+  });
 }

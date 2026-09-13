@@ -41,6 +41,16 @@ function reauthenticationRequired(): ApiError {
   return new ApiError(403, problem);
 }
 
+/** 创建 session cookie 已轮换时的精确 CSRF 问题。Creates the exact CSRF problem emitted after session-cookie rotation. */
+function csrfValidationFailed(): ApiError {
+  return new ApiError(403, {
+    type: "https://identity.moesegfault.dev/problems/invalid_request",
+    title: "CSRF validation failed",
+    status: 403,
+    error_code: "invalid_request",
+  });
+}
+
 /** 构造只暴露协调器所需方法的 API 替身。Builds an API double exposing only coordinator methods. */
 function apiDouble() {
   const transaction: CeremonyTransaction<PublicKeyCredentialRequestOptionsJson> = {
@@ -67,6 +77,7 @@ describe("InlineStepUpCoordinator", () => {
     });
     const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
       readSessionCsrf: async () => sessionCsrf,
+      refreshSessionCsrf: async () => sessionCsrf,
       readBrowserCsrf: async () => "csrf-browser",
       rememberSessionCsrf: (token) => { sessionCsrf = token; },
       getAssertion,
@@ -108,6 +119,7 @@ describe("InlineStepUpCoordinator", () => {
     });
     const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
       readSessionCsrf: async () => "csrf-old",
+      refreshSessionCsrf: async () => "csrf-refreshed",
       readBrowserCsrf: async () => "csrf-browser",
       rememberSessionCsrf: vi.fn(),
       getAssertion: vi.fn(async () => CREDENTIAL),
@@ -126,6 +138,7 @@ describe("InlineStepUpCoordinator", () => {
     const operation = vi.fn(async (_controls: HighRiskRequestControls) => { throw reauthenticationRequired(); });
     const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
       readSessionCsrf: async () => "csrf-old",
+      refreshSessionCsrf: async () => "csrf-refreshed",
       readBrowserCsrf: async () => "csrf-browser",
       rememberSessionCsrf: vi.fn(),
       getAssertion: vi.fn(async () => CREDENTIAL),
@@ -144,6 +157,7 @@ describe("InlineStepUpCoordinator", () => {
     const api = apiDouble();
     const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
       readSessionCsrf: async () => sessionCsrf,
+      refreshSessionCsrf: async () => sessionCsrf,
       readBrowserCsrf: async () => "csrf-browser",
       rememberSessionCsrf: (token) => { sessionCsrf = token; },
       getAssertion: vi.fn(async () => CREDENTIAL),
@@ -167,5 +181,90 @@ describe("InlineStepUpCoordinator", () => {
     expect(api.completeAuthentication).toHaveBeenCalledOnce();
     expect(first).toHaveBeenCalledTimes(2);
     expect(second).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes stale per-tab CSRF after another tab rotates the shared cookie", async () => {
+    const api = apiDouble();
+    const operation = vi.fn(async (controls: HighRiskRequestControls) => {
+      if (operation.mock.calls.length === 1) throw csrfValidationFailed();
+      return controls.csrfToken;
+    });
+    const refreshSessionCsrf = vi.fn(async () => "csrf-from-current-cookie");
+    const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
+      readSessionCsrf: async () => "csrf-from-old-cookie",
+      refreshSessionCsrf,
+      readBrowserCsrf: async () => "csrf-browser",
+      rememberSessionCsrf: vi.fn(),
+      getAssertion: vi.fn(async () => CREDENTIAL),
+    });
+
+    await expect(coordinator.execute(operation, {
+      signal: new AbortController().signal,
+    })).resolves.toBe("csrf-from-current-cookie");
+
+    expect(refreshSessionCsrf).toHaveBeenCalledOnce();
+    expect(api.startAuthentication).not.toHaveBeenCalled();
+    const [firstControls] = operation.mock.calls[0] ?? [];
+    const [retryControls] = operation.mock.calls[1] ?? [];
+    expect(retryControls?.idempotencyKey).not.toBe(firstControls?.idempotencyKey);
+  });
+
+  it("restarts a ceremony when an old route aborts the shared attempt", async () => {
+    let sessionCsrf = "csrf-old";
+    const firstRoute = new AbortController();
+    const secondRoute = new AbortController();
+    const thirdRoute = new AbortController();
+    const abandonedWaiterRoute = new AbortController();
+    const api = apiDouble();
+    const getAssertion = vi.fn(async (_options: PublicKeyCredentialRequestOptionsJson, signal?: AbortSignal) => {
+      if (getAssertion.mock.calls.length > 1) return CREDENTIAL;
+      return new Promise<PublicKeyCredentialJson>((_resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new DOMException("aborted", "AbortError"));
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    });
+    const coordinator = new InlineStepUpCoordinator(api as unknown as IdentityApiClient, {
+      readSessionCsrf: async () => sessionCsrf,
+      refreshSessionCsrf: async () => sessionCsrf,
+      readBrowserCsrf: async () => "csrf-browser",
+      rememberSessionCsrf: (token) => { sessionCsrf = token; },
+      getAssertion,
+    });
+    const first = vi.fn(async (controls: HighRiskRequestControls) => {
+      if (first.mock.calls.length === 1) throw reauthenticationRequired();
+      return controls.csrfToken;
+    });
+    const second = vi.fn(async (controls: HighRiskRequestControls) => {
+      if (second.mock.calls.length === 1) throw reauthenticationRequired();
+      return controls.csrfToken;
+    });
+    const third = vi.fn(async (controls: HighRiskRequestControls) => {
+      if (third.mock.calls.length === 1) throw reauthenticationRequired();
+      return controls.csrfToken;
+    });
+    const abandonedWaiter = vi.fn(async (controls: HighRiskRequestControls) => {
+      if (abandonedWaiter.mock.calls.length === 1) throw reauthenticationRequired();
+      return controls.csrfToken;
+    });
+
+    const abandoned = coordinator.execute(first, { signal: firstRoute.signal }).catch((error: unknown) => error);
+    const active = coordinator.execute(second, { signal: secondRoute.signal });
+    const alsoActive = coordinator.execute(third, { signal: thirdRoute.signal });
+    const abandonedWhileWaiting = coordinator.execute(abandonedWaiter, { signal: abandonedWaiterRoute.signal })
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(getAssertion).toHaveBeenCalledOnce());
+    abandonedWaiterRoute.abort();
+    await expect(abandonedWhileWaiting).resolves.toMatchObject({ name: "AbortError" });
+    firstRoute.abort();
+
+    await expect(abandoned).resolves.toMatchObject({ name: "AbortError" });
+    await expect(active).resolves.toBe("csrf-replacement");
+    await expect(alsoActive).resolves.toBe("csrf-replacement");
+    expect(api.startAuthentication).toHaveBeenCalledTimes(2);
+    expect(getAssertion).toHaveBeenCalledTimes(2);
+    expect(abandonedWaiter).toHaveBeenCalledOnce();
   });
 });

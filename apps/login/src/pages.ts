@@ -216,9 +216,9 @@ async function renderAccount(main: HTMLElement, api: IdentityApiClient, signal: 
     event.preventDefault();
     setButtonBusy(save, true);
     try {
-      const updated = await api.updatePrincipal({
+      const updated = await executeHighRisk(api, signal, message, (controls) => api.updatePrincipal({
         display_name: String(new FormData(form).get("display_name") ?? "").trim(),
-      }, { csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal });
+      }, controls));
       replace(message, statePanel("success", "资料已更新", `显示名称现在是“${updated.profile.display_name}”。`));
     } catch (error) {
       replace(message, statePanel("error", "保存失败", errorMessage(error)));
@@ -254,6 +254,7 @@ async function renderPasskeys(main: HTMLElement, api: IdentityApiClient, signal:
     setButtonBusy(add, true, "等待设备…");
     try {
       const label = String(new FormData(addForm).get("label") ?? "").trim();
+      await requireBrowserCsrf(api, signal);
       const transaction = await executeHighRisk(api, signal, addMessage, (controls) =>
         api.startAuthenticatorRegistration(label, controls));
       const credential = await createPasskey(transaction.public_key, signal);
@@ -288,9 +289,8 @@ function authenticatorCard(item: Authenticator, api: IdentityApiClient, signal: 
     event.preventDefault();
     setButtonBusy(rename, true);
     try {
-      const updated = await api.renameAuthenticator(item.authenticator_id, String(new FormData(renameForm).get("label") ?? "").trim(), {
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      const updated = await executeHighRisk(api, signal, message, (controls) =>
+        api.renameAuthenticator(item.authenticator_id, String(new FormData(renameForm).get("label") ?? "").trim(), controls));
       await renderPasskeys(main, api, signal, statePanel("success", "标签已更新", `Passkey 现在显示为“${updated.label}”。`));
     } catch (error) {
       replace(message, statePanel("error", "重命名失败", errorMessage(error)));
@@ -303,10 +303,25 @@ function authenticatorCard(item: Authenticator, api: IdentityApiClient, signal: 
     setButtonBusy(revoke, true, "正在撤销…");
     try {
       await executeHighRisk(api, signal, message, (controls) => api.revokeAuthenticator(item.authenticator_id, controls));
-      await renderPasskeys(main, api, signal, statePanel("success", "Passkey 已撤销", `“${item.label}”已从可用认证器列表移除。`));
     } catch (error) {
       replace(message, statePanel("error", "撤销失败", errorMessage(error)));
       setButtonBusy(revoke, false);
+      return;
+    }
+    try {
+      await renderPasskeys(main, api, signal, statePanel("success", "Passkey 已撤销", `“${item.label}”已从可用认证器列表移除。`));
+    } catch (error) {
+      if (signal.aborted) return;
+      const sessionEnded = error instanceof ApiError && error.status === 401;
+      replace(main,
+        pageHeading("AUTHENTICATOR REVOKED", "Passkey 已撤销", sessionEnded
+          ? "该 Passkey 建立的当前会话也已结束。"
+          : "服务端已完成撤销，但暂时无法刷新列表。"),
+        statePanel("success", `“${item.label}”已不再可用`, sessionEnded
+          ? "请使用剩余 Passkey 重新登录。"
+          : "请重新读取最新 Passkey 列表。",
+        el("a", { className: "button button--primary", attrs: { href: sessionEnded ? "/login" : "/account/passkeys" } }, sessionEnded ? "重新登录" : "重新读取")),
+      );
     }
   });
   return el("article", { className: "card entity-card" },
@@ -397,7 +412,7 @@ async function renderSessions(main: HTMLElement, api: IdentityApiClient, signal:
     if (!confirm("确认撤销全部 Identity Sessions？当前页面也会退出登录。")) return;
     setButtonBusy(revokeAll, true, "正在全部撤销…");
     try {
-      await api.revokeAllSessions({ csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal });
+      await executeHighRisk(api, signal, allMessage, (controls) => api.revokeAllSessions(controls));
       replace(main,
         pageHeading("SESSIONS", "全部会话已撤销", "服务端不再接受这些 Identity Session。"),
         statePanel("success", "撤销已生效", "包括当前设备在内的会话已失效。", el("a", { className: "button button--primary", attrs: { href: "/login" } }, "重新登录")),
@@ -426,9 +441,7 @@ function sessionCard(session: IdentitySession, api: IdentityApiClient, signal: A
     if (!confirm(`确认撤销这个 ${session.authentication_method} 会话？`)) return;
     setButtonBusy(revoke, true, "正在撤销…");
     try {
-      await api.revokeSession(session.session_id, {
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      await executeHighRisk(api, signal, message, (controls) => api.revokeSession(session.session_id, controls));
       if (session.is_current) {
         navigate("/login");
         return;
@@ -549,6 +562,12 @@ async function requireCsrf(api: IdentityApiClient, signal: AbortSignal): Promise
   return sessionCsrfToken;
 }
 
+/** 无条件从共享 session cookie 重算本标签页 CSRF。Unconditionally recomputes this tab's CSRF from the shared session cookie. */
+async function refreshCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> {
+  sessionCsrfToken = undefined;
+  return requireCsrf(api, signal);
+}
+
 /** 获取匿名浏览器绑定的 CSRF token，并只保存在当前 Realm。Gets an anonymous browser CSRF token and retains it only in this realm. */
 async function requireBrowserCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> {
   const context = await api.getBrowserContext(signal);
@@ -581,6 +600,7 @@ function stepUpCoordinator(api: IdentityApiClient): InlineStepUpCoordinator {
   if (existing) return existing;
   const created = new InlineStepUpCoordinator(api, {
     readSessionCsrf: (signal) => requireCsrf(api, signal),
+    refreshSessionCsrf: (signal) => refreshCsrf(api, signal),
     readBrowserCsrf: (signal) => requireBrowserCsrf(api, signal),
     rememberSessionCsrf: rememberCsrf,
   });
