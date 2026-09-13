@@ -5,6 +5,7 @@ set -euo pipefail
 readonly IDENTITY_CONFIG="wrangler.identity.jsonc"
 readonly LOGIN_CONFIG="wrangler.login.jsonc"
 readonly RELEASE_MESSAGE="${RELEASE_MESSAGE:-release ${GITHUB_SHA:-local}}"
+readonly RELEASE_TAG="${GITHUB_SHA:-manual-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
@@ -29,6 +30,20 @@ verify_runtime_secrets() {
   done
 }
 
+deploy_version() {
+  local config="$1"
+
+  # Code promotion must not rewrite DNS/routes. Trigger provisioning is a separate
+  # operator operation; this also keeps the routine CI token least-privileged.
+  # 代码提升不应重写 DNS/路由。触发器由运维单独配置，也让日常 CI 令牌保持最小权限。
+  npx --no-install wrangler versions upload --strict \
+    --tag "$RELEASE_TAG" --message "$RELEASE_MESSAGE" \
+    --env production --config "$config"
+  npx --no-install wrangler versions deploy \
+    --version-tag "$RELEASE_TAG" --percentage 100 --yes \
+    --message "$RELEASE_MESSAGE" --env production --config "$config"
+}
+
 # A build that can start is not necessarily configured to authenticate users. / 能启动的构建不等于已配置好认证。
 verify_runtime_secrets
 
@@ -38,10 +53,9 @@ npx --no-install wrangler d1 migrations list moesegfault-identity-production \
 npx --no-install wrangler d1 migrations apply moesegfault-identity-production \
   --remote --env production --config "$IDENTITY_CONFIG"
 
-# Strict deployment rejects configuration drift instead of silently accepting it. / 严格发布拒绝静默配置漂移。
-npx --no-install wrangler deploy --strict --env production --config "$IDENTITY_CONFIG" \
-  --message "$RELEASE_MESSAGE"
-npx --no-install wrangler deploy --strict --env production --config "$LOGIN_CONFIG" \
-  --message "$RELEASE_MESSAGE"
+# Upload and promote immutable versions without touching already-provisioned custom
+# domains. / 上传并提升不可变版本，不触碰已配置的自定义域名。
+deploy_version "$IDENTITY_CONFIG"
+deploy_version "$LOGIN_CONFIG"
 
 scripts/smoke.sh
