@@ -16,7 +16,7 @@ use worker::{
     RouteContext, wasm_bindgen::JsValue,
 };
 
-use crate::{guard, problem};
+use crate::{guard, problem, repository};
 
 const IDEMPOTENCY_TTL_SECONDS: i64 = 24 * 60 * 60;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -76,6 +76,21 @@ impl Operation {
             Self::RevokeAllSelfSessions => "revokeAllSelfSessions",
             Self::RevokeSelfSession => "revokeSelfSession",
             Self::RotateSelfRecoveryCodes => "rotateSelfRecoveryCodes",
+        }
+    }
+
+    const fn content_type(self) -> Option<&'static str> {
+        match self {
+            Self::UpdateSelf | Self::UpdateSelfAuthenticator => {
+                Some("application/merge-patch+json")
+            }
+            Self::ScheduleSelfDeletion
+            | Self::DeleteSelfIdentifier
+            | Self::RevokeSelfAuthenticator
+            | Self::RevokeSelfBinding
+            | Self::RevokeAllSelfSessions
+            | Self::RevokeSelfSession => None,
+            _ => Some("application/json"),
         }
     }
 }
@@ -161,6 +176,12 @@ where
             );
         }
     };
+
+    match validate_preclaim_boundary(&request, &context, operation, caller, &correlation).await? {
+        Boundary::Ready => {}
+        Boundary::Response(response) => return Ok(response),
+        Boundary::DeferToHandler => return handler(request, context).await,
+    }
 
     let digest = match digest_request(&request).await {
         Ok(digest) => digest,
@@ -257,6 +278,169 @@ where
             Err(error)
         }
     }
+}
+
+enum Boundary {
+    Ready,
+    Response(Response),
+    DeferToHandler,
+}
+
+async fn validate_preclaim_boundary(
+    request: &Request,
+    context: &RouteContext<()>,
+    operation: Operation,
+    caller: Caller,
+    correlation: &str,
+) -> worker::Result<Boundary> {
+    if guard::header(request.headers(), "origin").as_deref()
+        != Some(guard::login_origin(&context.env).as_str())
+    {
+        return cors_problem(
+            &context.env,
+            "invalid_request",
+            "Origin is not allowed",
+            403,
+            correlation,
+        )
+        .map(Boundary::Response);
+    }
+    if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
+        || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
+    {
+        return cors_problem(
+            &context.env,
+            "invalid_request",
+            "Invalid browser request context",
+            403,
+            correlation,
+        )
+        .map(Boundary::Response);
+    }
+    if let Some(expected) = operation.content_type() {
+        let actual = guard::header(request.headers(), "content-type").unwrap_or_default();
+        if !actual
+            .split(';')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+        {
+            return cors_problem(
+                &context.env,
+                "invalid_request",
+                "JSON content type is required",
+                415,
+                correlation,
+            )
+            .map(Boundary::Response);
+        }
+    }
+    let Some(_) = guard::header(request.headers(), "x-moesegfault-csrf") else {
+        return cors_problem(
+            &context.env,
+            "invalid_request",
+            "CSRF validation failed",
+            403,
+            correlation,
+        )
+        .map(Boundary::Response);
+    };
+
+    match caller {
+        Caller::Session => validate_session_preclaim(request, &context.env, correlation),
+        Caller::Browser => {
+            validate_browser_preclaim(request, context, operation, correlation).await
+        }
+    }
+}
+
+fn validate_session_preclaim(
+    request: &Request,
+    env: &Env,
+    correlation: &str,
+) -> worker::Result<Boundary> {
+    let Some(wire) = guard::cookie(request, guard::SESSION_COOKIE) else {
+        return Ok(Boundary::DeferToHandler);
+    };
+    let pepper = required_secret(env, "CSRF_PEPPER")?;
+    if guard::validate_session_csrf(request, &wire, pepper.as_bytes()) {
+        return Ok(Boundary::Ready);
+    }
+    cors_problem(
+        env,
+        "invalid_request",
+        "CSRF validation failed",
+        403,
+        correlation,
+    )
+    .map(Boundary::Response)
+}
+
+async fn validate_browser_preclaim(
+    request: &Request,
+    context: &RouteContext<()>,
+    operation: Operation,
+    correlation: &str,
+) -> worker::Result<Boundary> {
+    let pepper = required_secret(&context.env, "TRANSACTION_PEPPER")?;
+    let valid = match operation {
+        Operation::CompleteRegistrationTransaction
+        | Operation::CompleteAuthenticationTransaction => {
+            let Some(id) = context.param("id") else {
+                return Ok(Boundary::DeferToHandler);
+            };
+            let Some(transaction) =
+                repository::webauthn_transaction(&context.d1("DB")?, id).await?
+            else {
+                return Ok(Boundary::DeferToHandler);
+            };
+            if matches!(
+                transaction.kind.as_str(),
+                "authenticator_addition" | "step_up"
+            ) && guard::cookie(request, guard::SESSION_COOKIE).is_none()
+            {
+                return Ok(Boundary::DeferToHandler);
+            }
+            guard::validate_transaction_secrets(
+                request,
+                &transaction.csrf_digest,
+                &transaction.browser_binding_digest,
+                pepper.as_bytes(),
+            )
+            .is_ok()
+        }
+        Operation::CompleteRecoveryTransaction => {
+            let Some(id) = context.param("id") else {
+                return Ok(Boundary::DeferToHandler);
+            };
+            let Some(transaction) =
+                repository::recovery_transaction(&context.d1("DB")?, id).await?
+            else {
+                return Ok(Boundary::DeferToHandler);
+            };
+            guard::validate_transaction_secrets(
+                request,
+                &transaction.csrf_digest,
+                &transaction.browser_binding_digest,
+                pepper.as_bytes(),
+            )
+            .is_ok()
+        }
+        _ => guard::validate_browser_csrf(
+            request,
+            required_secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+        ),
+    };
+    if valid {
+        return Ok(Boundary::Ready);
+    }
+    cors_problem(
+        &context.env,
+        "invalid_request",
+        "CSRF validation failed",
+        403,
+        correlation,
+    )
+    .map(Boundary::Response)
 }
 
 /// Deletes a bounded page of expired records; normal requests also reclaim a matching expired key.
@@ -385,11 +569,9 @@ fn caller_fingerprint(
     let Some(wire) = guard::cookie(request, cookie_name) else {
         return Ok(None);
     };
-    let pepper = env.secret(pepper_name).map_err(|_| {
-        Error::BindingError(format!("missing required secret binding {pepper_name}"))
-    })?;
+    let pepper = required_secret(env, pepper_name)?;
     let material = format!("idempotency/{prefix}/{wire}");
-    let digest = SecretDigest::hmac(pepper.to_string().as_bytes(), material.as_bytes());
+    let digest = SecretDigest::hmac(pepper.as_bytes(), material.as_bytes());
     Ok(Some(format!("{prefix}:{}", digest.to_base64url())))
 }
 
@@ -703,6 +885,12 @@ fn correlation_id() -> String {
     TransactionId::new_v7(worker::Date::now().as_millis()).to_string()
 }
 
+fn required_secret(env: &Env, name: &str) -> worker::Result<String> {
+    env.secret(name)
+        .map(|secret| secret.to_string())
+        .map_err(|_| Error::BindingError(format!("missing required secret binding {name}")))
+}
+
 fn cors_problem(
     env: &Env,
     code: &'static str,
@@ -778,6 +966,15 @@ mod tests {
             assert!(!operation.as_str().is_empty());
             assert!(operation.as_str().len() <= 128);
         }
+        assert_eq!(
+            Operation::UpdateSelf.content_type(),
+            Some("application/merge-patch+json")
+        );
+        assert_eq!(Operation::RevokeSelfSession.content_type(), None);
+        assert_eq!(
+            Operation::CreateRecoveryTransaction.content_type(),
+            Some("application/json")
+        );
     }
 
     #[test]
