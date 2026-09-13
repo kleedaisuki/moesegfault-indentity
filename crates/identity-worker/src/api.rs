@@ -516,6 +516,13 @@ async fn finish_registration_inner(
     );
     let audit_id = AuditEventId::new_v7(worker::Date::now().as_millis()).to_string();
     let now = now_seconds();
+    let recovery_pepper = secret(&context.env, "RECOVERY_CODE_PEPPER")?;
+    let (recovery_codes, recovery_rows) = new_recovery_codes(
+        recovery_pepper.as_bytes(),
+        8,
+        worker::Date::now().as_millis(),
+    );
+    let recovery_code_set_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     repository::commit_registration(
         &db,
         &tx,
@@ -535,6 +542,8 @@ async fn finish_registration_inner(
         &stored.authenticator_label,
         &session_id,
         &session_digest.0,
+        &recovery_code_set_id,
+        &recovery_rows,
         &audit_id,
         &correlation,
         now,
@@ -559,6 +568,7 @@ async fn finish_registration_inner(
                 "transports":credential.transports, "backup_eligible":false, "backup_state":false,
                 "is_current":true, "created_at":created_at, "last_used_at":null, "revoked_at":null
             },
+            "recovery_codes":recovery_codes,
             "csrf_token":csrf_token, "csrf_expires_at":date_time(now + 43_200)
         }),
         201,

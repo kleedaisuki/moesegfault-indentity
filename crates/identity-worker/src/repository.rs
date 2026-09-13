@@ -330,6 +330,8 @@ pub async fn commit_registration(
     label: &str,
     session_id: &str,
     session_digest: &[u8],
+    code_set_id: &str,
+    codes: &[NewRecoveryCode],
     audit_id: &str,
     correlation: &str,
     now: i64,
@@ -355,6 +357,16 @@ pub async fn commit_registration(
     if let Some(capability) = tx.registration_capability_id.as_deref() {
         statements.insert(2, db.prepare("INSERT INTO registration_capability_uses(capability_id,webauthn_transaction_id,consumed_by_principal_id,request_digest,used_at) VALUES(?1,?2,?3,?4,?5)")
             .bind(&[text(capability),text(&tx.transaction_id),text(principal_id),blob(request_digest),integer(now)])?);
+    }
+    statements.push(
+        db.prepare("INSERT INTO recovery_code_sets(recovery_code_set_id,principal_id,created_at) VALUES(?1,?2,?3)")
+            .bind(&[text(code_set_id), text(principal_id), integer(now)])?,
+    );
+    for code in codes {
+        statements.push(
+            db.prepare("INSERT INTO recovery_codes(recovery_code_id,recovery_code_set_id,public_id,secret_digest,created_at) VALUES(?1,?2,?3,?4,?5)")
+                .bind(&[text(&code.recovery_code_id),text(code_set_id),text(&code.public_id),blob(&code.secret_digest),integer(now)])?,
+        );
     }
     db.batch(statements).await?;
     Ok(())
