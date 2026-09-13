@@ -6,8 +6,11 @@
 mod api;
 mod ceremony_state;
 mod guard;
+mod oauth;
+pub(crate) mod oauth_repository;
 mod problem;
 mod repository;
+mod webcrypto;
 
 use worker::*;
 
@@ -17,8 +20,8 @@ use worker::*;
 pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
     Router::new()
         .get_async("/healthz", api::health)
-        .get_async("/.well-known/openid-configuration", api::discovery)
-        .get_async("/.well-known/jwks.json", api::jwks)
+        .get_async("/.well-known/openid-configuration", oauth::discovery)
+        .get_async("/.well-known/jwks.json", oauth::jwks)
         .get_async("/v1/meta/capabilities", api::capabilities)
         .get_async("/v1/browser-context", api::browser_context)
         .options_async("/*path", api::preflight)
@@ -47,12 +50,16 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
             "/v1/recovery-transactions/:id/completion",
             api::finish_recovery,
         )
-        .post_async("/v1/oauth/tokens", api::unavailable)
-        .get_async("/v1/oauth/authorizations", api::unavailable)
-        .post_async("/v1/oauth/revocations", api::unavailable)
-        .get_async("/v1/oidc/user-claims", api::unavailable)
-        .get_async("/v1/oidc/logout-requests", api::unavailable)
-        .post_async("/v1/oidc/logout-requests", api::unavailable)
+        .post_async("/v1/oauth/tokens", oauth::token)
+        .get_async("/v1/oauth/authorizations", oauth::authorize)
+        .get_async(
+            "/v1/oauth/authorization-transactions/:id/resume",
+            oauth::resume,
+        )
+        .post_async("/v1/oauth/revocations", oauth::revoke)
+        .get_async("/v1/oidc/user-claims", oauth::userinfo)
+        .get_async("/v1/oidc/logout-requests", oauth::logout_get)
+        .post_async("/v1/oidc/logout-requests", oauth::logout_post)
         .run(request, env)
         .await
 }
