@@ -44,6 +44,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test / 单元测试
         run: cargo test --workspace --all-features --locked
+      - name: Verify vendored WebAuthn patch / 验证 vendored WebAuthn 补丁
+        run: |
+          cargo fmt --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml -- --check
+          cargo test --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --locked --lib --tests
+          cargo check --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --locked --target wasm32-unknown-unknown
       - name: Check WebAssembly target / 检查 WebAssembly 目标
         run: cargo check --package identity-worker --target wasm32-unknown-unknown --locked
       - name: Check dependency policy / 检查依赖策略
