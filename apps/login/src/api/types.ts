@@ -96,6 +96,14 @@ export interface RegistrationResult {
   csrf_expires_at: string;
 }
 
+/** 额外 Passkey 登记的非秘密结果。Non-secret completion result for an additional passkey enrollment. */
+export interface AuthenticatorRegistrationResult {
+  account: Account;
+  authenticator: Authenticator;
+  csrf_token: string;
+  csrf_expires_at: string;
+}
+
 /** 创建无用户名认证事务时的输入。Input used to begin username-less authentication. */
 export interface AuthenticationStart {
   purpose: "login" | "step_up";

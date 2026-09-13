@@ -3,6 +3,7 @@ import type {
   AuthenticationStart,
   AccountSessionEnvelope,
   Authenticator,
+  AuthenticatorRegistrationResult,
   BindingProvider,
   BindingTransactionResult,
   BrowserContext,
@@ -149,15 +150,22 @@ export class IdentityApiClient {
     });
   }
 
-  /** 创建增加 Passkey 的事务；后端负责近期认证判断。Starts an add-passkey transaction; recent-auth policy is server-side. */
-  public startAuthenticatorRegistration(authenticatorLabel: string, csrfToken: string, signal?: AbortSignal) {
+  /** 创建增加 Passkey 的事务；调用者为每次尝试提供新幂等键。Starts an add-passkey transaction with a caller-owned attempt key. */
+  public startAuthenticatorRegistration(authenticatorLabel: string, controls: RequestControls) {
     return this.#request<CeremonyTransaction<PublicKeyCredentialCreationOptionsJson>>(
       "/v1/principals/self/authenticators/registration-transactions",
-      { method: "POST", body: { authenticator_label: authenticatorLabel }, csrfToken, idempotencyKey: createIdempotencyKey(), signal },
+      { method: "POST", body: { authenticator_label: authenticatorLabel }, ...controls },
     );
   }
 
-  /** 完成增加 Passkey。Completes an add-passkey transaction. */
+  /** 完成增加 Passkey，不把首次注册的恢复码语义泄露给调用处。Completes an add-passkey transaction without initial-registration secret semantics. */
+  public completeAuthenticatorRegistration(transactionId: string, credential: PublicKeyCredentialJson, controls: RequestControls) {
+    return this.#request<AuthenticatorRegistrationResult>(
+      `/v1/registration-transactions/${encodeURIComponent(transactionId)}/completion`,
+      { method: "POST", body: { credential }, ...controls },
+    );
+  }
+
   /** 重命名单个 Passkey。Renames a passkey. */
   public renameAuthenticator(authenticatorId: string, label: string, controls: RequestControls) {
     return this.#request<Authenticator>(

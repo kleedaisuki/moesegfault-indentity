@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, IdentityApiClient, type FetchLike } from "./client";
+import type { PublicKeyCredentialJson } from "./types";
 
 describe("IdentityApiClient", () => {
   it("sends credentials, JSON, CSRF, and idempotency headers", async () => {
@@ -57,5 +58,40 @@ describe("IdentityApiClient", () => {
       .toThrow(/origin/u);
     expect(() => new IdentityApiClient("javascript:alert(1)"))
       .toThrow();
+  });
+
+  it("uses the shared registration completion route for an additional passkey", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({
+      account: {},
+      authenticator: { label: "Security key" },
+      csrf_token: "csrf-current",
+      csrf_expires_at: "2026-09-14T00:00:00Z",
+    }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    const credential = {
+      id: "credential",
+      raw_id: "credential",
+      type: "public-key",
+      authenticator_attachment: "platform",
+      client_extension_results: {},
+      response: {
+        client_data_json: "client-data",
+        attestation_object: "attestation",
+        transports: ["internal"],
+      },
+    } satisfies PublicKeyCredentialJson;
+
+    await client.completeAuthenticatorRegistration("tx/addition", credential, {
+      csrfToken: "csrf-transaction",
+      idempotencyKey: "completion-attempt",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://identity.moesegfault.dev/v1/registration-transactions/tx%2Faddition/completion");
+    expect(new Headers(init?.headers).get("idempotency-key")).toBe("completion-attempt");
+    expect(JSON.parse(String(init?.body))).toEqual({ credential });
   });
 });

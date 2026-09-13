@@ -10,6 +10,8 @@ import type {
 } from "./api/types";
 import type { AppRoute } from "./router";
 import { navigate } from "./router";
+import { InlineStepUpCoordinator } from "./step-up";
+import type { HighRiskRequestControls } from "./step-up";
 import { currentTransaction } from "./transaction";
 import { createPasskey, getPasskey, isWebAuthnAvailable } from "./webauthn/ceremony";
 import { el, errorMessage, field, formatTime, replace, setButtonBusy, statePanel } from "./ui/dom";
@@ -17,6 +19,9 @@ import { pageHeading } from "./ui/shell";
 
 /** 仅保存在当前页面 Realm 的 CSRF 能力。CSRF capability held only in the current page realm. */
 let sessionCsrfToken: string | undefined;
+
+/** 每个 API 客户端只共享一个页面内再认证协调器。One in-page reauthentication coordinator is shared per API client. */
+const stepUpCoordinators = new WeakMap<IdentityApiClient, InlineStepUpCoordinator>();
 
 /** 根据静态路由呈现页面；AbortSignal 防止旧页面回写 DOM。Renders a static route; AbortSignal prevents stale-page DOM writes. */
 export async function renderPage(route: AppRoute, main: HTMLElement, api: IdentityApiClient, signal: AbortSignal): Promise<void> {
@@ -249,13 +254,15 @@ async function renderPasskeys(main: HTMLElement, api: IdentityApiClient, signal:
     setButtonBusy(add, true, "等待设备…");
     try {
       const label = String(new FormData(addForm).get("label") ?? "").trim();
-      const transaction = await api.startAuthenticatorRegistration(label, await requireCsrf(api, signal), signal);
+      const transaction = await executeHighRisk(api, signal, addMessage, (controls) =>
+        api.startAuthenticatorRegistration(label, controls));
       const credential = await createPasskey(transaction.public_key, signal);
-      const completion = await api.completeRegistration(transaction.transaction_id, credential, {
+      const completion = await api.completeAuthenticatorRegistration(transaction.transaction_id, credential, {
         csrfToken: transaction.csrf_token,
         idempotencyKey: createIdempotencyKey(),
         signal,
       });
+      rememberCsrf(completion.csrf_token);
       await renderPasskeys(main, api, signal, statePanel("success", "Passkey 已添加", `“${completion.authenticator.label}”现在可以用于登录。`));
     } catch (error) {
       replace(addMessage, statePanel("error", "添加失败", errorMessage(error)));
@@ -295,9 +302,7 @@ function authenticatorCard(item: Authenticator, api: IdentityApiClient, signal: 
     if (!confirm(`确认撤销“${item.label}”？由它建立的相关会话也可能被撤销。`)) return;
     setButtonBusy(revoke, true, "正在撤销…");
     try {
-      await api.revokeAuthenticator(item.authenticator_id, {
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      await executeHighRisk(api, signal, message, (controls) => api.revokeAuthenticator(item.authenticator_id, controls));
       await renderPasskeys(main, api, signal, statePanel("success", "Passkey 已撤销", `“${item.label}”已从可用认证器列表移除。`));
     } catch (error) {
       replace(message, statePanel("error", "撤销失败", errorMessage(error)));
@@ -465,9 +470,7 @@ async function renderRecoveryCodes(main: HTMLElement, api: IdentityApiClient, si
     if (!confirm("轮换后，所有旧恢复代码都会失效。确认继续？")) return;
     setButtonBusy(rotate, true, "正在轮换…");
     try {
-      const rotated = await api.rotateRecoveryCodes({
-        csrfToken: await requireCsrf(api, signal), idempotencyKey: createIdempotencyKey(), signal,
-      });
+      const rotated = await executeHighRisk(api, signal, message, (controls) => api.rotateRecoveryCodes(controls));
       await renderRecoveryCodes(main, api, signal, rotated);
     } catch (error) {
       replace(message, statePanel("error", "轮换失败", errorMessage(error)));
@@ -554,6 +557,39 @@ async function requireCsrf(api: IdentityApiClient, signal: AbortSignal): Promise
 async function requireBrowserCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> {
   const context = await api.getBrowserContext(signal);
   return context.csrf_token;
+}
+
+/**
+ * 在原位告知用户并调度可重用的 Passkey 再认证。
+ * Notifies the user in place and coordinates reusable passkey step-up.
+ */
+function executeHighRisk<T>(
+  api: IdentityApiClient,
+  signal: AbortSignal,
+  message: HTMLElement,
+  operation: (controls: HighRiskRequestControls) => Promise<T>,
+): Promise<T> {
+  return stepUpCoordinator(api).execute(operation, {
+    signal,
+    onStepUpRequired: () => replace(message, statePanel(
+      "loading",
+      "需要再次验证 Passkey",
+      "此操作会改变账号恢复或登录能力。请按浏览器提示确认是你本人。",
+    )),
+  });
+}
+
+/** 延迟创建协调器，且不持久化任何令牌或 assertion。Lazily creates a coordinator without persisting tokens or assertions. */
+function stepUpCoordinator(api: IdentityApiClient): InlineStepUpCoordinator {
+  const existing = stepUpCoordinators.get(api);
+  if (existing) return existing;
+  const created = new InlineStepUpCoordinator(api, {
+    readSessionCsrf: (signal) => requireCsrf(api, signal),
+    readBrowserCsrf: (signal) => requireBrowserCsrf(api, signal),
+    rememberSessionCsrf: rememberCsrf,
+  });
+  stepUpCoordinators.set(api, created);
+  return created;
 }
 
 /** 只允许 Identity 返回的 HTTP(S) 完整导航，拒绝脚本 scheme。Allows only an absolute HTTP(S) navigation returned by Identity. */
