@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::*;
 
-use crate::{ceremony_state, guard, problem, repository};
+use crate::{ceremony_state, guard, oauth_repository, problem, repository};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
@@ -51,52 +51,6 @@ pub async fn health(_request: Request, context: RouteContext<()>) -> Result<Resp
         },
         &correlation_id(),
     )
-}
-
-pub async fn discovery(_request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    if !context
-        .env
-        .var("OAUTH_ENABLED")
-        .is_ok_and(|v| v.to_string() == "true")
-    {
-        return problem::response(
-            "service_unavailable",
-            "OIDC issuance is not enabled in this release",
-            503,
-            &correlation,
-        );
-    }
-    let issuer = issuer(&context.env);
-    public_json(
-        &serde_json::json!({
-            "issuer": issuer,
-            "authorization_endpoint": format!("{issuer}/v1/oauth/authorizations"),
-            "token_endpoint": format!("{issuer}/v1/oauth/tokens"),
-            "revocation_endpoint": format!("{issuer}/v1/oauth/revocations"),
-            "userinfo_endpoint": format!("{issuer}/v1/oidc/user-claims"),
-            "end_session_endpoint": format!("{issuer}/v1/oidc/logout-requests"),
-            "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256"],
-            "subject_types_supported": ["pairwise"],
-            "id_token_signing_alg_values_supported": ["RS256"],
-            "scopes_supported": ["openid", "profile", "offline_access"],
-        }),
-        &correlation,
-    )
-}
-
-pub async fn jwks(_request: Request, context: RouteContext<()>) -> Result<Response> {
-    let correlation = correlation_id();
-    let value = context
-        .env
-        .var("PUBLIC_JWKS")
-        .ok()
-        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v.to_string()).ok())
-        .unwrap_or_else(|| serde_json::json!({ "keys": [] }));
-    public_json(&value, &correlation)
 }
 
 pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Result<Response> {
@@ -632,8 +586,9 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
     )?;
     let now = now_seconds();
     let expires_at = now + 300;
+    let db = context.d1("DB")?;
     repository::insert_webauthn_transaction(
-        &context.d1("DB")?,
+        &db,
         &id,
         "authentication",
         None,
@@ -649,6 +604,16 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
         expires_at,
     )
     .await?;
+    if let Some(authorization_id) = input.authorization_transaction_id.as_deref()
+        && !oauth_repository::link_webauthn_authorization(&db, authorization_id, &id, now).await?
+    {
+        return problem::response(
+            "invalid_transaction",
+            "Authorization transaction is invalid",
+            400,
+            &correlation,
+        );
+    }
     json(
         &TransactionResponse {
             transaction_id: id,
@@ -666,6 +631,8 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
 #[derive(Deserialize)]
 struct StartAuthenticationRequest {
     purpose: String,
+    #[serde(default)]
+    authorization_transaction_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -853,6 +820,14 @@ pub async fn finish_authentication(
         now_seconds(),
     )
     .await?;
+    let authorization_id = oauth_repository::authenticate_linked_authorization(
+        &db,
+        &tx.transaction_id,
+        &row.principal_id,
+        &session_id,
+        now_seconds(),
+    )
+    .await?;
     let principal = repository::principal(&db, &row.principal_id)
         .await?
         .ok_or_else(|| Error::RustError("authenticated principal disappeared".into()))?;
@@ -861,12 +836,19 @@ pub async fn finish_authentication(
         secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
     );
     let now = now_seconds();
+    let mut response = serde_json::json!({
+        "account": {"principal_id":principal.principal_id,"lifecycle_state":principal.lifecycle_state,"profile":{"display_name":principal.display_name,"locale":principal.locale},"identifiers":[],"created_at":date_time(now),"updated_at":date_time(now)},
+        "session":{"session_id":session_id,"authentication_method":"passkey","authenticator_id":row.authenticator_id,"binding_id":null,"amr":["passkey"],"acr":"urn:moesegfault:acr:passkey-uv","is_current":true,"authenticated_at":date_time(now),"last_seen_at":date_time(now),"expires_at":date_time(now+2_592_000),"revoked_at":null},
+        "csrf_token":csrf_token,"csrf_expires_at":date_time(now+43_200)
+    });
+    if let Some(authorization_id) = authorization_id {
+        response["authorization_resume_uri"] = serde_json::json!(format!(
+            "{}/v1/oauth/authorization-transactions/{authorization_id}/resume",
+            issuer(&context.env)
+        ));
+    }
     json(
-        &serde_json::json!({
-            "account": {"principal_id":principal.principal_id,"lifecycle_state":principal.lifecycle_state,"profile":{"display_name":principal.display_name,"locale":principal.locale},"identifiers":[],"created_at":date_time(now),"updated_at":date_time(now)},
-            "session":{"session_id":session_id,"authentication_method":"passkey","authenticator_id":row.authenticator_id,"binding_id":null,"amr":["passkey"],"acr":"urn:moesegfault:acr:passkey-uv","is_current":true,"authenticated_at":date_time(now),"last_seen_at":date_time(now),"expires_at":date_time(now+2_592_000),"revoked_at":null},
-            "csrf_token":csrf_token,"csrf_expires_at":date_time(now+43_200)
-        }),
+        &response,
         200,
         &correlation,
         Some(&guard::login_origin(&context.env)),
