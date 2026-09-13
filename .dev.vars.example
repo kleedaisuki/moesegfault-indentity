@@ -2,5 +2,17 @@
 ENVIRONMENT=development
 ISSUER=http://localhost:8787
 LOGIN_ORIGIN=http://localhost:5173
+OAUTH_ENABLED=false
+OIDC_ACTIVE_KID=disabled
 PUBLIC_JWKS={"keys":[]}
 WEBAUTHN_RP_ID=localhost
+REGISTRATION_PEPPER=development-registration-pepper
+RECOVERY_CODE_PEPPER=development-recovery-code-pepper
+TRANSACTION_PEPPER=development-transaction-pepper
+TRANSACTION_STATE_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+SESSION_PEPPER=development-session-pepper
+CSRF_PEPPER=development-csrf-pepper
+# OAuth-only values are required when OAUTH_ENABLED=true. / 仅在 OAUTH_ENABLED=true 时需要下列值。
+AUTHORIZATION_CODE_PEPPER=development-authorization-code-pepper
+REFRESH_TOKEN_PEPPER=development-refresh-token-pepper
+PAIRWISE_SUBJECT_KEY=development-pairwise-subject-key

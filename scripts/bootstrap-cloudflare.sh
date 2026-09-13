@@ -48,6 +48,39 @@ ensure_bucket() {
   printf 'verified R2 bucket (bootstrap never enables public access) / R2 存储桶已验证（引导流程不开启公网访问）: %s\n' "$name"
 }
 
+verify_runtime_secrets() {
+  local secrets_json secret
+  local -a required=(
+    REGISTRATION_PEPPER
+    RECOVERY_CODE_PEPPER
+    TRANSACTION_PEPPER
+    TRANSACTION_STATE_KEY
+    SESSION_PEPPER
+    CSRF_PEPPER
+  )
+  if [[ "$(jq -r '.env.production.vars.OAUTH_ENABLED' wrangler.identity.jsonc)" == "true" ]]; then
+    required+=(
+      AUTHORIZATION_CODE_PEPPER
+      REFRESH_TOKEN_PEPPER
+      PAIRWISE_SUBJECT_KEY
+      OIDC_PRIVATE_KEY_PKCS8
+    )
+  fi
+
+  if ! secrets_json="$(npx --no-install wrangler secret list --env production --config wrangler.identity.jsonc 2>/dev/null)"; then
+    printf 'identity Worker is not deployed yet; set runtime secrets immediately after its initial deployment / Identity Worker 尚未发布，首次发布后必须立即设置运行时密钥\n'
+    return
+  fi
+
+  for secret in "${required[@]}"; do
+    jq -e --arg name "$secret" 'any(.[]; .name == $name)' <<<"$secrets_json" >/dev/null || {
+      printf 'missing production Worker secret / 缺少生产 Worker 密钥: %s\n' "$secret" >&2
+      exit 1
+    }
+  done
+  printf 'verified production Worker secret names / 生产 Worker 密钥名称已验证\n'
+}
+
 require_command jq
 require_command npx
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
@@ -57,6 +90,7 @@ ensure_d1 "$STAGING_DB" "$STAGING_DB_ID"
 ensure_d1 "$PRODUCTION_DB" "$PRODUCTION_DB_ID"
 ensure_bucket "$STAGING_BUCKET"
 ensure_bucket "$PRODUCTION_BUCKET"
+verify_runtime_secrets
 
 # Custom Domains are declarative in wrangler.*.jsonc; do not mutate DNS here. / 自定义域名由 Wrangler 声明，此处不改 DNS。
 printf 'bootstrap complete; Custom Domains will reconcile during deploy / 引导完成，自定义域名将在发布时调和\n'

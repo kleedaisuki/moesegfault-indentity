@@ -67,7 +67,7 @@ Production operations, token permissions, migration discipline, and rollback ste
 
 ## 密钥 / Secrets
 
-仓库仅存储非敏感资源 ID。GitHub 需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`；Worker 运行时的 `REGISTRATION_PEPPER`、`TRANSACTION_PEPPER`、`SESSION_PEPPER` 与 `CSRF_PEPPER` 必须分别用 `wrangler secret put` 配置，不得写入 JSONC、D1 或前端构建物。
+仓库仅存储非敏感资源 ID。GitHub 需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`；Worker 基础运行时需要 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER` 与 `CSRF_PEPPER`。开启 OAuth 还需 `AUTHORIZATION_CODE_PEPPER`、`REFRESH_TOKEN_PEPPER`、`PAIRWISE_SUBJECT_KEY` 和 `OIDC_PRIVATE_KEY_PKCS8`。它们必须分别用 `wrangler secret put` 配置，不得写入 JSONC、D1 或前端构建物。`TRANSACTION_STATE_KEY` 是无填充 Base64URL 编码的 32-byte key；`OIDC_PRIVATE_KEY_PKCS8` 是 PKCS#8 PEM 编码的 RSA 私钥。
 
 Only non-secret resource IDs are committed. Runtime secrets belong in Workers Secrets, never JSONC, D1, or frontend bundles.
 

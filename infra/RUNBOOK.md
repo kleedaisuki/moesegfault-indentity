@@ -15,6 +15,8 @@
 2. 工作流重复执行是幂等的：已存在资源只验证，不重建。
 3. 若 D1 同名资源的 UUID 与配置不同，工作流会停止；必须用 PR 审查资源替换，不会在 CI 中偷改仓库。
 4. GitHub Environment `cloudflare-deployment` 应限制为 `main`，并配置 required reviewer。
+5. 首次 Identity Worker 建立后，对 production 和 staging 分别设置 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER` 与 `CSRF_PEPPER`；重跑 bootstrap 会验证 production 密钥名称。`TRANSACTION_STATE_KEY` 必须是 32-byte 随机 key 的无填充 Base64URL 编码。
+6. OAuth 默认关闭。启用前必须设置 `AUTHORIZATION_CODE_PEPPER`、`REFRESH_TOKEN_PEPPER`、`PAIRWISE_SUBJECT_KEY`、`OIDC_PRIVATE_KEY_PKCS8`，把 `PUBLIC_JWKS` 替换为包含 `OIDC_ACTIVE_KID` 的 RSA/RS256 公钥，最后才将 `OAUTH_ENABLED` 设为 `true`。
 
 Cloudflare token 最小权限：Workers Scripts Write、Workers Routes Write、D1 Edit；仅 bootstrap 需 Workers R2 Storage Write。使用 Custom Domain 时不应为日常发布 token 增加普通 DNS Write。
 

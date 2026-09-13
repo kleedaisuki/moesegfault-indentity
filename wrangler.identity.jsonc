@@ -16,6 +16,8 @@
     "ENVIRONMENT": "staging",
     "ISSUER": "https://identity-staging.moesegfault.dev",
     "LOGIN_ORIGIN": "https://login-staging.moesegfault.dev",
+    "OAUTH_ENABLED": "false",
+    "OIDC_ACTIVE_KID": "disabled",
     "PUBLIC_JWKS": "{\"keys\":[]}",
     "WEBAUTHN_RP_ID": "login-staging.moesegfault.dev"
   },
@@ -55,6 +57,8 @@
         "ENVIRONMENT": "production",
         "ISSUER": "https://identity.moesegfault.dev",
         "LOGIN_ORIGIN": "https://login.moesegfault.dev",
+        "OAUTH_ENABLED": "false",
+        "OIDC_ACTIVE_KID": "disabled",
         "PUBLIC_JWKS": "{\"keys\":[]}",
         "WEBAUTHN_RP_ID": "login.moesegfault.dev"
       },
