@@ -317,7 +317,14 @@ CREATE TABLE binding_transactions (
     pkce_verifier_nonce BLOB NOT NULL CHECK (length(pkce_verifier_nonce) IN (12, 24)),
     pkce_key_revision INTEGER NOT NULL CHECK (pkce_key_revision > 0),
     csrf_digest BLOB NOT NULL CHECK (length(csrf_digest) = 32),
-    redirect_uri TEXT NOT NULL CHECK (redirect_uri LIKE 'https://identity.moesegfault.dev/%'),
+    -- The Worker derives this callback from its reviewed canonical issuer; the database
+    -- enforces transport/fragment shape without hard-coding one deployment hostname.
+    -- Worker 从经评审的规范 issuer 派生回调；数据库只约束传输与 fragment 形状，
+    -- 避免把 production hostname 写死后令 staging 无法使用同一 schema。
+    redirect_uri TEXT NOT NULL CHECK (
+        redirect_uri LIKE 'https://%'
+        AND instr(redirect_uri, '#') = 0
+    ),
     policy_revision INTEGER NOT NULL CHECK (policy_revision > 0),
     state TEXT NOT NULL DEFAULT 'pending'
         CHECK (state IN ('pending', 'consumed_success', 'consumed_failure', 'cancelled')),
