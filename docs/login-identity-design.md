@@ -340,14 +340,15 @@ Passkey 登录默认使用空 `allowCredentials` 的可发现凭证流程：客�
 
 恢复不需要邮件服务、短信服务或人工审核。恢复能力只来自用户在注册时已经取得的材料：其他有效 Passkey，或一次性恢复代码。恢复代码必须是至少 128-bit 熵的一次性随机秘密，采用带公开 ID 前缀的格式；D1 只保存以独立 secret pepper 计算的 HMAC-SHA-256 摘要。
 
-恢复完成必须在一个事务中：
+恢复不得先消费代码、再等待用户另起一次 Passkey 注册，否则浏览器或临时状态丢失会制造“恢复能力已消费、替代认证器尚未建立”的永久锁死窗口。首期采用原子恢复：
 
-1. 消费恢复代码；
-2. 撤销全部 Identity Sessions、Authorization Codes 和 Refresh Token families；
-3. 把账号置为 `recovery_required` 限制态；
-4. 建立仅能访问 Passkey 注册接口的短期恢复会话；
-5. 注册新 Passkey 后解除限制；
-6. 写入高优先级安全审计，并由 Outbox 产生安全 Diagnostic。
+1. 创建恢复事务时验证恢复代码、绑定浏览器并返回新 Passkey 的 creation options，但不消费代码，也不改变账号状态；
+2. completion 先完整验证新 Passkey 的 attestation；
+3. 验证成功后在一个 D1 transaction 中消费恢复代码和恢复事务、创建新 Authenticator、撤销全部旧 Authenticator、Identity Sessions、Authorization Codes、Refresh Token families 及旧恢复代码；
+4. 同一 transaction 生成一批新恢复代码、建立正常 Identity Session，并写入高优先级安全审计与 Outbox；
+5. 任一条件消费竞争失败时整笔 transaction 回滚，不得留下“零个有效 Passkey”的已提交状态。
+
+因此 `recovery_required` 不是 Principal 的持久状态，系统也不签发 recovery-only Session。详细决策见 `docs/adr/0001-atomic-account-recovery.md`。
 
 若全部 Passkey 与恢复代码均丢失，账号即不可恢复。平台不得通过管理员密钥、Email、人工判断或修改数据库绕过认证；`ops` 的管理员密钥只管理 `ops`，不是普通账号的万能恢复器。
 
