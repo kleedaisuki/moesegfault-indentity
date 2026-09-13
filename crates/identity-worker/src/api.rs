@@ -578,70 +578,83 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
         }
     };
     let db = context.d1("DB")?;
-    let (kind, principal_id, initiating_session_id, credentials) = match input.purpose.as_str() {
-        "login" => {
-            if !guard::validate_browser_csrf(
-                &request,
-                secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
-            ) {
-                return problem::response(
-                    "invalid_request",
-                    "CSRF validation failed",
-                    403,
-                    &correlation,
-                );
+    let (kind, principal_id, initiating_session_id, credentials, user_handle) =
+        match input.purpose.as_str() {
+            "login" => {
+                if !guard::validate_browser_csrf(
+                    &request,
+                    secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+                ) {
+                    return problem::response(
+                        "invalid_request",
+                        "CSRF validation failed",
+                        403,
+                        &correlation,
+                    );
+                }
+                ("authentication", None, None, Vec::new(), None)
             }
-            ("authentication", None, None, Vec::new())
-        }
-        "step_up" => {
-            if input.authorization_transaction_id.is_some() {
+            "step_up" => {
+                if input.authorization_transaction_id.is_some() {
+                    return problem::response(
+                        "invalid_request",
+                        "Step-up cannot resume an OAuth authorization",
+                        400,
+                        &correlation,
+                    );
+                }
+                if !guard::validate_browser_csrf(
+                    &request,
+                    secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
+                ) {
+                    return problem::response(
+                        "invalid_request",
+                        "CSRF validation failed",
+                        403,
+                        &correlation,
+                    );
+                }
+                let Some(session) = authenticated_session(&request, &context.env).await? else {
+                    return problem::response(
+                        "authentication_failed",
+                        "Authentication is required",
+                        401,
+                        &correlation,
+                    );
+                };
+                let Some(identity) =
+                    crate::account_repository::addition_identity(&db, &session.principal_id)
+                        .await?
+                else {
+                    return problem::response(
+                        "authentication_failed",
+                        "Authentication is required",
+                        401,
+                        &correlation,
+                    );
+                };
+                let credentials = identity
+                    .credential_ids
+                    .into_iter()
+                    .map(CredentialId)
+                    .collect();
+                (
+                    "step_up",
+                    Some(session.principal_id),
+                    Some(session.session_id),
+                    credentials,
+                    Some(identity.user_handle),
+                )
+            }
+            _ => {
                 return problem::response(
                     "invalid_request",
-                    "Step-up cannot resume an OAuth authorization",
+                    "Invalid authentication purpose",
                     400,
                     &correlation,
                 );
             }
-            if !guard::validate_browser_csrf(
-                &request,
-                secret(&context.env, "CSRF_PEPPER")?.as_bytes(),
-            ) {
-                return problem::response(
-                    "invalid_request",
-                    "CSRF validation failed",
-                    403,
-                    &correlation,
-                );
-            }
-            let Some(session) = authenticated_session(&request, &context.env).await? else {
-                return problem::response(
-                    "authentication_failed",
-                    "Authentication is required",
-                    401,
-                    &correlation,
-                );
-            };
-            let credentials = repository::active_credential_ids(&db, &session.principal_id)
-                .await?
-                .into_iter()
-                .map(CredentialId)
-                .collect();
-            (
-                "step_up",
-                Some(session.principal_id),
-                Some(session.session_id),
-                credentials,
-            )
-        }
-        _ => {
-            return problem::response(
-                "invalid_request",
-                "Invalid authentication purpose",
-                400,
-                &correlation,
-            );
-        }
-    };
+        };
     let Some(browser_wire) = guard::cookie(&request, guard::BROWSER_COOKIE) else {
         return problem::response(
             "invalid_request",
@@ -654,7 +667,12 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
     let pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
     let browser_digest = SecretDigest::hmac(pepper.as_bytes(), browser_wire.as_bytes());
     let csrf_digest = SecretDigest::hmac(pepper.as_bytes(), csrf_wire.as_bytes());
-    let (challenge, state) = webauthn(&context.env).start_authentication(&credentials);
+    let (challenge, state) = match user_handle.as_deref() {
+        Some(user_handle) => {
+            webauthn(&context.env).start_authentication_for_user(user_handle, &credentials)
+        }
+        None => webauthn(&context.env).start_authentication(&credentials),
+    };
     let id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredAuthentication {
         state,
