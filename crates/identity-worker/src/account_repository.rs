@@ -9,7 +9,36 @@
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1SessionConstraint, Error, Result, wasm_bindgen::JsValue};
 
-use crate::repository::{self, NewRecoveryCode, WebauthnTransactionRow};
+use crate::repository::{self, CredentialRow, NewRecoveryCode, WebauthnTransactionRow};
+
+const STEP_UP_SESSION_INSERT_SQL: &str = "INSERT INTO identity_sessions(\
+    session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,\
+    authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at,created_from_session_id) \
+    SELECT ?1,?2,p.principal_id,a.authenticator_id,'passkey','[\"passkey\"]',\
+    'urn:moesegfault:acr:passkey-uv',?7,?7,?8,?9,s.session_id \
+    FROM webauthn_transactions t JOIN principals p ON p.principal_id=t.principal_id \
+    JOIN authenticators a ON a.principal_id=p.principal_id \
+    JOIN identity_sessions s ON s.session_id=?5 AND s.principal_id=p.principal_id \
+    WHERE t.transaction_id=?3 AND t.kind='step_up' AND t.state='consumed_success' \
+    AND t.result_reference=?1 AND p.principal_id=?4 AND p.lifecycle_state='active' \
+    AND a.authenticator_id=?6 AND a.revoked_at IS NULL AND s.revoked_at IS NULL \
+    AND s.idle_expires_at>?7 AND s.absolute_expires_at>?7";
+
+const STEP_UP_SESSION_GUARD_SQL: &str = "INSERT INTO webauthn_transaction_consumptions(\
+    transaction_id,request_digest,outcome,result_reference,consumed_at) \
+    SELECT c.transaction_id,c.request_digest,c.outcome,c.result_reference,c.consumed_at \
+    FROM webauthn_transaction_consumptions c WHERE c.transaction_id=?1 AND NOT EXISTS(\
+    SELECT 1 FROM identity_sessions n WHERE n.session_id=?2 AND n.session_digest=?3 \
+    AND n.principal_id=?4 AND n.authenticator_id=?5 AND n.auth_method='passkey' \
+    AND n.amr_json='[\"passkey\"]' AND n.acr='urn:moesegfault:acr:passkey-uv' \
+    AND n.authenticated_at=?6 AND n.created_from_session_id=?7 AND n.revoked_at IS NULL)";
+
+const STEP_UP_SOURCE_GUARD_SQL: &str = "INSERT INTO webauthn_transaction_consumptions(\
+    transaction_id,request_digest,outcome,result_reference,consumed_at) \
+    SELECT c.transaction_id,c.request_digest,c.outcome,c.result_reference,c.consumed_at \
+    FROM webauthn_transaction_consumptions c WHERE c.transaction_id=?1 AND NOT EXISTS(\
+    SELECT 1 FROM identity_sessions s WHERE s.session_id=?2 AND s.principal_id=?3 \
+    AND s.revoked_at=?4 AND s.revocation_reason='step_up_replaced')";
 
 /// 当前已认证账户会话的授权上下文。/ Authorization context for the current account session.
 #[derive(Debug, Deserialize)]
@@ -634,6 +663,235 @@ pub async fn insert_addition_transaction(
         expires_at,
     )
     .await
+}
+
+/// 插入绑定到当前主体的 `step_up` WebAuthn assertion transaction。
+/// Inserts a `step_up` WebAuthn assertion transaction bound to the current principal.
+///
+/// 发起 session ID 由调用方封存在 ceremony 状态中，并在完成时传给
+/// [`commit_step_up`]；D1 transaction 同时绑定 principal，避免账户间重放。
+/// The caller seals the initiating session ID into ceremony state and passes it to
+/// [`commit_step_up`] at completion; the D1 transaction also binds the principal to
+/// prevent cross-account replay.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_step_up_transaction(
+    db: &D1Database,
+    transaction_id: &str,
+    principal_id: &str,
+    challenge_digest: &[u8],
+    browser_digest: &[u8],
+    csrf_digest: &[u8],
+    rp_id: &str,
+    expected_origin: &str,
+    request_json: &str,
+    policy_revision: i64,
+    now: i64,
+    expires_at: i64,
+) -> Result<()> {
+    repository::insert_webauthn_transaction(
+        db,
+        transaction_id,
+        "step_up",
+        Some(principal_id),
+        None,
+        challenge_digest,
+        browser_digest,
+        csrf_digest,
+        rp_id,
+        expected_origin,
+        request_json,
+        policy_revision,
+        now,
+        expires_at,
+    )
+    .await
+}
+
+/// 原子完成 Passkey step-up，并以新 ID 与 secret 替换发起 session。
+/// Atomically completes Passkey step-up and replaces the initiating session with a new ID and secret.
+///
+/// 新 session 只有在 transaction、活动 principal、活动 credential 与仍有效的发起
+/// session 全部匹配时才会创建。随后旧 session 及其 refresh-token families 被撤销，
+/// audit/outbox 与这些变更处于同一 D1 batch。条件插入影响零行时，guard 会故意触发
+/// 一次性消费表的主键冲突，使整个 batch 回滚而不是留下部分状态。
+/// The replacement is created only when the transaction, active principal, active
+/// credential, and unexpired initiating session all agree. The old session and its
+/// refresh-token families are then revoked in the same D1 batch as audit/outbox.
+/// If a conditional insert affects zero rows, a guard deliberately collides with the
+/// one-time-consumption primary key so the entire batch rolls back instead of leaving
+/// partial state.
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_step_up(
+    db: &D1Database,
+    transaction: &WebauthnTransactionRow,
+    initiating_session_id: &str,
+    request_digest: &[u8],
+    credential: &CredentialRow,
+    new_counter: u32,
+    replacement_session_id: &str,
+    replacement_session_digest: &[u8],
+    audit_id: &str,
+    correlation_id: &str,
+    now: i64,
+) -> Result<()> {
+    let principal_id = transaction
+        .principal_id
+        .as_deref()
+        .ok_or_else(|| Error::RustError("step-up transaction has no principal".into()))?;
+    if transaction.kind != "step_up" {
+        return Err(Error::RustError(
+            "step-up commit requires a step_up transaction".into(),
+        ));
+    }
+    if credential.principal_id != principal_id {
+        return Err(Error::RustError(
+            "step-up credential belongs to another principal".into(),
+        ));
+    }
+
+    db.batch(vec![
+        db.prepare(
+            "INSERT INTO webauthn_transaction_consumptions(transaction_id,request_digest,\
+             outcome,result_reference,consumed_at) VALUES(?1,?2,'success',?3,?4)",
+        )
+        .bind(&[
+            text(&transaction.transaction_id),
+            blob(request_digest),
+            text(replacement_session_id),
+            integer(now),
+        ])?,
+        db.prepare(
+            "UPDATE authenticators SET sign_count=CASE WHEN sign_count<=?2 THEN ?2 ELSE sign_count END,\
+             last_used_at=?3 WHERE authenticator_id=?1 AND principal_id=?4 AND revoked_at IS NULL",
+        )
+        .bind(&[
+            text(&credential.authenticator_id),
+            integer(i64::from(new_counter)),
+            integer(now),
+            text(principal_id),
+        ])?,
+        db.prepare(STEP_UP_SESSION_INSERT_SQL).bind(&[
+            text(replacement_session_id),
+            blob(replacement_session_digest),
+            text(&transaction.transaction_id),
+            text(principal_id),
+            text(initiating_session_id),
+            text(&credential.authenticator_id),
+            integer(now),
+            integer(now + 43_200),
+            integer(now + 2_592_000),
+        ])?,
+        db.prepare(STEP_UP_SESSION_GUARD_SQL).bind(&[
+            text(&transaction.transaction_id),
+            text(replacement_session_id),
+            blob(replacement_session_digest),
+            text(principal_id),
+            text(&credential.authenticator_id),
+            integer(now),
+            text(initiating_session_id),
+        ])?,
+        db.prepare(
+            "UPDATE identity_sessions SET revoked_at=?3,revocation_reason='step_up_replaced' \
+             WHERE session_id=?1 AND principal_id=?2 AND revoked_at IS NULL \
+             AND EXISTS(SELECT 1 FROM identity_sessions n WHERE n.session_id=?4 \
+             AND n.principal_id=?2 AND n.created_from_session_id=?1 AND n.revoked_at IS NULL)",
+        )
+        .bind(&[
+            text(initiating_session_id),
+            text(principal_id),
+            integer(now),
+            text(replacement_session_id),
+        ])?,
+        db.prepare(STEP_UP_SOURCE_GUARD_SQL).bind(&[
+            text(&transaction.transaction_id),
+            text(initiating_session_id),
+            text(principal_id),
+            integer(now),
+        ])?,
+        db.prepare(
+            "UPDATE oauth_refresh_token_families SET revoked_at=COALESCE(revoked_at,?3),\
+             revocation_reason=COALESCE(revocation_reason,'identity_session_step_up') \
+             WHERE principal_id=?1 AND identity_session_id=?2 AND revoked_at IS NULL \
+             AND EXISTS(SELECT 1 FROM identity_sessions WHERE session_id=?2 \
+             AND principal_id=?1 AND revoked_at=?3 AND revocation_reason='step_up_replaced')",
+        )
+        .bind(&[
+            text(principal_id),
+            text(initiating_session_id),
+            integer(now),
+        ])?,
+        db.prepare(
+            "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
+             actor_principal_id,subject_principal_id,outcome,authenticator_id,correlation_id,\
+             policy_revision,context_json) VALUES(?1,'identity.authentication.step_up_succeeded',\
+             ?2,?2,?3,?3,'success',?4,?5,?6,json_object('replaced_session_id',?7,\
+             'replacement_session_id',?8))",
+        )
+        .bind(&[
+            text(audit_id),
+            integer(now),
+            text(principal_id),
+            text(&credential.authenticator_id),
+            text(correlation_id),
+            integer(transaction.policy_revision),
+            text(initiating_session_id),
+            text(replacement_session_id),
+        ])?,
+        archive_outbox(db, audit_id, now)?,
+    ])
+    .await?;
+    Ok(())
+}
+
+/// 消费失败的 step-up ceremony，并原子追加失败审计。
+/// Consumes a failed step-up ceremony and atomically appends its failure audit.
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_step_up_failure(
+    db: &D1Database,
+    transaction: &WebauthnTransactionRow,
+    request_digest: &[u8],
+    audit_id: &str,
+    correlation_id: &str,
+    now: i64,
+) -> Result<()> {
+    let principal_id = transaction
+        .principal_id
+        .as_deref()
+        .ok_or_else(|| Error::RustError("step-up transaction has no principal".into()))?;
+    if transaction.kind != "step_up" {
+        return Err(Error::RustError(
+            "step-up failure requires a step_up transaction".into(),
+        ));
+    }
+    db.batch(vec![
+        db.prepare(
+            "INSERT INTO webauthn_transaction_consumptions(transaction_id,request_digest,\
+             outcome,consumed_at) VALUES(?1,?2,'failure',?3)",
+        )
+        .bind(&[
+            text(&transaction.transaction_id),
+            blob(request_digest),
+            integer(now),
+        ])?,
+        db.prepare(
+            "INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,\
+             actor_principal_id,subject_principal_id,outcome,reason_code,correlation_id,policy_revision) \
+             SELECT ?1,'identity.authentication.step_up_failed',?2,?2,?3,?3,'failure',\
+             'invalid_credential',?4,t.policy_revision FROM webauthn_transactions t \
+             WHERE t.transaction_id=?5 AND t.kind='step_up' AND t.principal_id=?3 \
+             AND t.state='consumed_failure'",
+        )
+        .bind(&[
+            text(audit_id),
+            integer(now),
+            text(principal_id),
+            text(correlation_id),
+            text(&transaction.transaction_id),
+        ])?,
+        archive_outbox(db, audit_id, now)?,
+    ])
+    .await?;
+    Ok(())
 }
 
 /// 原子消费 addition ceremony，并持久化新 Passkey、审计事实和 R2 outbox。
@@ -1330,5 +1588,38 @@ mod tests {
     #[test]
     fn audit_partition_is_stable() {
         assert_eq!(day_bucket(172_800), "unix-day-2");
+    }
+
+    #[test]
+    fn step_up_replacement_is_bound_to_all_authorities() {
+        for gate in [
+            "t.kind='step_up'",
+            "p.lifecycle_state='active'",
+            "a.revoked_at IS NULL",
+            "s.revoked_at IS NULL",
+            "s.idle_expires_at>?7",
+            "s.absolute_expires_at>?7",
+        ] {
+            assert!(
+                STEP_UP_SESSION_INSERT_SQL.contains(gate),
+                "missing replacement-session gate: {gate}"
+            );
+        }
+        assert!(
+            STEP_UP_SESSION_INSERT_SQL.contains("created_from_session_id")
+                && STEP_UP_SESSION_INSERT_SQL.contains("s.session_id")
+        );
+        assert!(STEP_UP_SESSION_INSERT_SQL.contains("'[\"passkey\"]'"));
+        assert!(STEP_UP_SESSION_INSERT_SQL.contains("'urn:moesegfault:acr:passkey-uv'"));
+    }
+
+    #[test]
+    fn step_up_zero_row_guards_collide_with_one_time_consumption() {
+        for guard in [STEP_UP_SESSION_GUARD_SQL, STEP_UP_SOURCE_GUARD_SQL] {
+            assert!(guard.starts_with("INSERT INTO webauthn_transaction_consumptions"));
+            assert!(guard.contains("NOT EXISTS"));
+        }
+        assert!(STEP_UP_SESSION_GUARD_SQL.contains("n.session_digest=?3"));
+        assert!(STEP_UP_SOURCE_GUARD_SQL.contains("s.revocation_reason='step_up_replaced'"));
     }
 }
