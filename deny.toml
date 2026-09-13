@@ -6,6 +6,8 @@ unmaintained = "workspace"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Local workspace paths do not resolve through a registry. / 本地 workspace 路径不通过 registry 解析。
+allow-wildcard-paths = true
 highlight = "all"
 
 [licenses]
@@ -15,14 +17,9 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  "CC0-1.0",
   "GPL-3.0-only",
-  "ISC",
   "MIT",
-  "MPL-2.0",
-  "OpenSSL",
   "Unicode-3.0",
-  "Zlib",
 ]
 
 [sources]
