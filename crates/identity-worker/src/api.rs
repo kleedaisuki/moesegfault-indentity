@@ -473,6 +473,7 @@ async fn finish_registration_inner(
         );
     }
     let Some(registration_response) = input.credential.into_passkey() else {
+        commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
         return problem::response(
             "authentication_failed",
             "Credential verification failed",
@@ -484,6 +485,7 @@ async fn finish_registration_inner(
         match webauthn(&context.env).finish_registration(&stored.state, &registration_response) {
             Ok(value) => value,
             Err(_) => {
+                commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
                 return problem::response(
                     "authentication_failed",
                     "Credential verification failed",
@@ -733,6 +735,7 @@ pub async fn finish_authentication(
     };
     let request_digest = Sha256::digest(serde_json::to_vec(&input.credential)?);
     let Some(authentication_response) = input.credential.into_passkey() else {
+        commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
         return problem::response(
             "authentication_failed",
             "Credential verification failed",
@@ -743,6 +746,7 @@ pub async fn finish_authentication(
     let credential_id = match CredentialId::from_b64url(&authentication_response.id) {
         Ok(v) => v,
         Err(_) => {
+            commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
             return problem::response(
                 "authentication_failed",
                 "Credential verification failed",
@@ -752,6 +756,7 @@ pub async fn finish_authentication(
         }
     };
     let Some(row) = repository::credential_by_id(&db, credential_id.as_bytes()).await? else {
+        commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
         return problem::response(
             "authentication_failed",
             "Credential verification failed",
@@ -787,6 +792,7 @@ pub async fn finish_authentication(
     ) {
         Ok(v) => v,
         Err(_) => {
+            commit_failed_credential(&db, &tx, &request_digest, &correlation).await?;
             return problem::response(
                 "authentication_failed",
                 "Credential verification failed",
@@ -994,6 +1000,23 @@ async fn authenticated_session(
     };
     let digest = SecretDigest::hmac(secret(env, "SESSION_PEPPER")?.as_bytes(), wire.as_bytes());
     repository::current_session(&env.d1("DB")?, &digest.0, now_seconds()).await
+}
+
+async fn commit_failed_credential(
+    db: &D1Database,
+    tx: &repository::WebauthnTransactionRow,
+    request_digest: &[u8],
+    correlation: &str,
+) -> Result<()> {
+    repository::commit_webauthn_failure(
+        db,
+        tx,
+        request_digest,
+        &AuditEventId::new_v7(worker::Date::now().as_millis()).to_string(),
+        correlation,
+        now_seconds(),
+    )
+    .await
 }
 
 fn session_csrf(request: &Request, env: &Env) -> Result<String> {

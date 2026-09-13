@@ -287,6 +287,32 @@ pub async fn commit_authentication(
     Ok(())
 }
 
+/// 原子记录一次失败的 ceremony 消费与不可变审计。
+/// Atomically records a failed ceremony consumption and immutable audit fact.
+pub async fn commit_webauthn_failure(
+    db: &D1Database,
+    tx: &WebauthnTransactionRow,
+    request_digest: &[u8],
+    audit_id: &str,
+    correlation: &str,
+    now: i64,
+) -> Result<()> {
+    let event_name = if tx.kind == "account_registration" {
+        "identity.registration.failed"
+    } else {
+        "identity.authentication.failed"
+    };
+    db.batch(vec![
+        db.prepare("INSERT INTO webauthn_transaction_consumptions(transaction_id,request_digest,outcome,consumed_at) VALUES(?1,?2,'failure',?3)")
+            .bind(&[text(&tx.transaction_id),blob(request_digest),integer(now)])?,
+        db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,subject_principal_id,outcome,reason_code,correlation_id,policy_revision) VALUES(?1,?2,?3,?3,?4,'failure','invalid_credential',?5,?6)")
+            .bind(&[text(audit_id),text(event_name),integer(now),optional_text(tx.principal_id.as_deref()),text(correlation),integer(tx_policy(tx))])?,
+        db.prepare("INSERT INTO audit_archive_outbox(audit_event_id,r2_object_key,next_attempt_at) VALUES(?1,?2,?3)")
+            .bind(&[text(audit_id),text(&format!("security-audit/{}/{audit_id}.json",day_bucket(now))),integer(now)])?,
+    ]).await?;
+    Ok(())
+}
+
 /// 通过摘要解析未过期会话。/ Resolves an unexpired session by digest.
 pub async fn current_session(
     db: &D1Database,
