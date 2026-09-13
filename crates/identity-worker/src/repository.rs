@@ -51,28 +51,6 @@ pub struct PrincipalView {
     pub username: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AuthenticatorView {
-    pub authenticator_id: String,
-    pub label: String,
-    pub transports: Vec<String>,
-    pub backup_eligible: bool,
-    pub backup_state: bool,
-    pub created_at: i64,
-    pub last_used_at: Option<i64>,
-    pub revoked_at: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SessionView {
-    pub session_id: String,
-    pub authenticator_id: Option<String>,
-    pub authenticated_at: i64,
-    pub last_seen_at: i64,
-    pub expires_at: i64,
-    pub revoked_at: Option<i64>,
-}
-
 /// 可启动恢复 ceremony 的一次性恢复码投影。
 /// Projection of a one-time recovery code eligible to start a ceremony.
 #[derive(Debug, Deserialize)]
@@ -111,6 +89,28 @@ pub struct NewRecoveryCode {
 struct RegistrationPolicyRow {
     mode: String,
     revision: i64,
+}
+
+/// 可公开披露的注册策略。/ Publicly disclosable registration policy.
+#[derive(Debug, Serialize)]
+pub struct RegistrationPolicyView {
+    pub mode: String,
+    pub capability_required: bool,
+    pub policy_revision: i64,
+}
+
+/// 读取当前公开注册模式。/ Reads the current public registration mode.
+pub async fn registration_policy(db: &D1Database) -> Result<Option<RegistrationPolicyView>> {
+    let row = db
+        .with_session_constraint(D1SessionConstraint::FirstPrimary)?
+        .prepare("SELECT mode,revision FROM registration_policy WHERE policy_id=1")
+        .first::<RegistrationPolicyRow>(None)
+        .await?;
+    Ok(row.map(|row| RegistrationPolicyView {
+        capability_required: row.mode == "invite_only",
+        mode: row.mode,
+        policy_revision: row.revision,
+    }))
 }
 
 /// 注册入口的策略决定。/ Registration-entry policy decision.
@@ -247,7 +247,7 @@ pub async fn recovery_identity(
     secret_digest: &[u8],
 ) -> Result<Option<RecoveryIdentityRow>> {
     db.with_session_constraint(D1SessionConstraint::FirstPrimary)?
-        .prepare("SELECT c.recovery_code_id,s.principal_id,p.webauthn_user_handle,i.value AS username,h.display_name FROM recovery_codes c JOIN recovery_code_sets s ON s.recovery_code_set_id=c.recovery_code_set_id JOIN principals p ON p.principal_id=s.principal_id JOIN identifiers i ON i.principal_id=p.principal_id AND i.kind='username' JOIN human_profiles h ON h.principal_id=p.principal_id WHERE c.public_id=?1 AND c.secret_digest=?2 AND c.used_at IS NULL AND s.invalidated_at IS NULL AND p.lifecycle_state='active'")
+        .prepare("SELECT c.recovery_code_id,s.principal_id,p.webauthn_user_handle,COALESCE(i.value,p.principal_id) AS username,h.display_name FROM recovery_codes c JOIN recovery_code_sets s ON s.recovery_code_set_id=c.recovery_code_set_id JOIN principals p ON p.principal_id=s.principal_id LEFT JOIN identifiers i ON i.principal_id=p.principal_id AND i.kind='username' JOIN human_profiles h ON h.principal_id=p.principal_id WHERE c.public_id=?1 AND c.secret_digest=?2 AND c.used_at IS NULL AND s.invalidated_at IS NULL AND p.lifecycle_state='active'")
         .bind(&[text(public_id),blob(secret_digest)])?.first(None).await
 }
 
@@ -386,18 +386,26 @@ pub async fn commit_authentication(
     correlation: &str,
     now: i64,
 ) -> Result<()> {
-    db.batch(vec![
+    let statements = vec![
         db.prepare("INSERT INTO webauthn_transaction_consumptions(transaction_id,request_digest,outcome,result_reference,consumed_at) VALUES(?1,?2,'success',?3,?4)")
             .bind(&[text(&tx.transaction_id),blob(request_digest),text(session_id),integer(now)])?,
         db.prepare("UPDATE authenticators SET sign_count=CASE WHEN sign_count<=?2 THEN ?2 ELSE sign_count END,last_used_at=?3 WHERE authenticator_id=?1 AND revoked_at IS NULL")
             .bind(&[text(&credential.authenticator_id),integer(new_counter as i64),integer(now)])?,
-        db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,'passkey','[\"passkey\"]','urn:moesegfault:acr:passkey-uv',?5,?5,?6,?7)")
+        db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) SELECT ?1,?2,p.principal_id,a.authenticator_id,'passkey','[\"passkey\"]','urn:moesegfault:acr:passkey-uv',?5,?5,?6,?7 FROM authenticators a JOIN principals p ON p.principal_id=a.principal_id WHERE p.principal_id=?3 AND p.lifecycle_state='active' AND a.authenticator_id=?4 AND a.revoked_at IS NULL")
             .bind(&[text(session_id),blob(session_digest),text(&credential.principal_id),text(&credential.authenticator_id),integer(now),integer(now+43_200),integer(now+2_592_000)])?,
+        // 条件 INSERT 影响零行不会让 D1 batch 失败；若新 session 不存在，故意重复
+        // ceremony consumption 的主键，使整批回滚而不是复活已撤销 authority。
+        // A zero-row conditional INSERT does not fail a D1 batch. If the new session
+        // is absent, deliberately duplicate the ceremony-consumption PK so the batch
+        // rolls back instead of resurrecting revoked authority.
+        db.prepare("INSERT INTO webauthn_transaction_consumptions(transaction_id,request_digest,outcome,result_reference,consumed_at) SELECT transaction_id,request_digest,outcome,result_reference,consumed_at FROM webauthn_transaction_consumptions WHERE transaction_id=?1 AND NOT EXISTS(SELECT 1 FROM identity_sessions WHERE session_id=?2 AND principal_id=?3 AND authenticator_id=?4)")
+            .bind(&[text(&tx.transaction_id),text(session_id),text(&credential.principal_id),text(&credential.authenticator_id)])?,
         db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,authenticator_id,correlation_id,policy_revision) VALUES(?1,'identity.authentication.succeeded',?2,?2,?3,?3,'success',?4,?5,?6)")
             .bind(&[text(audit_id),integer(now),text(&credential.principal_id),text(&credential.authenticator_id),text(correlation),integer(tx_policy(tx))])?,
         db.prepare("INSERT INTO audit_archive_outbox(audit_event_id,r2_object_key,next_attempt_at) VALUES(?1,?2,?3)")
             .bind(&[text(audit_id),text(&format!("security-audit/{}/{audit_id}.json", day_bucket(now))),integer(now)])?,
-    ]).await?;
+    ];
+    db.batch(statements).await?;
     Ok(())
 }
 
@@ -514,68 +522,13 @@ pub async fn current_session(
     now: i64,
 ) -> Result<Option<CurrentSession>> {
     db.with_session_constraint(D1SessionConstraint::FirstPrimary)?
-        .prepare("SELECT session_id,principal_id FROM identity_sessions WHERE session_digest=?1 AND revoked_at IS NULL AND idle_expires_at>?2 AND absolute_expires_at>?2")
+        .prepare("SELECT s.session_id,s.principal_id FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id WHERE s.session_digest=?1 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'")
         .bind(&[blob(digest),integer(now)])?.first(None).await
 }
 
 pub async fn principal(db: &D1Database, id: &str) -> Result<Option<PrincipalView>> {
-    db.prepare("SELECT p.principal_id,p.lifecycle_state,h.display_name,h.locale,i.value AS username FROM principals p JOIN human_profiles h ON h.principal_id=p.principal_id JOIN identifiers i ON i.principal_id=p.principal_id AND i.kind='username' WHERE p.principal_id=?1")
+    db.prepare("SELECT p.principal_id,p.lifecycle_state,h.display_name,h.locale,COALESCE(i.value,p.principal_id) AS username FROM principals p JOIN human_profiles h ON h.principal_id=p.principal_id LEFT JOIN identifiers i ON i.principal_id=p.principal_id AND i.kind='username' WHERE p.principal_id=?1")
         .bind(&[text(id)])?.first(None).await
-}
-
-pub async fn authenticators(db: &D1Database, id: &str) -> Result<Vec<AuthenticatorView>> {
-    #[derive(Deserialize)]
-    struct Row {
-        authenticator_id: String,
-        label: String,
-        transports_json: String,
-        backup_eligible: bool,
-        backup_state: bool,
-        created_at: i64,
-        last_used_at: Option<i64>,
-        revoked_at: Option<i64>,
-    }
-    let result=db.prepare("SELECT authenticator_id,label,transports_json,backup_eligible,backup_state,created_at,last_used_at,revoked_at FROM authenticators WHERE principal_id=?1 ORDER BY created_at DESC").bind(&[text(id)])?.all().await?;
-    result
-        .results::<Row>()?
-        .into_iter()
-        .map(|r| {
-            Ok(AuthenticatorView {
-                authenticator_id: r.authenticator_id,
-                label: r.label,
-                transports: serde_json::from_str(&r.transports_json)?,
-                backup_eligible: r.backup_eligible,
-                backup_state: r.backup_state,
-                created_at: r.created_at,
-                last_used_at: r.last_used_at,
-                revoked_at: r.revoked_at,
-            })
-        })
-        .collect::<std::result::Result<_, serde_json::Error>>()
-        .map_err(Into::into)
-}
-
-pub async fn sessions(db: &D1Database, id: &str) -> Result<Vec<SessionView>> {
-    let result=db.prepare("SELECT session_id,authenticator_id,authenticated_at,last_seen_at,absolute_expires_at AS expires_at,revoked_at FROM identity_sessions WHERE principal_id=?1 ORDER BY authenticated_at DESC").bind(&[text(id)])?.all().await?;
-    result.results()
-}
-
-pub async fn revoke_session(
-    db: &D1Database,
-    principal_id: &str,
-    session_id: &str,
-    now: i64,
-) -> Result<()> {
-    db.prepare("UPDATE identity_sessions SET revoked_at=?3,revocation_reason='user_requested' WHERE principal_id=?1 AND session_id=?2 AND revoked_at IS NULL").bind(&[text(principal_id),text(session_id),integer(now)])?.run().await?;
-    Ok(())
-}
-
-pub async fn revoke_all(db: &D1Database, principal_id: &str, now: i64) -> Result<()> {
-    db.batch(vec![
-        db.prepare("UPDATE identity_sessions SET revoked_at=?2,revocation_reason='user_requested_all' WHERE principal_id=?1 AND revoked_at IS NULL").bind(&[text(principal_id),integer(now)])?,
-        db.prepare("UPDATE oauth_refresh_token_families SET revoked_at=?2,revocation_reason='user_requested_all' WHERE principal_id=?1 AND revoked_at IS NULL").bind(&[text(principal_id),integer(now)])?
-    ]).await?;
-    Ok(())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
