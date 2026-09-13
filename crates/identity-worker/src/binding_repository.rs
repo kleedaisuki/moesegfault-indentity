@@ -164,6 +164,17 @@ pub async fn insert_transaction(
     request_digest: &[u8],
 ) -> Result<()> {
     db.batch(vec![
+        // Expired rows no longer own the key. Keeping this delete in the same batch makes reuse
+        // linearizable with the new transaction and completed idempotency record.
+        db.prepare(
+            "DELETE FROM idempotency_records WHERE caller_fingerprint=?1 \
+             AND operation='createBindingTransaction' AND idempotency_key=?2 AND expires_at<=?3",
+        )
+        .bind(&[
+            text(principal_id),
+            text(idempotency_key),
+            integer(now),
+        ])?,
         db.prepare(
             "INSERT INTO binding_transactions(transaction_id,principal_id,provider_id,identity_session_id,provider_state_digest,pkce_verifier_ciphertext,pkce_verifier_nonce,pkce_key_revision,csrf_digest,redirect_uri,policy_revision,created_at,expires_at) \
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
