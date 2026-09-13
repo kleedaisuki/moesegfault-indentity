@@ -3,9 +3,14 @@
 
 #![forbid(unsafe_code)]
 
+mod account;
+mod account_repository;
 mod api;
+mod binding_repository;
+mod bindings;
 mod ceremony_state;
 mod guard;
+mod idempotency;
 mod oauth;
 pub(crate) mod oauth_repository;
 mod problem;
@@ -18,37 +23,204 @@ use worker::*;
 /// Worker fetch entry point; request state comes from bindings, never mutable globals.
 #[event(fetch)]
 pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
+    macro_rules! idempotent {
+        ($handler:path, $operation:ident, $caller:ident, $policy:ident) => {
+            |request, context| async move {
+                idempotency::run(
+                    request,
+                    context,
+                    idempotency::Operation::$operation,
+                    idempotency::Caller::$caller,
+                    idempotency::ReplayPolicy::$policy,
+                    $handler,
+                )
+                .await
+            }
+        };
+    }
+
     Router::new()
         .get_async("/healthz", api::health)
         .get_async("/.well-known/openid-configuration", oauth::discovery)
         .get_async("/.well-known/jwks.json", oauth::jwks)
         .get_async("/v1/meta/capabilities", api::capabilities)
         .get_async("/v1/browser-context", api::browser_context)
+        .get_async("/v1/registration-policy", api::registration_policy)
         .options_async("/*path", api::preflight)
-        .post_async("/v1/registration-transactions", api::start_registration)
+        .post_async(
+            "/v1/registration-transactions",
+            idempotent!(
+                api::start_registration,
+                CreateAccountRegistrationTransaction,
+                Browser,
+                SecretResult
+            ),
+        )
         .post_async(
             "/v1/registration-transactions/:id/completion",
-            api::finish_registration,
+            idempotent!(
+                api::finish_registration,
+                CompleteRegistrationTransaction,
+                Browser,
+                SecretResult
+            ),
         )
-        .post_async("/v1/authentication-transactions", api::start_authentication)
+        .post_async(
+            "/v1/authentication-transactions",
+            idempotent!(
+                api::start_authentication,
+                CreateAuthenticationTransaction,
+                Browser,
+                SecretResult
+            ),
+        )
         .post_async(
             "/v1/authentication-transactions/:id/completion",
-            api::finish_authentication,
+            idempotent!(
+                api::finish_authentication,
+                CompleteAuthenticationTransaction,
+                Browser,
+                SecretResult
+            ),
         )
-        .get_async("/v1/principals/self", api::get_self)
+        .get_async("/v1/principals/self", account::get_self)
+        .patch_async(
+            "/v1/principals/self",
+            idempotent!(account::update_self, UpdateSelf, Session, Replayable),
+        )
+        .delete_async(
+            "/v1/principals/self",
+            idempotent!(
+                account::schedule_self_deletion,
+                ScheduleSelfDeletion,
+                Session,
+                Replayable
+            ),
+        )
+        .get_async("/v1/principals/self/identifiers", account::list_identifiers)
+        .post_async(
+            "/v1/principals/self/identifiers",
+            idempotent!(
+                account::create_identifier,
+                CreateSelfIdentifier,
+                Session,
+                Replayable
+            ),
+        )
+        .patch_async(
+            "/v1/principals/self/identifiers/:identifier_id",
+            idempotent!(
+                account::update_identifier,
+                UpdateSelfIdentifier,
+                Session,
+                Replayable
+            ),
+        )
+        .delete_async(
+            "/v1/principals/self/identifiers/:identifier_id",
+            idempotent!(
+                account::delete_identifier,
+                DeleteSelfIdentifier,
+                Session,
+                Replayable
+            ),
+        )
         .get_async(
             "/v1/principals/self/authenticators",
-            api::list_authenticators,
+            account::list_authenticators,
         )
-        .get_async("/v1/principals/self/sessions", api::list_sessions)
-        .delete_async("/v1/principals/self/sessions/:id", api::revoke_session)
-        .post_async("/v1/principals/self/sessions/revoke-all", api::revoke_all)
-        .get_async("/v1/principals/self/bindings", api::unavailable)
-        .post_async("/v1/binding-transactions", api::unavailable)
-        .post_async("/v1/recovery-transactions", api::start_recovery)
+        .post_async(
+            "/v1/principals/self/authenticators/registration-transactions",
+            idempotent!(
+                account::start_authenticator_registration,
+                CreateAuthenticatorRegistrationTransaction,
+                Session,
+                SecretResult
+            ),
+        )
+        .patch_async(
+            "/v1/principals/self/authenticators/:authenticator_id",
+            idempotent!(
+                account::update_authenticator,
+                UpdateSelfAuthenticator,
+                Session,
+                Replayable
+            ),
+        )
+        .delete_async(
+            "/v1/principals/self/authenticators/:authenticator_id",
+            idempotent!(
+                account::revoke_authenticator,
+                RevokeSelfAuthenticator,
+                Session,
+                Replayable
+            ),
+        )
+        .get_async("/v1/principals/self/sessions", account::list_sessions)
+        .delete_async(
+            "/v1/principals/self/sessions",
+            idempotent!(
+                account::revoke_all_sessions,
+                RevokeAllSelfSessions,
+                Session,
+                Replayable
+            ),
+        )
+        .delete_async(
+            "/v1/principals/self/sessions/:session_id",
+            idempotent!(
+                account::revoke_session,
+                RevokeSelfSession,
+                Session,
+                Replayable
+            ),
+        )
+        .get_async(
+            "/v1/principals/self/recovery-codes",
+            account::recovery_code_status,
+        )
+        .post_async(
+            "/v1/principals/self/recovery-codes/rotations",
+            idempotent!(
+                account::rotate_recovery_codes,
+                RotateSelfRecoveryCodes,
+                Session,
+                SecretResult
+            ),
+        )
+        .get_async("/v1/binding-providers", bindings::list_providers)
+        .get_async("/v1/principals/self/bindings", bindings::list_self)
+        .delete_async(
+            "/v1/principals/self/bindings/:binding_id",
+            idempotent!(
+                bindings::revoke_self,
+                RevokeSelfBinding,
+                Session,
+                Replayable
+            ),
+        )
+        // Binding creation commits its idempotency record and encrypted transaction in one D1
+        // batch, so it deliberately does not use the generic pre-claim wrapper.
+        // Binding 创建会在同一 D1 batch 提交幂等记录与加密事务，故不使用通用预声明 wrapper。
+        .post_async("/v1/binding-transactions", bindings::create_transaction)
+        .get_async("/v1/binding-transactions/callback", bindings::callback)
+        .post_async(
+            "/v1/recovery-transactions",
+            idempotent!(
+                api::start_recovery,
+                CreateRecoveryTransaction,
+                Browser,
+                SecretResult
+            ),
+        )
         .post_async(
             "/v1/recovery-transactions/:id/completion",
-            api::finish_recovery,
+            idempotent!(
+                api::finish_recovery,
+                CompleteRecoveryTransaction,
+                Browser,
+                SecretResult
+            ),
         )
         .post_async("/v1/oauth/tokens", oauth::token)
         .get_async("/v1/oauth/authorizations", oauth::authorize)
@@ -70,5 +242,14 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleContext) {
     if let Err(error) = repository::drain_audit_archive(&env, 50).await {
         console_error!("audit_archive_drain_failed error={error}");
+    }
+    let now = (Date::now().as_millis() / 1_000) as i64;
+    match env.d1("DB") {
+        Ok(db) => {
+            if let Err(error) = idempotency::purge_expired(&db, now, 500).await {
+                console_error!("idempotency_expiry_purge_failed error={error}");
+            }
+        }
+        Err(error) => console_error!("idempotency_expiry_purge_failed error={error}"),
     }
 }
