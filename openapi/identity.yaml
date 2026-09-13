@@ -1231,8 +1231,8 @@ components:
         rp_id: {type: string, const: login.moesegfault.dev}
         allow_credentials:
           type: array
-          maxItems: 0
-          description: Discoverable login deliberately uses an empty list.
+          maxItems: 64
+          description: Discoverable login uses an empty list; an authenticated step-up lists only that principal's active credentials.
           items: {$ref: '#/components/schemas/PublicKeyCredentialDescriptor'}
         user_verification: {type: string, const: required}
     AuthenticationCompletionRequest:
