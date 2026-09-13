@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::*;
 
-use crate::{guard, problem, repository};
+use crate::{ceremony_state, guard, problem, repository};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
@@ -319,6 +319,7 @@ pub async fn start_registration(
     public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
     public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
     let public_key = registration_options_to_wire(public_key);
+    let tx_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredRegistration {
         username,
         display_name: display_name.to_owned(),
@@ -328,7 +329,12 @@ pub async fn start_registration(
         state,
         policy_revision: decision.policy_revision,
     };
-    let tx_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let stored_envelope = ceremony_state::seal(
+        &stored,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &tx_id,
+        "account_registration",
+    )?;
     let expires_at = now + 300;
     repository::insert_webauthn_transaction(
         &db,
@@ -341,7 +347,7 @@ pub async fn start_registration(
         &csrf_digest.0,
         &rp_id(&context.env),
         &guard::login_origin(&context.env),
-        &serde_json::to_string(&stored)?,
+        &stored_envelope,
         decision.policy_revision,
         now,
         expires_at,
@@ -463,7 +469,12 @@ async fn finish_registration_inner(
         }
     };
     let request_digest = Sha256::digest(serde_json::to_vec(&input.credential)?);
-    let stored: StoredRegistration = serde_json::from_str(&tx.request_json)?;
+    let stored: StoredRegistration = ceremony_state::open(
+        &tx.request_json,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &tx.transaction_id,
+        &tx.kind,
+    )?;
     if Sha256::digest(stored.state.challenge.as_bytes())[..] != tx.challenge_digest {
         return problem::response(
             "invalid_transaction",
@@ -598,13 +609,19 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
     let browser_digest = SecretDigest::hmac(pepper.as_bytes(), browser_wire.as_bytes());
     let csrf_digest = SecretDigest::hmac(pepper.as_bytes(), csrf_wire.as_bytes());
     let (challenge, state) = webauthn(&context.env).start_authentication(&[]);
+    let id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredAuthentication {
         state,
         policy_revision: 1,
     };
+    let stored_envelope = ceremony_state::seal(
+        &stored,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &id,
+        "authentication",
+    )?;
     let now = now_seconds();
     let expires_at = now + 300;
-    let id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     repository::insert_webauthn_transaction(
         &context.d1("DB")?,
         &id,
@@ -616,7 +633,7 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
         &csrf_digest.0,
         &rp_id(&context.env),
         &guard::login_origin(&context.env),
-        &serde_json::to_string(&stored)?,
+        &stored_envelope,
         1,
         now,
         expires_at,
@@ -772,7 +789,12 @@ pub async fn finish_authentication(
             &correlation,
         );
     }
-    let stored: StoredAuthentication = serde_json::from_str(&tx.request_json)?;
+    let stored: StoredAuthentication = ceremony_state::open(
+        &tx.request_json,
+        &secret(&context.env, "TRANSACTION_STATE_KEY")?,
+        &tx.transaction_id,
+        &tx.kind,
+    )?;
     let aaguid: [u8; 16] = row
         .aaguid
         .clone()

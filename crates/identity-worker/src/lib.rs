@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod ceremony_state;
 mod guard;
 mod problem;
 mod repository;

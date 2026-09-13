@@ -17,6 +17,7 @@ pub struct WebauthnTransactionRow {
     pub browser_binding_digest: Vec<u8>,
     pub csrf_digest: Vec<u8>,
     pub request_json: String,
+    pub policy_revision: i64,
     pub state: String,
     pub expires_at: i64,
 }
@@ -435,10 +436,7 @@ pub async fn drain_audit_archive(env: &Env, limit: u32) -> Result<()> {
 }
 
 fn tx_policy(tx: &WebauthnTransactionRow) -> i64 {
-    serde_json::from_str::<serde_json::Value>(&tx.request_json)
-        .ok()
-        .and_then(|v| v.get("policy_revision")?.as_i64())
-        .unwrap_or(1)
+    tx.policy_revision
 }
 fn day_bucket(now: i64) -> String {
     format!("unix-day-{}", now / 86_400)
