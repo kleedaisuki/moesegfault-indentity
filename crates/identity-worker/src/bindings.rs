@@ -650,7 +650,6 @@ pub async fn callback(request: Request, context: RouteContext<()>) -> Result<Res
         &protected.pkce_verifier,
         &protected.oidc_nonce,
         &context.env,
-        now_seconds(),
     )
     .await;
     let subject = match validation {
@@ -798,7 +797,6 @@ async fn validate_provider_callback(
     verifier: &str,
     nonce: &str,
     env: &Env,
-    now: i64,
 ) -> std::result::Result<String, ProviderFailure> {
     verify_discovery(provider).await?;
     // Fetch keys before exchanging the one-time code. A transient metadata/JWKS failure can then
@@ -809,7 +807,7 @@ async fn validate_provider_callback(
         .map_err(|_| ProviderFailure::Temporary("missing_client_secret"))?
         .to_string();
     let token = exchange_code(provider, code, redirect_uri, verifier, &client_secret).await?;
-    validate_id_token(provider, &token.id_token, nonce, now, &jwks).await
+    validate_id_token(provider, &token.id_token, nonce, now_seconds(), &jwks).await
 }
 
 async fn verify_discovery(provider: &ProviderConfig) -> std::result::Result<(), ProviderFailure> {
