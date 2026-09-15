@@ -324,6 +324,16 @@ pub async fn commit_registration(
     locale: &str,
     identifier_id: &str,
     username: &str,
+    email_identifier_id: &str,
+    email: &str,
+    email_normalized: &str,
+    mobile_identifier_id: Option<&str>,
+    mobile_calling_code: Option<&str>,
+    mobile_national_number: Option<&str>,
+    mobile_normalized: Option<&str>,
+    status_message: Option<&str>,
+    favorite_character: Option<&str>,
+    interests_json: &str,
     authenticator_id: &str,
     credential_id: &[u8],
     public_key_cose: &[u8],
@@ -346,8 +356,14 @@ pub async fn commit_registration(
             .bind(&[text(principal_id), blob(user_handle), integer(now)])?,
         db.prepare("INSERT INTO human_profiles(principal_id,display_name,locale,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)")
             .bind(&[text(principal_id), text(display_name), text(locale), integer(now)])?,
-        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,created_at,updated_at) VALUES(?1,?2,'username',?3,?3,?4,?4)")
+        db.prepare("INSERT INTO account_profile_details(principal_id,status_message,favorite_character,interests_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)")
+            .bind(&[text(principal_id),optional_text(status_message),optional_text(favorite_character),text(interests_json),integer(now)])?,
+        db.prepare("INSERT INTO account_preferences(principal_id,locale,created_at,updated_at) VALUES(?1,?2,?3,?3)")
+            .bind(&[text(principal_id),text(locale),integer(now)])?,
+        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,verified_at,created_at,updated_at) VALUES(?1,?2,'username',?3,?3,1,'verified',?4,?4,?4)")
             .bind(&[text(identifier_id), text(principal_id), text(username), integer(now)])?,
+        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,created_at,updated_at) VALUES(?1,?2,'email',?3,?4,1,'unverified',?5,?5)")
+            .bind(&[text(email_identifier_id),text(principal_id),text(email),text(email_normalized),integer(now)])?,
         db.prepare("INSERT INTO authenticators(authenticator_id,principal_id,credential_id,public_key_cose,sign_count,aaguid,transports_json,backup_eligible,backup_state,label,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9)")
             .bind(&[text(authenticator_id),text(principal_id),blob(credential_id),blob(public_key_cose),integer(counter as i64),blob(aaguid),text(transports_json),text(label),integer(now)])?,
         db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,'passkey','[\"passkey\"]','urn:moesegfault:acr:passkey-uv',?5,?5,?6,?7)")
@@ -357,6 +373,15 @@ pub async fn commit_registration(
         db.prepare("INSERT INTO audit_archive_outbox(audit_event_id,r2_object_key,next_attempt_at) VALUES(?1,?2,?3)")
             .bind(&[text(audit_id),text(&format!("security-audit/{}/{audit_id}.json", day_bucket(now))),integer(now)])?,
     ];
+    if let (Some(id), Some(code), Some(number), Some(normalized)) = (
+        mobile_identifier_id,
+        mobile_calling_code,
+        mobile_national_number,
+        mobile_normalized,
+    ) {
+        statements.insert(7, db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,country_calling_code,national_number,is_primary,verification_state,created_at,updated_at) VALUES(?1,?2,'mobile',?3,?3,?4,?5,1,'unverified',?6,?6)")
+            .bind(&[text(id),text(principal_id),text(normalized),text(code),text(number),integer(now)])?);
+    }
     if let Some(capability) = tx.registration_capability_id.as_deref() {
         statements.insert(2, db.prepare("INSERT INTO registration_capability_uses(capability_id,webauthn_transaction_id,consumed_by_principal_id,request_digest,used_at) VALUES(?1,?2,?3,?4,?5)")
             .bind(&[text(capability),text(&tx.transaction_id),text(principal_id),blob(request_digest),integer(now)])?);

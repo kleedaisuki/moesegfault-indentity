@@ -9,12 +9,13 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use identity_domain::{
     AuditEventId, AuthenticatorId, IdentifierId, LifetimePolicy, SecretDigest, TransactionId,
-    normalize_username,
+    normalize_email, normalize_mobile, normalize_username,
 };
 use passkey_auth::{Attachment, CredentialId, RegistrationResponse, RegistrationState, Webauthn};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use worker::wasm_bindgen::JsValue;
 use worker::*;
 
 use crate::{account_repository as repository, ceremony_state, guard, problem};
@@ -45,6 +46,11 @@ struct IdentifierWire {
     identifier_id: String,
     kind: String,
     value: String,
+    country_calling_code: Option<String>,
+    national_number: Option<String>,
+    is_primary: bool,
+    verification_state: String,
+    verified_at: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -92,6 +98,28 @@ struct IdentifierInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ContactInput {
+    Email {
+        email: String,
+        #[serde(default)]
+        is_primary: bool,
+    },
+    Mobile {
+        mobile: ContactMobileInput,
+        #[serde(default)]
+        is_primary: bool,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContactMobileInput {
+    country_calling_code: String,
+    national_number: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateAuthenticatorRegistrationRequest {
     authenticator_label: String,
@@ -106,6 +134,33 @@ struct UpdateAuthenticatorRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyObject {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasswordChangeRequest {
+    #[serde(default)]
+    current_password: Option<String>,
+    new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PasswordCredentialRow {
+    password_hash: String,
+    password_version: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SecurityPostureRow {
+    password_count: i64,
+    passkey_count: i64,
+    verified_email_count: i64,
+    verified_mobile_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MfaKindRow {
+    kind: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredAddition {
@@ -303,6 +358,314 @@ pub async fn list_identifiers(request: Request, context: RouteContext<()>) -> Re
         &context.env,
         None,
     )
+}
+
+/// 列出可验证的 email/mobile 联系渠道。/ Lists verifiable email/mobile contact channels.
+pub async fn list_contacts(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let Some(session) = authenticate(&request, &context.env).await? else {
+        return authentication_required(&correlation);
+    };
+    let items = repository::identifiers(&context.d1("DB")?, &session.principal_id)
+        .await?
+        .into_iter()
+        .filter(|item| matches!(item.kind.as_str(), "email" | "mobile"))
+        .map(identifier_to_wire)
+        .collect::<Vec<_>>();
+    json(&items, 200, &correlation, &context.env, None)
+}
+
+/// 添加 email 或 mobile，初始状态为未验证。/ Adds an email or mobile in the unverified state.
+pub async fn create_contact(mut request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::Json, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let input: ContactInput = match request.json().await {
+        Ok(input) => input,
+        Err(_) => return invalid_request("Invalid JSON request", &correlation),
+    };
+    let (kind, value, normalized, calling_code, national_number, _requested_primary) = match input {
+        ContactInput::Email { email, is_primary } => match normalize_email(&email) {
+            Ok(normalized) => (
+                "email",
+                email.trim().to_owned(),
+                normalized,
+                None,
+                None,
+                is_primary,
+            ),
+            Err(_) => return invalid_request("Invalid email address", &correlation),
+        },
+        ContactInput::Mobile { mobile, is_primary } => {
+            let normalized =
+                match normalize_mobile(&mobile.country_calling_code, &mobile.national_number) {
+                    Ok(value) => value,
+                    Err(_) => return invalid_request("Invalid mobile number", &correlation),
+                };
+            (
+                "mobile",
+                normalized.clone(),
+                normalized,
+                Some(mobile.country_calling_code),
+                Some(mobile.national_number),
+                is_primary,
+            )
+        }
+    };
+    let id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
+    let result = repository::create_contact(
+        &context.d1("DB")?,
+        &session.principal_id,
+        &id,
+        kind,
+        &value,
+        &normalized,
+        calling_code.as_deref(),
+        national_number.as_deref(),
+        _requested_primary,
+        &audit_id(),
+        &correlation,
+        now_seconds(),
+    )
+    .await;
+    let item = match result {
+        Ok(Some(item)) => item,
+        Ok(None) => return authentication_required(&correlation),
+        Err(error) if is_unique_error(&error) => return identifier_conflict(&correlation),
+        Err(error) => return Err(error),
+    };
+    json(
+        &identifier_to_wire(item),
+        201,
+        &correlation,
+        &context.env,
+        None,
+    )
+}
+
+/// 幂等删除当前账户拥有的联系渠道。/ Idempotently deletes a contact channel owned by this account.
+pub async fn delete_contact(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    if let Some(id) = path_uuid_v7(&context, "contact_id") {
+        repository::delete_contact(
+            &context.d1("DB")?,
+            &session.principal_id,
+            id,
+            &audit_id(),
+            &correlation,
+            now_seconds(),
+        )
+        .await?;
+    }
+    no_content(&correlation, &context.env, None)
+}
+
+/// 返回不含秘密材料的认证与恢复能力概览。/ Returns an authentication and recovery posture without secret material.
+pub async fn security_posture(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let Some(session) = authenticate(&request, &context.env).await? else {
+        return authentication_required(&correlation);
+    };
+    let row = context.d1("DB")?.prepare(
+        "SELECT (SELECT count(*) FROM password_credentials WHERE principal_id=?1) AS password_count,(SELECT count(*) FROM authenticators WHERE principal_id=?1 AND revoked_at IS NULL) AS passkey_count,(SELECT count(*) FROM identifiers WHERE principal_id=?1 AND kind='email' AND verification_state='verified') AS verified_email_count,(SELECT count(*) FROM identifiers WHERE principal_id=?1 AND kind='mobile' AND verification_state='verified') AS verified_mobile_count"
+    ).bind(&[JsValue::from_str(&session.principal_id)])?.first::<SecurityPostureRow>(None).await?
+        .ok_or_else(|| Error::RustError("security posture projection missing".into()))?;
+    let mfa_methods = context.d1("DB")?.prepare("SELECT DISTINCT kind FROM mfa_methods WHERE principal_id=?1 AND state='active' ORDER BY kind")
+        .bind(&[JsValue::from_str(&session.principal_id)])?.all().await?.results::<MfaKindRow>()?
+        .into_iter().map(|item| item.kind).collect::<Vec<_>>();
+    let recovery_ready = row.verified_email_count + row.verified_mobile_count > 0;
+    let mut recommendations = Vec::new();
+    if row.verified_email_count == 0 {
+        recommendations.push("verify_email");
+    }
+    if row.passkey_count == 0 {
+        recommendations.push("add_passkey");
+    }
+    if mfa_methods.is_empty() {
+        recommendations.push("add_second_factor");
+    }
+    json(
+        &serde_json::json!({
+            "password":row.password_count > 0,
+            "passkey_count":row.passkey_count,
+            "mfa_methods":mfa_methods,
+            "verified_email_count":row.verified_email_count,
+            "verified_mobile_count":row.verified_mobile_count,
+            "recovery_ready":recovery_ready,
+            "recommendations":recommendations,
+        }),
+        200,
+        &correlation,
+        &context.env,
+        None,
+    )
+}
+
+/// 创建或轮换可选密码；已有密码必须提交当前密码。/ Creates or rotates the optional password; an existing password requires the current password.
+pub async fn put_password(mut request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::Json, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let input: PasswordChangeRequest = match request.json().await {
+        Ok(input) => input,
+        Err(_) => return invalid_request("Invalid JSON request", &correlation),
+    };
+    if identity_domain::validate_password(&input.new_password).is_err() {
+        return invalid_request("Password must contain 12 to 128 characters", &correlation);
+    }
+    let db = context.d1("DB")?;
+    let existing = db
+        .prepare(
+            "SELECT password_hash,password_version FROM password_credentials WHERE principal_id=?1",
+        )
+        .bind(&[JsValue::from_str(&session.principal_id)])?
+        .first::<PasswordCredentialRow>(None)
+        .await?;
+    if let Some(existing) = existing.as_ref()
+        && !input
+            .current_password
+            .as_deref()
+            .is_some_and(|value| crate::password::verify_password(value, &existing.password_hash))
+    {
+        return problem::response(
+            "reauthentication_required",
+            "Current password is required",
+            403,
+            &correlation,
+        );
+    }
+    let hash = crate::password::hash_password(&input.new_password)?;
+    let now = now_seconds();
+    let version = existing.as_ref().map_or(1, |row| row.password_version + 1);
+    db.prepare("INSERT INTO password_credentials(principal_id,password_hash,hash_algorithm,hash_parameters_json,password_version,created_at,updated_at) VALUES(?1,?2,'argon2id','{}',?3,?4,?4) ON CONFLICT(principal_id) DO UPDATE SET password_hash=excluded.password_hash,hash_algorithm='argon2id',hash_parameters_json='{}',password_version=excluded.password_version,updated_at=excluded.updated_at,last_used_at=NULL")
+        .bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&hash),JsValue::from_f64(version as f64),JsValue::from_f64(now as f64)])?.run().await?;
+    no_content(&correlation, &context.env, None)
+}
+
+/// 删除密码前确认当前密码且确保仍有其他登录方法。/ Removes a password after checking it and ensuring another login method remains.
+pub async fn delete_password(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let db = context.d1("DB")?;
+    let Some(_existing) = db
+        .prepare(
+            "SELECT password_hash,password_version FROM password_credentials WHERE principal_id=?1",
+        )
+        .bind(&[JsValue::from_str(&session.principal_id)])?
+        .first::<PasswordCredentialRow>(None)
+        .await?
+    else {
+        return no_content(&correlation, &context.env, None);
+    };
+    let now = now_seconds();
+    let recent = session.authenticated_at <= now
+        && now - session.authenticated_at
+            <= LifetimePolicy::default().recent_authentication_seconds as i64
+        && matches!(session.auth_method.as_str(), "password" | "passkey");
+    if !recent {
+        return problem::response(
+            "reauthentication_required",
+            "Recent authentication is required",
+            403,
+            &correlation,
+        );
+    }
+    let alternatives = db.prepare("SELECT (SELECT count(*) FROM authenticators WHERE principal_id=?1 AND revoked_at IS NULL)+(SELECT count(*) FROM identity_bindings WHERE principal_id=?1 AND revoked_at IS NULL AND authentication_enabled=1) AS count")
+        .bind(&[JsValue::from_str(&session.principal_id)])?.first::<CountRow>(None).await?.map_or(0, |row| row.count);
+    if alternatives == 0 {
+        return problem::response(
+            "last_authentication_method",
+            "Add a passkey or connected login before removing the password",
+            409,
+            &correlation,
+        );
+    }
+    db.prepare("DELETE FROM password_credentials WHERE principal_id=?1")
+        .bind(&[JsValue::from_str(&session.principal_id)])?
+        .run()
+        .await?;
+    no_content(&correlation, &context.env, None)
+}
+
+#[derive(Debug, Deserialize)]
+struct CountRow {
+    count: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AuthorizationGrantRow {
+    authorization_id: String,
+    client_id: String,
+    display_name: String,
+    logo_url: Option<String>,
+    scopes_json: String,
+    granted_at: i64,
+    last_used_at: Option<i64>,
+}
+
+/// 按 OAuth client 汇总仍可续期的授权。/ Lists renewable authorizations aggregated by OAuth client.
+pub async fn list_authorizations(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let Some(session) = authenticate(&request, &context.env).await? else {
+        return authentication_required(&correlation);
+    };
+    let rows = context.d1("DB")?.prepare("SELECT a.authorization_id,a.client_id,c.display_name,p.logo_url,a.scopes_json,a.granted_at,a.last_used_at FROM oauth_user_authorizations a JOIN oauth_clients c ON c.client_id=a.client_id LEFT JOIN oauth_client_presentation p ON p.client_id=a.client_id WHERE a.principal_id=?1 AND a.revoked_at IS NULL ORDER BY COALESCE(a.last_used_at,a.granted_at) DESC")
+        .bind(&[JsValue::from_str(&session.principal_id)])?.all().await?.results::<AuthorizationGrantRow>()?;
+    let items = rows.into_iter().map(|row| -> Result<_> {
+        let scopes: serde_json::Value = serde_json::from_str(&row.scopes_json).map_err(|error| Error::RustError(format!("invalid stored authorization scopes: {error}")))?;
+        Ok(serde_json::json!({"authorization_id":row.authorization_id,"client_id":row.client_id,"display_name":row.display_name,"logo_url":row.logo_url,"scopes":scopes,"granted_at":date_time(row.granted_at),"last_used_at":row.last_used_at.map(date_time)}))
+    }).collect::<Result<Vec<_>>>()?;
+    json(
+        &serde_json::json!({"items":items}),
+        200,
+        &correlation,
+        &context.env,
+        None,
+    )
+}
+
+/// 撤销某 OAuth client 的全部代码和 refresh-token family。/ Revokes every code and refresh-token family for an OAuth client.
+pub async fn revoke_authorization(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let Some(authorization_id) = context.param("authorization_id") else {
+        return not_found("Authorization was not found", &correlation);
+    };
+    let now = now_seconds();
+    let db = context.d1("DB")?;
+    let Some(grant) = db.prepare("SELECT client_id FROM oauth_user_authorizations WHERE authorization_id=?1 AND principal_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(authorization_id),JsValue::from_str(&session.principal_id)])?.first::<AuthorizationClientRow>(None).await? else {
+        return no_content(&correlation, &context.env, None);
+    };
+    db.batch(vec![
+        db.prepare("UPDATE oauth_user_authorizations SET revoked_at=?3,revocation_reason='account_revoked',updated_at=?3 WHERE authorization_id=?1 AND principal_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(authorization_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE oauth_refresh_token_families SET revoked_at=?3,revocation_reason='account_revoked' WHERE principal_id=?1 AND client_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&grant.client_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE oauth_authorization_codes SET revoked_at=?3 WHERE principal_id=?1 AND client_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&grant.client_id),JsValue::from_f64(now as f64)])?,
+    ]).await?;
+    no_content(&correlation, &context.env, None)
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizationClientRow {
+    client_id: String,
 }
 
 /// 创建首期 username 标识符。/ Creates the first-release username identifier.
@@ -966,9 +1329,7 @@ fn mutation_problem(
         )
         .map(Some);
     }
-    if guard::header(request.headers(), "origin").as_deref()
-        != Some(guard::login_origin(env).as_str())
-    {
+    if guard::allowed_origin(env, guard::header(request.headers(), "origin").as_deref()).is_none() {
         return problem::response("invalid_request", "Origin is not allowed", 403, correlation)
             .map(Some);
     }
@@ -1115,6 +1476,11 @@ fn identifier_to_wire(value: repository::IdentifierView) -> IdentifierWire {
         identifier_id: value.identifier_id,
         kind: value.kind,
         value: value.value,
+        country_calling_code: value.country_calling_code,
+        national_number: value.national_number,
+        is_primary: value.is_primary,
+        verification_state: value.verification_state,
+        verified_at: value.verified_at.map(date_time),
         created_at: date_time(value.created_at),
         updated_at: date_time(value.updated_at),
     }

@@ -13,6 +13,7 @@ mod guard;
 mod idempotency;
 mod oauth;
 pub(crate) mod oauth_repository;
+mod password;
 mod problem;
 mod repository;
 mod webcrypto;
@@ -24,11 +25,7 @@ use worker::*;
 #[event(fetch)]
 pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
     let request_origin = request.headers().get("origin")?;
-    let login_origin = env.var("LOGIN_ORIGIN").ok().map(|value| value.to_string());
-    let credentialed_cors = request_origin
-        .as_deref()
-        .zip(login_origin.as_deref())
-        .is_some_and(|(actual, expected)| actual == expected);
+    let credentialed_cors = guard::allowed_origin(&env, request_origin.as_deref()).is_some();
 
     macro_rules! idempotent {
         ($handler:path, $operation:ident, $caller:ident, $policy:ident) => {
@@ -64,6 +61,15 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
             ),
         )
         .post_async(
+            "/v1/password/registrations",
+            idempotent!(
+                password::register,
+                PasswordRegistration,
+                Browser,
+                SecretResult
+            ),
+        )
+        .post_async(
             "/v1/registration-transactions/:id/completion",
             idempotent!(
                 api::finish_registration,
@@ -82,6 +88,15 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
             ),
         )
         .post_async(
+            "/v1/password/authentications",
+            idempotent!(
+                password::authenticate,
+                PasswordAuthentication,
+                Browser,
+                SecretResult
+            ),
+        )
+        .post_async(
             "/v1/authentication-transactions/:id/completion",
             idempotent!(
                 api::finish_authentication,
@@ -91,10 +106,35 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
             ),
         )
         .get_async("/v1/principals/self", account::get_self)
+        .get_async("/v1/me", account::get_self)
         .patch_async(
             "/v1/principals/self",
             idempotent!(account::update_self, UpdateSelf, Session, Replayable),
         )
+        .patch_async(
+            "/v1/me",
+            idempotent!(account::update_self, UpdateSelf, Session, Replayable),
+        )
+        .get_async("/v1/me/contacts", account::list_contacts)
+        .post_async(
+            "/v1/me/contacts",
+            idempotent!(account::create_contact, CreateContact, Session, Replayable),
+        )
+        .delete_async(
+            "/v1/me/contacts/:contact_id",
+            idempotent!(account::delete_contact, DeleteContact, Session, Replayable),
+        )
+        .get_async("/v1/me/security", account::security_posture)
+        .get_async("/v1/me/authorizations", account::list_authorizations)
+        .delete_async(
+            "/v1/me/authorizations/:authorization_id",
+            account::revoke_authorization,
+        )
+        .put_async(
+            "/v1/me/password",
+            idempotent!(account::put_password, PutPassword, Session, Replayable),
+        )
+        .delete_async("/v1/me/password", account::delete_password)
         .delete_async(
             "/v1/principals/self",
             idempotent!(

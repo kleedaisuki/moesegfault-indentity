@@ -281,6 +281,13 @@ pub async fn consume_code(
         text(&grant.principal_id),
         text(&grant.identity_session_id),
     ])?];
+    let authorization_id = identity_domain::TransactionId::new_v7((now as u64) * 1_000).to_string();
+    let scopes_json =
+        serde_json::to_string(&grant.scope.split_ascii_whitespace().collect::<Vec<_>>())?;
+    statements.push(db.prepare("INSERT OR IGNORE INTO oauth_user_authorizations(authorization_id,principal_id,client_id,scopes_json,granted_at,updated_at,last_used_at) SELECT ?1,?2,?3,?4,?5,?5,?5 WHERE EXISTS(SELECT 1 FROM oauth_authorization_code_uses WHERE authorization_code_id=?6 AND request_digest=?7 AND used_at=?5)")
+        .bind(&[text(&authorization_id),text(&grant.principal_id),text(&grant.client_id),text(&scopes_json),integer(now),text(&grant.authorization_code_id),blob(request_digest)])?);
+    statements.push(db.prepare("UPDATE oauth_user_authorizations SET scopes_json=?3,updated_at=?4,last_used_at=?4 WHERE principal_id=?1 AND client_id=?2 AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM oauth_authorization_code_uses WHERE authorization_code_id=?5 AND request_digest=?6 AND used_at=?4)")
+        .bind(&[text(&grant.principal_id),text(&grant.client_id),text(&scopes_json),integer(now),text(&grant.authorization_code_id),blob(request_digest)])?);
     if let Some((family_id, token_id, token_digest)) = family {
         statements.push(db.prepare("INSERT INTO oauth_refresh_token_families(refresh_token_family_id,client_id,principal_id,identity_session_id,scope,audience,created_at,absolute_expires_at) SELECT ?1,?2,?3,?4,?5,?2,?6,?7 WHERE EXISTS(SELECT 1 FROM oauth_authorization_code_uses WHERE authorization_code_id=?8 AND request_digest=?9 AND used_at=?6)")
             .bind(&[text(family_id),text(&grant.client_id),text(&grant.principal_id),text(&grant.identity_session_id),text(&grant.scope),integer(now),integer(refresh_expires_at),text(&grant.authorization_code_id),blob(request_digest)])?);

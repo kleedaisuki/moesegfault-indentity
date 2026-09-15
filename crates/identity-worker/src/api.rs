@@ -57,6 +57,9 @@ pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Resul
     json(
         &serde_json::json!({
             "passkeys": true,
+            "passwords": true,
+            "authentication_methods": ["password", "passkey", "federated"],
+            "mfa_ready": true,
             "registration": true,
             "authentication": true,
             "sessions": true,
@@ -65,7 +68,7 @@ pub async fn capabilities(_request: Request, context: RouteContext<()>) -> Resul
             "bindings": crate::bindings::is_enabled(&context.env),
             "oauth_issuance": crate::oauth::is_enabled(&context.env),
             "audit_archive": true,
-            "api_revision": 1,
+            "api_revision": 2,
         }),
         200,
         &correlation_id(),
@@ -91,15 +94,17 @@ pub async fn registration_policy(_request: Request, context: RouteContext<()>) -
 
 pub async fn browser_context(request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
-    let origin = guard::login_origin(&context.env);
-    if guard::header(request.headers(), "origin").as_deref() != Some(origin.as_str()) {
+    let Some(origin) = guard::allowed_origin(
+        &context.env,
+        guard::header(request.headers(), "origin").as_deref(),
+    ) else {
         return problem::response(
             "invalid_request",
             "Origin is not allowed",
             403,
             &correlation,
         );
-    }
+    };
     let browser_wire =
         guard::cookie(&request, guard::BROWSER_COOKIE).unwrap_or_else(random_secret_wire);
     let csrf_token = guard::session_csrf_token(
@@ -125,15 +130,14 @@ pub async fn browser_context(request: Request, context: RouteContext<()>) -> Res
 pub async fn preflight(request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
     let origin = guard::header(request.headers(), "origin");
-    let expected = guard::login_origin(&context.env);
-    if origin.as_deref() != Some(expected.as_str()) {
+    let Some(expected) = guard::allowed_origin(&context.env, origin.as_deref()) else {
         return problem::response(
             "invalid_request",
             "Origin is not allowed",
             403,
             &correlation,
         );
-    }
+    };
     let headers = Headers::new();
     headers.set("access-control-allow-origin", &expected)?;
     headers.set("access-control-allow-credentials", "true")?;
@@ -155,6 +159,11 @@ pub async fn preflight(request: Request, context: RouteContext<()>) -> Result<Re
 struct StartRegistrationRequest {
     username: String,
     display_name: String,
+    email: String,
+    #[serde(default)]
+    mobile: Option<RegistrationMobileInput>,
+    #[serde(default)]
+    profile: RegistrationProfileInput,
     authenticator_label: String,
     #[serde(default = "default_locale")]
     locale: String,
@@ -162,15 +171,46 @@ struct StartRegistrationRequest {
     registration_capability: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationProfileInput {
+    #[serde(default)]
+    status_message: Option<String>,
+    #[serde(default)]
+    favorite_character: Option<String>,
+    #[serde(default)]
+    interests: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationMobileInput {
+    country_calling_code: String,
+    national_number: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct StoredRegistration {
     username: String,
     display_name: String,
+    email: String,
+    email_normalized: String,
+    mobile: Option<StoredMobile>,
+    status_message: Option<String>,
+    favorite_character: Option<String>,
+    interests: Vec<String>,
     user_handle: Vec<u8>,
     authenticator_label: String,
     locale: String,
     state: RegistrationState,
     policy_revision: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredMobile {
+    country_calling_code: String,
+    national_number: String,
+    normalized: String,
 }
 
 #[derive(Serialize)]
@@ -227,6 +267,75 @@ pub async fn start_registration(
         return problem::response(
             "invalid_request",
             "Invalid registration request",
+            400,
+            &correlation,
+        );
+    }
+    let email_normalized = match identity_domain::normalize_email(&input.email) {
+        Ok(value) => value,
+        Err(_) => {
+            return problem::response(
+                "invalid_request",
+                "Invalid email address",
+                400,
+                &correlation,
+            );
+        }
+    };
+    let mobile = match input.mobile {
+        Some(value)
+            if value.country_calling_code.starts_with('+')
+                && value.national_number.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            match identity_domain::normalize_mobile(
+                &value.country_calling_code,
+                &value.national_number,
+            ) {
+                Ok(normalized) => Some(StoredMobile {
+                    country_calling_code: value.country_calling_code,
+                    national_number: value.national_number,
+                    normalized,
+                }),
+                Err(_) => {
+                    return problem::response(
+                        "invalid_request",
+                        "Invalid mobile number",
+                        400,
+                        &correlation,
+                    );
+                }
+            }
+        }
+        Some(_) => {
+            return problem::response(
+                "invalid_request",
+                "Invalid mobile number",
+                400,
+                &correlation,
+            );
+        }
+        None => None,
+    };
+    if input.profile.interests.len() > 20
+        || input
+            .profile
+            .interests
+            .iter()
+            .any(|v| v.is_empty() || v.chars().count() > 40)
+        || input
+            .profile
+            .status_message
+            .as_deref()
+            .is_some_and(|v| v.chars().count() > 100)
+        || input
+            .profile
+            .favorite_character
+            .as_deref()
+            .is_some_and(|v| v.chars().count() > 100)
+    {
+        return problem::response(
+            "invalid_request",
+            "Invalid profile fields",
             400,
             &correlation,
         );
@@ -298,6 +407,12 @@ pub async fn start_registration(
     let stored = StoredRegistration {
         username,
         display_name: display_name.to_owned(),
+        email: input.email.trim().to_owned(),
+        email_normalized,
+        mobile,
+        status_message: input.profile.status_message,
+        favorite_character: input.profile.favorite_character,
+        interests: input.profile.interests,
         user_handle,
         authenticator_label: authenticator_label.to_owned(),
         locale: input.locale,
@@ -486,6 +601,11 @@ async fn finish_registration_inner(
     canonicalize_transports(&mut credential.transports);
     let principal_id = PrincipalId::new_v4().to_string();
     let identifier_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
+    let email_identifier_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
+    let mobile_identifier_id = stored
+        .mobile
+        .as_ref()
+        .map(|_| IdentifierId::new_v7(worker::Date::now().as_millis()).to_string());
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let session_id = SessionId::new_v7(worker::Date::now().as_millis()).to_string();
     let session_wire = random_secret_wire();
@@ -512,6 +632,19 @@ async fn finish_registration_inner(
         &stored.locale,
         &identifier_id,
         &stored.username,
+        &email_identifier_id,
+        &stored.email,
+        &stored.email_normalized,
+        mobile_identifier_id.as_deref(),
+        stored
+            .mobile
+            .as_ref()
+            .map(|v| v.country_calling_code.as_str()),
+        stored.mobile.as_ref().map(|v| v.national_number.as_str()),
+        stored.mobile.as_ref().map(|v| v.normalized.as_str()),
+        stored.status_message.as_deref(),
+        stored.favorite_character.as_deref(),
+        &serde_json::to_string(&stored.interests)?,
         &authenticator_id,
         credential.id.as_bytes(),
         credential.public_key_cose.as_bytes(),
@@ -539,7 +672,10 @@ async fn finish_registration_inner(
                 "principal_id": principal_id,
                 "lifecycle_state": "active",
                 "profile": {"display_name": stored.display_name, "locale": stored.locale},
-                "identifiers": [{"identifier_id": identifier_id, "kind":"username", "value":stored.username, "created_at":created_at, "updated_at":created_at}],
+                "identifiers": [
+                    {"identifier_id": identifier_id, "kind":"username", "value":stored.username,"is_primary":true,"verification_state":"verified","verified_at":created_at, "created_at":created_at, "updated_at":created_at},
+                    {"identifier_id": email_identifier_id, "kind":"email", "value":stored.email,"is_primary":true,"verification_state":"unverified","verified_at":null, "created_at":created_at, "updated_at":created_at}
+                ],
                 "created_at": created_at, "updated_at": created_at
             },
             "authenticator": {

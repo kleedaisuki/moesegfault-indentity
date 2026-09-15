@@ -49,6 +49,67 @@ pub fn normalize_username(input: &str) -> Result<String, PolicyError> {
     Ok(value)
 }
 
+/// 验证新密码并保留 Unicode 与空格语义。/ Validates a new password while preserving Unicode and whitespace semantics.
+///
+/// 密码不会被 trim 或改变大小写。限制按 Unicode scalar value 计数，避免前端与
+/// 服务端对 UTF-8 字节长度产生歧义。Passwords are never trimmed or case-folded. The
+/// limit counts Unicode scalar values to avoid client/server disagreement over UTF-8 bytes.
+pub fn validate_password(input: &str) -> Result<(), PolicyError> {
+    let length = input.chars().count();
+    if !(12..=128).contains(&length) || input.chars().any(char::is_control) {
+        return Err(PolicyError::InvalidPassword);
+    }
+    Ok(())
+}
+
+/// 规范化电子邮箱用于查找与唯一性；原始显示值应另行保存。
+/// Normalizes an email address for lookup and uniqueness; callers should retain
+/// the original display value separately.
+pub fn normalize_email(input: &str) -> Result<String, PolicyError> {
+    let value = input.trim();
+    if value.len() > 254 || value.chars().any(char::is_control) {
+        return Err(PolicyError::InvalidEmail);
+    }
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return Err(PolicyError::InvalidEmail);
+    };
+    if local.is_empty()
+        || local.len() > 64
+        || domain.is_empty()
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || !domain.contains('.')
+        || domain
+            .bytes()
+            .any(|b| !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.'))
+    {
+        return Err(PolicyError::InvalidEmail);
+    }
+    Ok(format!("{local}@{}", domain.to_ascii_lowercase()))
+}
+
+/// 从可选国际区号与本地号码生成 E.164 规范形式。
+/// Produces canonical E.164 form from a calling code and national number.
+pub fn normalize_mobile(calling_code: &str, national_number: &str) -> Result<String, PolicyError> {
+    let calling_code = calling_code.trim().trim_start_matches('+');
+    let national_number: String = national_number
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '(' | ')'))
+        .collect();
+    if calling_code.is_empty()
+        || calling_code.len() > 3
+        || calling_code.starts_with('0')
+        || !calling_code.bytes().all(|b| b.is_ascii_digit())
+        || national_number.is_empty()
+        || national_number.starts_with('0')
+        || !national_number.bytes().all(|b| b.is_ascii_digit())
+        || calling_code.len() + national_number.len() > 15
+    {
+        return Err(PolicyError::InvalidMobile);
+    }
+    Ok(format!("+{calling_code}{national_number}"))
+}
+
 /// 验证 PKCE S256 challenge 的 RFC 7636 线格式。
 /// Validates the RFC 7636 wire format of a PKCE S256 challenge.
 pub fn validate_pkce_s256(challenge: &str) -> Result<(), PolicyError> {
@@ -73,6 +134,12 @@ pub fn redirect_uri_matches(requested: &str, registered: &[String]) -> bool {
 pub enum PolicyError {
     #[error("invalid username")]
     InvalidUsername,
+    #[error("invalid password")]
+    InvalidPassword,
+    #[error("invalid email address")]
+    InvalidEmail,
+    #[error("invalid mobile number")]
+    InvalidMobile,
     #[error("invalid PKCE S256 challenge")]
     InvalidPkce,
 }
@@ -117,5 +184,39 @@ mod tests {
             "HTTPS://client.example/callback",
             &allowed
         ));
+    }
+
+    #[test]
+    fn password_policy_accepts_passphrases_without_composition_rules() {
+        assert!(validate_password("correct horse battery staple").is_ok());
+        assert!(validate_password("萌えセグフォルトの長い合言葉").is_ok());
+        assert_eq!(
+            validate_password("too-short"),
+            Err(PolicyError::InvalidPassword)
+        );
+        assert_eq!(
+            validate_password("long enough\nno"),
+            Err(PolicyError::InvalidPassword)
+        );
+    }
+
+    #[test]
+    fn contacts_have_canonical_lookup_forms() {
+        assert_eq!(
+            normalize_email(" Klee@Example.COM ").unwrap(),
+            "Klee@example.com"
+        );
+        assert_eq!(
+            normalize_email("not-an-email"),
+            Err(PolicyError::InvalidEmail)
+        );
+        assert_eq!(
+            normalize_mobile("+86", "138-0013-8000").unwrap(),
+            "+8613800138000"
+        );
+        assert_eq!(
+            normalize_mobile("086", "13800138000"),
+            Err(PolicyError::InvalidMobile)
+        );
     }
 }

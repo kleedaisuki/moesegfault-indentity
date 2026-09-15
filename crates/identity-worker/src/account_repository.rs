@@ -65,6 +65,16 @@ pub struct IdentifierView {
     pub kind: String,
     /// 用户可见的规范 username。/ User-visible canonical username.
     pub value: String,
+    /// 移动号码国际区号。/ Mobile country calling code.
+    pub country_calling_code: Option<String>,
+    /// 移动号码本地部分。/ Mobile national number.
+    pub national_number: Option<String>,
+    /// 是否为该类别的主标识符。/ Whether this is the primary identifier of its kind.
+    pub is_primary: bool,
+    /// 带外验证状态。/ Out-of-band verification state.
+    pub verification_state: String,
+    /// 验证时间（Unix 秒）。/ Verification time in Unix seconds.
+    pub verified_at: Option<i64>,
     /// 创建时间（Unix 秒）。/ Creation time in Unix seconds.
     pub created_at: i64,
     /// 最近更新时间（Unix 秒）。/ Last-update time in Unix seconds.
@@ -281,7 +291,10 @@ pub async fn account(db: &D1Database, principal_id: &str) -> Result<Option<Accou
         .bind(&[text(principal_id)])?
         .first::<AccountRow>(None)
         .await?;
-    row.map(account_from_row).transpose()
+    let Some(row) = row else { return Ok(None) };
+    let mut account = account_from_row(row)?;
+    account.identifiers = identifiers(db, principal_id).await?;
+    Ok(Some(account))
 }
 
 /// 更新 display name 和/或 locale，并同步主体的账户级更新时间。
@@ -427,13 +440,66 @@ pub async fn schedule_self_deletion(
 pub async fn identifiers(db: &D1Database, principal_id: &str) -> Result<Vec<IdentifierView>> {
     primary(db)?
         .prepare(
-            "SELECT identifier_id,kind,value,created_at,updated_at FROM identifiers \
+            "SELECT identifier_id,kind,value,country_calling_code,national_number,is_primary,verification_state,verified_at,created_at,updated_at FROM identifiers \
              WHERE principal_id=?1 ORDER BY created_at,identifier_id",
         )
         .bind(&[text(principal_id)])?
         .all()
         .await?
         .results()
+}
+
+/// 为活动账户添加未验证联系渠道。/ Adds an unverified contact channel to an active account.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_contact(
+    db: &D1Database,
+    principal_id: &str,
+    identifier_id: &str,
+    kind: &str,
+    value: &str,
+    normalized_value: &str,
+    calling_code: Option<&str>,
+    national_number: Option<&str>,
+    is_primary: bool,
+    audit_id: &str,
+    correlation_id: &str,
+    now: i64,
+) -> Result<Option<IdentifierView>> {
+    let results = db.batch(vec![
+        db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND is_primary=1 AND ?3=1")
+            .bind(&[text(principal_id),text(kind),integer(i64::from(is_primary)),integer(now)])?,
+        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,country_calling_code,national_number,is_primary,verification_state,created_at,updated_at) SELECT ?1,principal_id,?3,?4,?5,?6,?7,CASE WHEN ?8=1 OR NOT EXISTS(SELECT 1 FROM identifiers x WHERE x.principal_id=?2 AND x.kind=?3) THEN 1 ELSE 0 END,'unverified',?9,?9 FROM principals WHERE principal_id=?2 AND kind='human' AND lifecycle_state='active' AND ?3 IN ('email','mobile')")
+            .bind(&[text(identifier_id),text(principal_id),text(kind),text(value),text(normalized_value),optional_text(calling_code),optional_text(national_number),integer(i64::from(is_primary)),integer(now)])?,
+        db.prepare("UPDATE principals SET updated_at=?3 WHERE principal_id=?1 AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?2 AND principal_id=?1)")
+            .bind(&[text(principal_id),text(identifier_id),integer(now)])?,
+        db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision) SELECT ?1,'identity.identifier.created',?2,?2,?3,?3,'success',?4,1 FROM identifiers WHERE identifier_id=?5 AND principal_id=?3")
+            .bind(&[text(audit_id),integer(now),text(principal_id),text(correlation_id),text(identifier_id)])?,
+        conditional_archive_outbox(db, audit_id, now)?,
+    ]).await?;
+    if !changed(results.get(1))? {
+        return Ok(None);
+    }
+    identifier(db, principal_id, identifier_id).await
+}
+
+/// 删除联系渠道但保留 username 账户锚点。/ Deletes a contact channel while retaining the username account anchor.
+pub async fn delete_contact(
+    db: &D1Database,
+    principal_id: &str,
+    identifier_id: &str,
+    audit_id: &str,
+    correlation_id: &str,
+    now: i64,
+) -> Result<bool> {
+    let results = db.batch(vec![
+        db.prepare("UPDATE principals SET updated_at=?3 WHERE principal_id=?1 AND lifecycle_state='active' AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?2 AND principal_id=?1 AND kind IN ('email','mobile'))")
+            .bind(&[text(principal_id),text(identifier_id),integer(now)])?,
+        db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision) SELECT ?1,'identity.identifier.deleted',?2,?2,?3,?3,'success',?4,1 FROM identifiers WHERE identifier_id=?5 AND principal_id=?3 AND kind IN ('email','mobile')")
+            .bind(&[text(audit_id),integer(now),text(principal_id),text(correlation_id),text(identifier_id)])?,
+        conditional_archive_outbox(db, audit_id, now)?,
+        db.prepare("DELETE FROM identifiers WHERE identifier_id=?2 AND principal_id=?1 AND kind IN ('email','mobile')").bind(&[text(principal_id),text(identifier_id)])?,
+    ]).await?;
+    changed(results.get(3))
 }
 
 /// 创建首期唯一的 username 标识符；调用方须传入领域层规范化后的值。
@@ -452,8 +518,8 @@ pub async fn create_identifier(
     let results = db
         .batch(vec![
             db.prepare(
-                "INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,created_at,updated_at) \
-                 SELECT ?1,principal_id,'username',?3,?4,?5,?5 FROM principals \
+                "INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,verified_at,created_at,updated_at) \
+                 SELECT ?1,principal_id,'username',?3,?4,1,'verified',?5,?5,?5 FROM principals \
                  WHERE principal_id=?2 AND kind='human' AND lifecycle_state='active'",
             )
             .bind(&[
@@ -1326,7 +1392,7 @@ async fn identifier(
 ) -> Result<Option<IdentifierView>> {
     primary(db)?
         .prepare(
-            "SELECT identifier_id,kind,value,created_at,updated_at FROM identifiers \
+            "SELECT identifier_id,kind,value,country_calling_code,national_number,is_primary,verification_state,verified_at,created_at,updated_at FROM identifiers \
              WHERE principal_id=?1 AND identifier_id=?2",
         )
         .bind(&[text(principal_id), text(identifier_id)])?
@@ -1369,6 +1435,11 @@ fn account_from_row(row: AccountRow) -> Result<AccountView> {
                 identifier_id,
                 kind,
                 value,
+                country_calling_code: None,
+                national_number: None,
+                is_primary: true,
+                verification_state: "verified".to_owned(),
+                verified_at: Some(created_at),
                 created_at,
                 updated_at,
             }]

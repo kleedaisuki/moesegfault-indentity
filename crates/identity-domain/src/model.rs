@@ -84,6 +84,52 @@ pub struct BindingSummary {
     pub created_at: u64,
 }
 
+/// 账户可验证联系渠道。/ Verifiable account contact channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactKind {
+    /// 电子邮箱地址。/ Email address.
+    Email,
+    /// E.164 国际电话号码。/ E.164 international telephone number.
+    Mobile,
+}
+
+/// 联系渠道的验证生命周期。/ Verification lifecycle for a contact channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationState {
+    /// 尚未完成带外验证。/ Out-of-band verification has not completed.
+    Unverified,
+    /// 联系渠道已经过验证。/ The contact channel has been verified.
+    Verified,
+}
+
+/// 认证方法；类型显式保留未来 MFA 组合，而不是散落字符串判断。
+/// Authentication method; the type reserves future MFA composition instead of
+/// scattering string comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationMethod {
+    /// 用户记忆密码。/ User-memorized password.
+    Password,
+    /// WebAuthn Passkey。/ WebAuthn passkey.
+    Passkey,
+    /// 外部 OpenID Connect 身份。/ External OpenID Connect identity.
+    Federated,
+}
+
+/// 多因素认证器类别。/ Multi-factor authenticator category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MfaFactorKind {
+    /// 基于时间的一次性密码。/ Time-based one-time password (TOTP).
+    Totp,
+    /// Passkey 作为第二或更高保证级别因素。/ Passkey used as a higher-assurance factor.
+    Passkey,
+    /// 单次使用恢复码。/ Single-use recovery code.
+    RecoveryCode,
+}
+
 /// 浏览器认证事务类型。/ Browser ceremony transaction kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

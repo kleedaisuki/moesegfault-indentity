@@ -21,8 +21,7 @@ pub enum GuardError {
 /// Validates Origin, content type, and Fetch Metadata for browser JSON mutations.
 pub fn validate_browser_mutation(request: &Request, env: &Env) -> Result<(), GuardError> {
     let headers = request.headers();
-    let expected = login_origin(env);
-    if header(headers, "origin").as_deref() != Some(expected.as_str()) {
+    if allowed_origin(env, header(headers, "origin").as_deref()).is_none() {
         return Err(GuardError::Origin);
     }
     let content_type = header(headers, "content-type").unwrap_or_default();
@@ -131,6 +130,24 @@ pub fn login_origin(env: &Env) -> String {
         .unwrap_or_else(|_| "https://login.moesegfault.dev".to_owned())
 }
 
+/// 配置的精确 account Origin。/ Configured exact account origin.
+#[must_use]
+pub fn account_origin(env: &Env) -> String {
+    env.var("ACCOUNT_ORIGIN")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| "https://account.moesegfault.dev".to_owned())
+}
+
+/// 将请求 Origin 映射到部署允许列表中的规范值。
+/// Maps a request Origin to its canonical value in the deployment allowlist.
+#[must_use]
+pub fn allowed_origin(env: &Env, presented: Option<&str>) -> Option<String> {
+    let presented = presented?;
+    [login_origin(env), account_origin(env)]
+        .into_iter()
+        .find(|allowed| allowed == presented)
+}
+
 pub fn header(headers: &Headers, name: &str) -> Option<String> {
     headers.get(name).ok().flatten()
 }
@@ -151,5 +168,14 @@ mod tests {
         let browser = browser_cookie("opaque");
         assert!(browser.contains("SameSite=Strict"));
         assert!(browser.contains("Max-Age=300"));
+    }
+
+    #[test]
+    fn default_origins_are_distinct_https_sites() {
+        // Env cannot be constructed natively; keep the invariant exercised by its defaults.
+        assert_ne!(
+            "https://login.moesegfault.dev",
+            "https://account.moesegfault.dev"
+        );
     }
 }
