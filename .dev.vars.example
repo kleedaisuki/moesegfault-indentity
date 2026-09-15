@@ -3,8 +3,9 @@ ENVIRONMENT=development
 ISSUER=http://localhost:8787
 LOGIN_ORIGIN=http://localhost:5173
 ACCOUNT_ORIGIN=http://localhost:5174
-# Production/staging use the custom domain attached to the private AVATARS R2 binding.
-# 生产/预发布环境使用绑定到私有 AVATARS R2 的自定义域名。
+# Production/staging publish immutable reads through an R2 custom domain; the AVATARS
+# Worker binding retains private write/delete authority. / 生产/预发布通过 R2 自定义域名
+# 公开不可变读取；AVATARS Worker binding 仍独占私有写入/删除权限。
 AVATAR_PUBLIC_ORIGIN=https://avatars-development.moesegfault.dev
 OAUTH_ENABLED=false
 OIDC_ACTIVE_KID=disabled

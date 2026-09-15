@@ -10,6 +10,8 @@ readonly STAGING_BUCKET="moesegfault-identity-audit-staging"
 readonly PRODUCTION_BUCKET="moesegfault-identity-audit-production"
 readonly STAGING_AVATAR_BUCKET="moesegfault-avatars-staging"
 readonly PRODUCTION_AVATAR_BUCKET="moesegfault-avatars-production"
+readonly STAGING_AVATAR_DOMAIN="avatars-staging.moesegfault.dev"
+readonly PRODUCTION_AVATAR_DOMAIN="avatars.moesegfault.dev"
 readonly TARGET="${1:-}"
 
 if [[ "$TARGET" != "staging" && "$TARGET" != "production" ]]; then
@@ -58,6 +60,19 @@ ensure_bucket() {
   printf 'verified R2 bucket (bootstrap never enables public access) / R2 存储桶已验证（引导流程不开启公网访问）: %s\n' "$name"
 }
 
+ensure_bucket_domain() {
+  local bucket="$1"
+  local domain="$2"
+  if ! npx --no-install wrangler r2 bucket domain get "$bucket" --domain "$domain" >/dev/null 2>&1; then
+    # R2 custom domains publish only immutable avatar bytes; the AVATARS Worker binding remains
+    # private for writes/deletes. / R2 自定义域名仅发布不可变头像；AVATARS Worker binding 的写入/删除仍为私有。
+    npx --no-install wrangler r2 bucket domain add "$bucket" \
+      --domain "$domain" --zone-id "$CLOUDFLARE_ZONE_ID" --min-tls 1.2 --force
+  fi
+  npx --no-install wrangler r2 bucket domain get "$bucket" --domain "$domain" >/dev/null
+  printf 'verified avatar custom domain / 头像自定义域名已验证: %s -> %s\n' "$domain" "$bucket"
+}
+
 verify_runtime_secrets() {
   local target="$1"
   local secrets_json secret
@@ -101,6 +116,7 @@ require_command jq
 require_command npx
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+: "${CLOUDFLARE_ZONE_ID:?CLOUDFLARE_ZONE_ID is required for avatar custom domains}"
 
 ensure_d1 "$STAGING_DB" "$STAGING_DB_ID"
 ensure_d1 "$PRODUCTION_DB" "$PRODUCTION_DB_ID"
@@ -108,6 +124,8 @@ ensure_bucket "$STAGING_BUCKET"
 ensure_bucket "$PRODUCTION_BUCKET"
 ensure_bucket "$STAGING_AVATAR_BUCKET"
 ensure_bucket "$PRODUCTION_AVATAR_BUCKET"
+ensure_bucket_domain "$STAGING_AVATAR_BUCKET" "$STAGING_AVATAR_DOMAIN"
+ensure_bucket_domain "$PRODUCTION_AVATAR_BUCKET" "$PRODUCTION_AVATAR_DOMAIN"
 verify_runtime_secrets "$TARGET"
 
 # Avatar object names are immutable UUIDs. Replaced/deleted objects are removed best-effort by

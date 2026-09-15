@@ -321,9 +321,10 @@ pub async fn get_self(request: Request, context: RouteContext<()>) -> Result<Res
     else {
         return authentication_required(&correlation);
     };
+    let public_origin = avatar_public_origin(&context.env)?;
     json(
         &serde_json::json!({
-            "account": account_to_wire(account),
+            "account": account_to_wire(account, &public_origin),
             "csrf_token": session_csrf(&request, &context.env)?,
             "csrf_expires_at": date_time(now_seconds() + 43_200),
         }),
@@ -381,8 +382,9 @@ pub async fn update_self(mut request: Request, context: RouteContext<()>) -> Res
     else {
         return authentication_required(&correlation);
     };
+    let public_origin = avatar_public_origin(&context.env)?;
     json(
-        &account_to_wire(account),
+        &account_to_wire(account, &public_origin),
         200,
         &correlation,
         &context.env,
@@ -1602,9 +1604,10 @@ pub(crate) async fn finish_authenticator_registration(
     .into_iter()
     .find(|item| item.authenticator_id == authenticator_id)
     .ok_or_else(|| Error::RustError("created authenticator disappeared".into()))?;
+    let public_origin = avatar_public_origin(&context.env)?;
     json(
         &serde_json::json!({
-            "account": account_to_wire(account),
+            "account": account_to_wire(account, &public_origin),
             "authenticator": authenticator_to_wire(authenticator),
             "csrf_token": session_csrf(request, &context.env)?,
             "csrf_expires_at": date_time(now + 43_200),
@@ -2083,14 +2086,16 @@ fn new_recovery_codes(
         .unzip()
 }
 
-fn account_to_wire(value: repository::AccountView) -> AccountWire {
-    let _private_avatar_key = value.avatar_r2_key;
+fn account_to_wire(value: repository::AccountView, avatar_public_origin: &str) -> AccountWire {
+    let avatar_url = value
+        .avatar_r2_key
+        .map(|key| format!("{avatar_public_origin}/{key}"));
     AccountWire {
         principal_id: value.principal_id,
         lifecycle_state: value.lifecycle_state,
         profile: ProfileWire {
             display_name: value.display_name,
-            avatar_url: None,
+            avatar_url,
             locale: value.locale,
         },
         identifiers: value
@@ -2374,21 +2379,26 @@ mod tests {
     }
 
     #[test]
-    fn wire_models_convert_unix_time_and_drop_private_avatar_key() {
-        let wire = account_to_wire(repository::AccountView {
-            principal_id: "p".into(),
-            lifecycle_state: "active".into(),
-            display_name: "Klee".into(),
-            avatar_r2_key: Some("private/r2/key".into()),
-            locale: "zh-CN".into(),
-            identifiers: vec![],
-            created_at: 1_700_000_000,
-            updated_at: 1_700_000_001,
-        });
+    fn wire_models_convert_unix_time_and_publish_avatar_url() {
+        let wire = account_to_wire(
+            repository::AccountView {
+                principal_id: "p".into(),
+                lifecycle_state: "active".into(),
+                display_name: "Klee".into(),
+                avatar_r2_key: Some("avatars/id/avatar.png".into()),
+                locale: "zh-CN".into(),
+                identifiers: vec![],
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_001,
+            },
+            "https://avatars.moesegfault.dev",
+        );
         let json = serde_json::to_value(wire).expect("serialize");
-        assert_eq!(json["profile"]["avatar_url"], serde_json::Value::Null);
+        assert_eq!(
+            json["profile"]["avatar_url"],
+            "https://avatars.moesegfault.dev/avatars/id/avatar.png"
+        );
         assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
-        assert!(!json.to_string().contains("private/r2/key"));
     }
 
     #[test]
