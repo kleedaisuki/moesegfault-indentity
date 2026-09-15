@@ -25,11 +25,24 @@ export function resolveAccountOrigin(location: Pick<Location, "hostname">): stri
   return "https://account.moesegfault.dev";
 }
 
-/** 只接受与当前 Login 环境配对的 Account origin，路径可由 Account 指定。Accepts return paths only on the paired Account origin. */
-export function resolveAccountReturnUri(location: Pick<Location, "hostname" | "href">): string {
-  const accountOrigin = resolveAccountOrigin(location);
+const accountReturnPaths = new Set(["/", "/profile", "/security", "/sessions", "/apps"]);
+
+/**
+ * 验证 Account 回跳地址是当前环境的已知页面，且不携带用户信息、查询或片段。
+ * Validates that an Account return URI is an exact known page in the paired environment,
+ * without user-info, query, or fragment components.
+ */
+export function validateAccountReturnUri(location: Pick<Location, "hostname" | "href">): string | undefined {
   const requested = new URL(location.href).searchParams.get("return_uri");
-  if (!requested) return accountOrigin;
-  try { const parsed = new URL(requested); return parsed.origin === accountOrigin ? parsed.href : accountOrigin; }
-  catch { return accountOrigin; }
+  if (!requested) return undefined;
+  try {
+    const parsed = new URL(requested);
+    if (parsed.origin !== resolveAccountOrigin(location) || parsed.username || parsed.password || parsed.search || parsed.hash || !accountReturnPaths.has(parsed.pathname)) return undefined;
+    return parsed.href;
+  } catch { return undefined; }
+}
+
+/** 为 Account 链接提供经验证的回跳地址，无效时回到配对的 Account 首页。Returns a validated Account link, falling back to the paired Account home. */
+export function resolveAccountReturnUri(location: Pick<Location, "hostname" | "href">): string {
+  return validateAccountReturnUri(location) ?? resolveAccountOrigin(location);
 }

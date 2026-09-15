@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAccountOrigin, resolveAccountReturnUri, resolveIdentityOrigin } from "./environment";
+import { resolveAccountOrigin, resolveAccountReturnUri, resolveIdentityOrigin, validateAccountReturnUri } from "./environment";
 
 describe("resolveIdentityOrigin", () => {
   it("keeps staging and production authorities isolated", () => {
@@ -25,5 +25,14 @@ describe("resolveIdentityOrigin", () => {
     expect(resolveAccountReturnUri({ hostname: "login-staging.moesegfault.dev", href: "https://login-staging.moesegfault.dev/passkey/enroll?return_uri=https%3A%2F%2Faccount-staging.moesegfault.dev%2Fsecurity" })).toBe("https://account-staging.moesegfault.dev/security");
     expect(resolveAccountReturnUri({ hostname: "login-staging.moesegfault.dev", href: "https://login-staging.moesegfault.dev/passkey/enroll?return_uri=https%3A%2F%2Faccount.moesegfault.dev%2Fsecurity" })).toBe("https://account-staging.moesegfault.dev");
     expect(resolveAccountReturnUri({ hostname: "login.moesegfault.dev", href: "https://login.moesegfault.dev/passkey/enroll?return_uri=javascript%3Aalert(1)" })).toBe("https://account.moesegfault.dev");
+  });
+
+  it("allows only exact known Account paths without extra URL components", () => {
+    const login = "https://login.moesegfault.dev/login?return_uri=";
+    expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/security")}` })).toBe("https://account.moesegfault.dev/security");
+    expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/security/")}` })).toBeUndefined();
+    expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/security?next=https://evil.example")}` })).toBeUndefined();
+    expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/unknown")}` })).toBeUndefined();
+    expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account-staging.moesegfault.dev/security")}` })).toBeUndefined();
   });
 });

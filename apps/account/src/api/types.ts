@@ -1,6 +1,7 @@
 /** RFC 9457 问题详情。RFC 9457 Problem Details. */
 export interface ProblemDetails {
   type: string; title: string; status: number; detail?: string; correlation_id?: string;
+  error_code?: string;
   errors?: Record<string, string[]>;
 }
 

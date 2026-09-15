@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { IdentityApiClient } from "./api/client";
-import { reauthenticateAndStartEnrollment } from "./pages";
+import { postAuthenticationDestination, reauthenticateAndStartEnrollment } from "./pages";
+
+describe("ordinary login return navigation", () => {
+  it("returns to Account but never overrides OAuth transaction resume", () => {
+    expect(postAuthenticationDestination({}, "https://account.moesegfault.dev/security")).toBe("https://account.moesegfault.dev/security");
+    expect(postAuthenticationDestination({ authorization_resume_uri: "https://client.example/callback" }, "https://account.moesegfault.dev/security")).toBe("https://client.example/callback");
+    expect(postAuthenticationDestination({})).toBeUndefined();
+  });
+});
 
 describe("password reauthentication for first-passkey enrollment", () => {
   it("refreshes the session CSRF with password auth before starting enrollment", async () => {

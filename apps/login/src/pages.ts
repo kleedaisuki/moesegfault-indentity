@@ -9,7 +9,7 @@ import { el, errorMessage, field, replace, setButtonBusy, statePanel } from "./u
 import { icon, iconLabel } from "./ui/icons";
 import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
-import { resolveAccountReturnUri } from "./environment";
+import { resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -26,14 +26,14 @@ export async function renderPage(route: AppRoute, main: HTMLElement, api: Identi
     else if (route === "/recovery") renderRecovery(main, api, signal, t);
     else if (route === "/passkey/enroll") await renderPasskeyEnrollment(main, api, signal, t);
     else if (route === "/recovery-codes/rotate") renderRecoveryCodeRotation(main, api, signal, t);
-    else renderLogin(main, api, signal, t);
+    else renderLogin(main, api, signal, t, validateAccountReturnUri(location));
   } catch (error) {
     if (!signal.aborted) replace(main, statePanel("error", t("loginFailed"), errorMessage(error)));
   }
 }
 
 /** 呈现密码为默认、Passkey 为平等可选项的登录页。Renders password-first login with passkey as an equal option. */
-function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string): void {
+function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, returnUri?: string): void {
   const message = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
   const submit = el("button", { className: "button button--primary button--wide", attrs: { type: "submit" } }, iconLabel("lock", t("signInPassword")));
   const form = el("form", { className: "auth-form" },
@@ -46,7 +46,7 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
     try {
       const data = new FormData(form);
       const result = await api.authenticateWithPassword({ login: String(data.get("login") ?? "").trim(), password: String(data.get("password") ?? ""), ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, await requireBrowserCsrf(api, signal), signal);
-      finishAuthentication(main, result, t);
+      finishAuthentication(main, result, t, returnUri);
     } catch (error) { replace(message, statePanel("error", t("loginFailed"), errorMessage(error))); setButtonBusy(submit, false); }
   });
 
@@ -57,7 +57,7 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
       const transaction = await api.startAuthentication({ purpose: "login", ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, await requireBrowserCsrf(api, signal), signal);
       const credential = await getPasskey(transaction.public_key, signal);
       const result = await api.completeAuthentication(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
-      finishAuthentication(main, result, t);
+      finishAuthentication(main, result, t, returnUri);
     } catch (error) { replace(message, statePanel("error", t("loginFailed"), errorMessage(error))); setButtonBusy(passkey, false); }
   });
 
@@ -201,7 +201,17 @@ function stepUpCoordinator(api: IdentityApiClient): InlineStepUpCoordinator {
   stepUpCoordinators.set(api, coordinator); return coordinator;
 }
 
-function finishAuthentication(main: HTMLElement, result: PasswordSessionResult, t: (key: MessageKey) => string): void { rememberCsrf(result.csrf_token); if (result.authorization_resume_uri) { navigateToHttpUrl(result.authorization_resume_uri); return; } replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t))); }
+function finishAuthentication(main: HTMLElement, result: PasswordSessionResult, t: (key: MessageKey) => string, returnUri?: string): void {
+  rememberCsrf(result.csrf_token);
+  const destination = postAuthenticationDestination(result, returnUri);
+  if (destination) { navigateToHttpUrl(destination); return; }
+  replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t)));
+}
+
+/** OAuth 恢复始终优先于 Account 回跳。OAuth transaction resumption always takes precedence over an Account return URI. */
+export function postAuthenticationDestination(result: Pick<PasswordSessionResult, "authorization_resume_uri">, returnUri?: string): string | undefined {
+  return result.authorization_resume_uri ?? returnUri;
+}
 function finishRegistration(main: HTMLElement, result: RegistrationResult, t: (key: MessageKey) => string): void {
   rememberCsrf(result.csrf_token);
   if (result.recovery_codes?.length) { replace(main, pageHeading("ACCOUNT_CREATED", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t, result.next_uri)); return; }
