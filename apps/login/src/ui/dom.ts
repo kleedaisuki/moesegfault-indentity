@@ -47,20 +47,13 @@ export function replace(container: Element, ...children: Child[]): void {
 export function field(
   label: string,
   name: string,
-  options: { type?: string; autocomplete?: string; required?: boolean; placeholder?: string; value?: string } = {},
+  options: { type?: string; autocomplete?: string; required?: boolean; placeholder?: string; value?: string; minlength?: string; pattern?: string; icon?: string; accept?: string } = {},
 ): HTMLLabelElement {
   return el("label", { className: "field" },
     el("span", { className: "field__label" }, label),
-    el("input", {
-      attrs: {
-        name,
-        type: options.type ?? "text",
-        autocomplete: options.autocomplete ?? "off",
-        required: options.required,
-        placeholder: options.placeholder,
-        value: options.value,
-      },
-    }),
+    el("span", { className: "field__control", dataset: { icon: options.icon ?? "" } },
+      el("input", { attrs: { name, type: options.type ?? "text", autocomplete: options.autocomplete ?? "off", required: options.required, placeholder: options.placeholder, value: options.value, minlength: options.minlength, pattern: options.pattern, accept: options.accept } }),
+    ),
   );
 }
 

@@ -1,5 +1,19 @@
 # moeSegFault Login SPA
 
+`login.moesegfault.dev` 只负责认证和账号创建：密码与 Passkey 是并列选项。资料、安全方式、会话与未来的 2FA 管理由 `account.moesegfault.dev` 承担，登录站不再提供账号管理路由。GitHub 等联合登录将在 Identity 提供匿名联合认证契约后通过能力发现启用；当前不会把“账号绑定”错误伪装成登录。
+
+The login origin only authenticates and creates accounts. Password and Passkey are alternatives; profile, security methods, sessions, and future 2FA management belong to the separate Account application. Federated login will be capability-discovered after Identity exposes an anonymous federation contract; account linking is deliberately not misrepresented as sign-in.
+
+## Frontend contract / 前端契约
+
+- `POST /v1/password/registrations` 创建密码账号与初始会话；
+- `POST /v1/password/authentications` 以邮箱或用户名登录；
+- existing WebAuthn transaction endpoints remain the optional Passkey flow;
+- OAuth authorization transaction handles are held in memory and forwarded to every login method;
+- UI language (`zh-CN`, `en`, `ja`) and theme are the only values persisted locally. Credentials and CSRF material are never persisted.
+
+The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
+
 ## 内联 Passkey 再认证
 
 增加/撤销 Passkey、建立/解除 Identity Binding 和轮换恢复码等高风险操作以服务端的近期认证策略为准。首次请求如果返回结构化错误 `reauthentication_required`，前端会在当前页面中：

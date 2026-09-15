@@ -12,6 +12,9 @@ import type {
   IdentitySession,
   Account,
   ProblemDetails,
+  PasswordAuthenticationInput,
+  PasswordRegistrationInput,
+  PasswordSessionResult,
   PublicKeyCredentialCreationOptionsJson,
   PublicKeyCredentialJson,
   PublicKeyCredentialRequestOptionsJson,
@@ -88,6 +91,31 @@ export class IdentityApiClient {
   /** 建立或刷新匿名浏览器绑定和 CSRF token。Establishes or refreshes anonymous browser binding and CSRF token. */
   public getBrowserContext(signal?: AbortSignal) {
     return this.#request<BrowserContext>("/v1/browser-context", { method: "GET", signal });
+  }
+
+  /** 使用密码创建账号与会话。Creates an account and session with a password. */
+  public registerWithPassword(input: PasswordRegistrationInput, csrfToken: string, signal?: AbortSignal) {
+    return this.#request<PasswordSessionResult>("/v1/password/registrations", {
+      method: "POST", body: input, csrfToken, idempotencyKey: createIdempotencyKey(), signal,
+    });
+  }
+
+  /** 使用邮箱或用户名和密码创建会话。Creates a session with email/username and password. */
+  public authenticateWithPassword(input: PasswordAuthenticationInput, csrfToken: string, signal?: AbortSignal) {
+    return this.#request<PasswordSessionResult>("/v1/password/authentications", {
+      method: "POST", body: input, csrfToken, idempotencyKey: createIdempotencyKey(), signal,
+    });
+  }
+
+  /** 注册后把可选头像上传到独立媒体边界。Uploads an optional avatar to the dedicated media boundary after registration. */
+  public async uploadAvatar(file: File, csrfToken: string, signal?: AbortSignal): Promise<Account> {
+    const body = new FormData(); body.set("avatar", file);
+    const response = await this.#fetch(new URL("/v1/me/avatar", this.#origin), {
+      method: "POST", headers: { Accept: "application/json", "x-moesegfault-csrf": csrfToken, "Idempotency-Key": createIdempotencyKey() },
+      body, credentials: "include", cache: "no-store", redirect: "error", signal,
+    });
+    if (!response.ok) throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
+    return await response.json() as Account;
   }
 
   /** 创建 Passkey 注册事务。Starts a passkey registration transaction. */

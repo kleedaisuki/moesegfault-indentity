@@ -81,9 +81,51 @@ export interface CeremonyTransaction<TOptions> {
 export interface RegistrationStart {
   username: string;
   display_name: string;
+  email: string;
+  mobile?: MobileNumberInput;
   authenticator_label: string;
   locale?: string;
   registration_capability?: string;
+}
+
+/** 手机号码由国际区号与国家内号码组成，避免展示格式进入领域值。A mobile number split into calling code and national number. */
+export interface MobileNumberInput {
+  country_calling_code: string;
+  national_number: string;
+}
+
+/** 面向同好社区的趣味资料；均不参与认证决策。Fandom profile fields that never participate in authentication decisions. */
+export interface CommunityProfileInput {
+  status_message?: string;
+  favorite_character?: string;
+  interests?: string[];
+}
+
+/** 密码注册输入；Passkey 仍是独立可选路径。Password registration input; passkey remains a separate optional path. */
+export interface PasswordRegistrationInput {
+  username: string;
+  password: string;
+  display_name: string;
+  email: string;
+  mobile?: MobileNumberInput;
+  locale?: string;
+  profile?: CommunityProfileInput;
+}
+
+/** 密码登录输入。Password authentication input. */
+export interface PasswordAuthenticationInput {
+  login: string;
+  password: string;
+  authorization_transaction_id?: string;
+}
+
+/** 密码流程直接创建会话后的结果。Result after a direct password flow establishes a session. */
+export interface PasswordSessionResult {
+  account: Account;
+  session: IdentitySession;
+  authorization_resume_uri?: string;
+  csrf_token: string;
+  csrf_expires_at: string;
 }
 
 /** 注册完成后的可见结果；恢复代码只出现一次。Visible registration result; recovery codes are returned once. */

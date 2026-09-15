@@ -94,4 +94,22 @@ describe("IdentityApiClient", () => {
     expect(new Headers(init?.headers).get("idempotency-key")).toBe("completion-attempt");
     expect(JSON.parse(String(init?.body))).toEqual({ credential });
   });
+
+  it("uses the direct password registration contract with rich optional profile data", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ account: {}, session: {}, csrf_token: "next", csrf_expires_at: "later" }), { status: 201, headers: { "content-type": "application/json" } }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    await client.registerWithPassword({ username: "klee", password: "correct horse battery", display_name: "Klee", email: "klee@example.com", mobile: { country_calling_code: "+86", national_number: "13800000000" }, profile: { favorite_character: "Klee", interests: ["Linux", "ACG"] } }, "csrf");
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://identity.moesegfault.dev/v1/password/registrations");
+    expect(JSON.parse(String(init?.body))).toMatchObject({ email: "klee@example.com", mobile: { country_calling_code: "+86" }, profile: { interests: ["Linux", "ACG"] } });
+    expect(new Headers(init?.headers).get("idempotency-key")).toBeTruthy();
+  });
+
+  it("forwards authorization context to password login", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ authorization_uri: "https://github.com/login/oauth/authorize", transaction_id: "f1", expires_at: "later" }), { headers: { "content-type": "application/json" } }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    await client.authenticateWithPassword({ login: "klee", password: "secret", authorization_transaction_id: "oauth-1" }, "csrf");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/v1/password/authentications");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ authorization_transaction_id: "oauth-1" });
+  });
 });

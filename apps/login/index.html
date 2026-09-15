@@ -2,17 +2,19 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f9f7ff" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fffaf2" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#19100e" />
     <meta name="referrer" content="no-referrer" />
-    <meta name="description" content="moeSegFault 安全身份与 Passkey 管理" />
+    <meta name="description" content="使用密码或 Passkey 登录 moeSegFault" />
+    <link rel="icon" href="/assets/brand.svg" type="image/svg+xml" />
     <title>moeSegFault Identity</title>
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
     <div id="app"></div>
-    <noscript>此页面需要 JavaScript 才能调用浏览器的 Passkey API。</noscript>
+    <noscript>此页面需要 JavaScript 才能安全地连接身份服务。This page requires JavaScript to connect to Identity.</noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
