@@ -3,13 +3,32 @@
 -- username-only identifier shape while preserving existing username rows.
 -- 本迁移有意替换仅用户名的标识符结构，并保留已有用户名记录。
 
-PRAGMA foreign_keys = OFF;
-PRAGMA legacy_alter_table = ON;
+-- D1 keeps foreign-key enforcement enabled while applying migrations. Stage plain data
+-- backups, remove the dependency graph from leaves to root, and rebuild it from root to
+-- leaves. This keeps every statement valid and, unlike ALTER TABLE RENAME, never rewrites
+-- a child reference to a temporary table name.
+-- D1 在迁移期间始终启用外键。先暂存无约束数据，从叶到根移除依赖图，再从根到叶重建；
+-- 每条语句均保持有效，且不会像 ALTER TABLE RENAME 那样把子引用改写为临时表名。
 
--- Password becomes a first-class session method. Rebuilding the parent table in this
--- forward migration removes the v1 CHECK constraint without changing its public keys.
--- 密码成为一等会话认证方式；本向前迁移重建父表以移除 v1 CHECK 限制，同时保持公开键不变。
-ALTER TABLE identity_sessions RENAME TO identity_sessions_v1;
+CREATE TABLE _0002_identity_sessions_backup AS SELECT * FROM identity_sessions;
+CREATE TABLE _0002_binding_transactions_backup AS SELECT * FROM binding_transactions;
+CREATE TABLE _0002_oauth_authorization_transactions_backup AS SELECT * FROM oauth_authorization_transactions;
+CREATE TABLE _0002_oauth_authorization_codes_backup AS SELECT * FROM oauth_authorization_codes;
+CREATE TABLE _0002_oauth_refresh_token_families_backup AS SELECT * FROM oauth_refresh_token_families;
+CREATE TABLE _0002_binding_transaction_consumptions_backup AS SELECT * FROM binding_transaction_consumptions;
+CREATE TABLE _0002_webauthn_authorization_links_backup AS SELECT * FROM webauthn_authorization_links;
+CREATE TABLE _0002_oauth_authorization_code_uses_backup AS SELECT * FROM oauth_authorization_code_uses;
+CREATE TABLE _0002_oauth_refresh_tokens_backup AS SELECT * FROM oauth_refresh_tokens;
+
+DROP TABLE binding_transaction_consumptions;
+DROP TABLE webauthn_authorization_links;
+DROP TABLE oauth_authorization_code_uses;
+DROP TABLE oauth_refresh_tokens;
+DROP TABLE binding_transactions;
+DROP TABLE oauth_authorization_codes;
+DROP TABLE oauth_authorization_transactions;
+DROP TABLE oauth_refresh_token_families;
+DROP TABLE identity_sessions;
 
 CREATE TABLE identity_sessions (
     session_id TEXT PRIMARY KEY,
@@ -34,8 +53,157 @@ CREATE TABLE identity_sessions (
         OR (revoked_at IS NOT NULL AND revocation_reason IS NOT NULL))
 );
 
-INSERT INTO identity_sessions SELECT * FROM identity_sessions_v1;
-DROP TABLE identity_sessions_v1;
+CREATE TABLE binding_transactions (
+    transaction_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    provider_id TEXT NOT NULL REFERENCES binding_providers(provider_id) ON DELETE RESTRICT,
+    identity_session_id TEXT NOT NULL REFERENCES identity_sessions(session_id) ON DELETE RESTRICT,
+    provider_state_digest BLOB NOT NULL UNIQUE CHECK (length(provider_state_digest) = 32),
+    pkce_verifier_ciphertext BLOB NOT NULL CHECK (length(pkce_verifier_ciphertext) BETWEEN 32 AND 512),
+    pkce_verifier_nonce BLOB NOT NULL CHECK (length(pkce_verifier_nonce) IN (12, 24)),
+    pkce_key_revision INTEGER NOT NULL CHECK (pkce_key_revision > 0),
+    csrf_digest BLOB NOT NULL CHECK (length(csrf_digest) = 32),
+    -- The Worker derives this callback from its reviewed canonical issuer; the database
+    -- enforces transport/fragment shape without hard-coding one deployment hostname.
+    -- Worker 从经评审的规范 issuer 派生回调；数据库只约束传输与 fragment 形状，
+    -- 避免把 production hostname 写死后令 staging 无法使用同一 schema。
+    redirect_uri TEXT NOT NULL CHECK (
+        redirect_uri LIKE 'https://%'
+        AND instr(redirect_uri, '#') = 0
+    ),
+    policy_revision INTEGER NOT NULL CHECK (policy_revision > 0),
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'consumed_success', 'consumed_failure', 'cancelled')),
+    created_at INTEGER NOT NULL CHECK (created_at > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > created_at),
+    consumed_at INTEGER,
+    result_binding_id TEXT REFERENCES identity_bindings(binding_id) ON DELETE RESTRICT,
+    CHECK ((state = 'pending' AND consumed_at IS NULL AND result_binding_id IS NULL)
+        OR (state = 'consumed_success' AND consumed_at IS NOT NULL AND result_binding_id IS NOT NULL)
+        OR (state IN ('consumed_failure', 'cancelled') AND consumed_at IS NOT NULL AND result_binding_id IS NULL))
+);
+
+CREATE TABLE oauth_authorization_transactions (
+    authorization_transaction_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    redirect_uri TEXT NOT NULL CHECK (length(redirect_uri) BETWEEN 1 AND 2048),
+    response_type TEXT NOT NULL CHECK (response_type = 'code'),
+    scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 1024),
+    state_value TEXT NOT NULL CHECK (length(state_value) BETWEEN 1 AND 1024),
+    nonce TEXT NOT NULL CHECK (length(nonce) BETWEEN 8 AND 1024),
+    code_challenge TEXT NOT NULL CHECK (length(code_challenge) = 43),
+    code_challenge_method TEXT NOT NULL CHECK (code_challenge_method = 'S256'),
+    principal_id TEXT REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    identity_session_id TEXT REFERENCES identity_sessions(session_id) ON DELETE RESTRICT,
+    state TEXT NOT NULL DEFAULT 'awaiting_authentication'
+        CHECK (state IN ('awaiting_authentication', 'authenticated', 'completed', 'denied', 'expired')),
+    created_at INTEGER NOT NULL CHECK (created_at > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > created_at),
+    consumed_at INTEGER,
+    CHECK ((state IN ('awaiting_authentication', 'authenticated') AND consumed_at IS NULL)
+        OR (state IN ('completed', 'denied', 'expired') AND consumed_at IS NOT NULL)),
+    CHECK ((state = 'awaiting_authentication' AND principal_id IS NULL AND identity_session_id IS NULL)
+        OR state <> 'awaiting_authentication')
+);
+
+CREATE TABLE oauth_authorization_codes (
+    authorization_code_id TEXT PRIMARY KEY,
+    code_digest BLOB NOT NULL UNIQUE CHECK (length(code_digest) = 32),
+    authorization_transaction_id TEXT NOT NULL UNIQUE
+        REFERENCES oauth_authorization_transactions(authorization_transaction_id) ON DELETE RESTRICT,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    identity_session_id TEXT NOT NULL REFERENCES identity_sessions(session_id) ON DELETE RESTRICT,
+    redirect_uri TEXT NOT NULL CHECK (length(redirect_uri) BETWEEN 1 AND 2048),
+    scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 1024),
+    nonce TEXT NOT NULL CHECK (length(nonce) BETWEEN 8 AND 1024),
+    code_challenge TEXT NOT NULL CHECK (length(code_challenge) = 43),
+    code_challenge_method TEXT NOT NULL CHECK (code_challenge_method = 'S256'),
+    issued_at INTEGER NOT NULL CHECK (issued_at > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > issued_at),
+    consumed_at INTEGER,
+    revoked_at INTEGER,
+    CHECK (consumed_at IS NULL OR consumed_at >= issued_at),
+    CHECK (revoked_at IS NULL OR revoked_at >= issued_at)
+);
+
+CREATE TABLE oauth_refresh_token_families (
+    refresh_token_family_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    identity_session_id TEXT NOT NULL REFERENCES identity_sessions(session_id) ON DELETE RESTRICT,
+    scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 1024),
+    audience TEXT NOT NULL CHECK (length(audience) BETWEEN 1 AND 255),
+    created_at INTEGER NOT NULL CHECK (created_at > 0),
+    absolute_expires_at INTEGER NOT NULL CHECK (absolute_expires_at > created_at),
+    revoked_at INTEGER,
+    revocation_reason TEXT,
+    reuse_detected_at INTEGER,
+    CHECK ((revoked_at IS NULL AND revocation_reason IS NULL)
+        OR (revoked_at IS NOT NULL AND revocation_reason IS NOT NULL)),
+    CHECK (reuse_detected_at IS NULL OR revoked_at IS NOT NULL)
+);
+
+CREATE TABLE binding_transaction_consumptions (
+    transaction_id TEXT PRIMARY KEY REFERENCES binding_transactions(transaction_id) ON DELETE RESTRICT,
+    request_digest BLOB NOT NULL CHECK (length(request_digest) = 32),
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'cancelled')),
+    result_binding_id TEXT REFERENCES identity_bindings(binding_id) ON DELETE RESTRICT,
+    consumed_at INTEGER NOT NULL CHECK (consumed_at > 0),
+    CHECK ((outcome = 'success' AND result_binding_id IS NOT NULL)
+        OR (outcome <> 'success' AND result_binding_id IS NULL))
+) WITHOUT ROWID;
+
+CREATE TABLE webauthn_authorization_links (
+    webauthn_transaction_id TEXT PRIMARY KEY
+        REFERENCES webauthn_transactions(transaction_id) ON DELETE RESTRICT,
+    authorization_transaction_id TEXT NOT NULL UNIQUE
+        REFERENCES oauth_authorization_transactions(authorization_transaction_id) ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TABLE oauth_authorization_code_uses (
+    authorization_code_id TEXT PRIMARY KEY
+        REFERENCES oauth_authorization_codes(authorization_code_id) ON DELETE RESTRICT,
+    request_digest BLOB NOT NULL CHECK (length(request_digest) = 32),
+    used_at INTEGER NOT NULL CHECK (used_at > 0)
+) WITHOUT ROWID;
+
+CREATE TABLE oauth_refresh_tokens (
+    refresh_token_id TEXT PRIMARY KEY,
+    refresh_token_family_id TEXT NOT NULL
+        REFERENCES oauth_refresh_token_families(refresh_token_family_id) ON DELETE RESTRICT,
+    token_digest BLOB NOT NULL UNIQUE CHECK (length(token_digest) = 32),
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    issued_at INTEGER NOT NULL CHECK (issued_at > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > issued_at),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'rotated', 'revoked')),
+    consumed_at INTEGER,
+    replacement_token_id TEXT REFERENCES oauth_refresh_tokens(refresh_token_id) ON DELETE RESTRICT,
+    CHECK ((state = 'active' AND consumed_at IS NULL AND replacement_token_id IS NULL)
+        OR (state = 'rotated' AND consumed_at IS NOT NULL AND replacement_token_id IS NOT NULL)
+        OR (state = 'revoked' AND replacement_token_id IS NULL)),
+    UNIQUE(refresh_token_family_id, generation)
+);
+
+INSERT INTO identity_sessions SELECT * FROM _0002_identity_sessions_backup;
+INSERT INTO binding_transactions SELECT * FROM _0002_binding_transactions_backup;
+INSERT INTO oauth_authorization_transactions SELECT * FROM _0002_oauth_authorization_transactions_backup;
+INSERT INTO oauth_authorization_codes SELECT * FROM _0002_oauth_authorization_codes_backup;
+INSERT INTO oauth_refresh_token_families SELECT * FROM _0002_oauth_refresh_token_families_backup;
+INSERT INTO binding_transaction_consumptions SELECT * FROM _0002_binding_transaction_consumptions_backup;
+INSERT INTO webauthn_authorization_links SELECT * FROM _0002_webauthn_authorization_links_backup;
+INSERT INTO oauth_authorization_code_uses SELECT * FROM _0002_oauth_authorization_code_uses_backup;
+INSERT INTO oauth_refresh_tokens SELECT * FROM _0002_oauth_refresh_tokens_backup;
+
+DROP TABLE _0002_oauth_refresh_tokens_backup;
+DROP TABLE _0002_oauth_authorization_code_uses_backup;
+DROP TABLE _0002_webauthn_authorization_links_backup;
+DROP TABLE _0002_binding_transaction_consumptions_backup;
+DROP TABLE _0002_oauth_refresh_token_families_backup;
+DROP TABLE _0002_oauth_authorization_codes_backup;
+DROP TABLE _0002_oauth_authorization_transactions_backup;
+DROP TABLE _0002_binding_transactions_backup;
+DROP TABLE _0002_identity_sessions_backup;
 
 CREATE INDEX idx_identity_sessions_principal_active
     ON identity_sessions(principal_id, revoked_at, absolute_expires_at);
@@ -43,6 +211,71 @@ CREATE INDEX idx_identity_sessions_authenticator
     ON identity_sessions(authenticator_id, revoked_at);
 CREATE INDEX idx_identity_sessions_binding
     ON identity_sessions(binding_id, revoked_at);
+CREATE INDEX idx_binding_transactions_expiry
+    ON binding_transactions(state, expires_at);
+CREATE INDEX idx_binding_transactions_principal
+    ON binding_transactions(principal_id, state, created_at);
+CREATE INDEX idx_oauth_authorization_transactions_expiry
+    ON oauth_authorization_transactions(state, expires_at);
+CREATE INDEX idx_oauth_authorization_transactions_session
+    ON oauth_authorization_transactions(identity_session_id, state);
+CREATE INDEX idx_oauth_authorization_codes_active
+    ON oauth_authorization_codes(client_id, expires_at, consumed_at, revoked_at);
+CREATE INDEX idx_oauth_authorization_codes_principal
+    ON oauth_authorization_codes(principal_id, consumed_at, revoked_at);
+CREATE INDEX idx_refresh_token_families_principal_active
+    ON oauth_refresh_token_families(principal_id, revoked_at, absolute_expires_at);
+CREATE INDEX idx_refresh_token_families_session
+    ON oauth_refresh_token_families(identity_session_id, revoked_at);
+CREATE UNIQUE INDEX idx_refresh_tokens_one_active_per_family
+    ON oauth_refresh_tokens(refresh_token_family_id) WHERE state = 'active';
+CREATE INDEX idx_refresh_tokens_expiry ON oauth_refresh_tokens(state, expires_at);
+
+CREATE TRIGGER binding_consumption_validate
+BEFORE INSERT ON binding_transaction_consumptions
+WHEN NOT EXISTS (
+    SELECT 1 FROM binding_transactions
+    WHERE transaction_id = NEW.transaction_id
+      AND state = 'pending'
+      AND expires_at >= unixepoch()
+)
+BEGIN
+    SELECT RAISE(ABORT, 'binding_transaction_not_consumable');
+END;
+
+CREATE TRIGGER binding_consumption_apply
+AFTER INSERT ON binding_transaction_consumptions
+BEGIN
+    UPDATE binding_transactions
+    SET state = CASE NEW.outcome
+            WHEN 'success' THEN 'consumed_success'
+            WHEN 'failure' THEN 'consumed_failure'
+            ELSE 'cancelled'
+        END,
+        consumed_at = NEW.consumed_at,
+        result_binding_id = NEW.result_binding_id
+    WHERE transaction_id = NEW.transaction_id;
+END;
+
+CREATE TRIGGER authorization_code_use_validate
+BEFORE INSERT ON oauth_authorization_code_uses
+WHEN NOT EXISTS (
+    SELECT 1 FROM oauth_authorization_codes
+    WHERE authorization_code_id = NEW.authorization_code_id
+      AND consumed_at IS NULL
+      AND revoked_at IS NULL
+      AND expires_at >= unixepoch()
+)
+BEGIN
+    SELECT RAISE(ABORT, 'authorization_code_not_consumable');
+END;
+
+CREATE TRIGGER authorization_code_use_apply
+AFTER INSERT ON oauth_authorization_code_uses
+BEGIN
+    UPDATE oauth_authorization_codes SET consumed_at = NEW.used_at
+    WHERE authorization_code_id = NEW.authorization_code_id;
+END;
 
 -- One identifier model avoids separate, eventually-inconsistent email and phone tables.
 -- 单一标识符模型避免邮箱与手机表最终不一致。normalized_value is the lookup key;
@@ -180,6 +413,28 @@ FROM registration_capability_uses_v1;
 
 DROP TABLE registration_capability_uses_v1;
 
+CREATE TRIGGER registration_capability_use_validate
+BEFORE INSERT ON registration_capability_uses
+WHEN NOT EXISTS (
+    SELECT 1 FROM registration_capabilities
+    WHERE capability_id = NEW.capability_id
+      AND consumed_at IS NULL
+      AND revoked_at IS NULL
+      AND expires_at >= unixepoch()
+)
+BEGIN
+    SELECT RAISE(ABORT, 'registration_capability_not_consumable');
+END;
+
+CREATE TRIGGER registration_capability_use_apply
+AFTER INSERT ON registration_capability_uses
+BEGIN
+    UPDATE registration_capabilities
+    SET consumed_at = NEW.used_at,
+        consumed_by_principal_id = NEW.consumed_by_principal_id
+    WHERE capability_id = NEW.capability_id;
+END;
+
 -- Profile fields are intentionally social and playful without becoming authentication data.
 -- 资料字段服务同好社交趣味，但绝不作为认证数据。
 CREATE TABLE account_profile_details (
@@ -314,5 +569,3 @@ CREATE INDEX idx_oauth_user_authorizations_principal
 INSERT INTO oauth_scopes(scope, description, audience, is_oidc, created_at) VALUES
     ('email', 'Read primary email claims / 读取主邮箱声明', 'identity', 1, unixepoch()),
     ('phone', 'Read primary mobile claims / 读取主手机号声明', 'identity', 1, unixepoch());
-
-PRAGMA foreign_keys = ON;

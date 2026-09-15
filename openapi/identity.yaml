@@ -137,6 +137,7 @@ paths:
       tags: [ceremonies]
       operationId: getRegistrationPolicy
       summary: Return the public registration mode
+      description: The production baseline is open registration. Clients still read this resource so an intentional operational policy change does not require a frontend release.
       responses:
         '200':
           description: Current policy
@@ -1671,9 +1672,11 @@ components:
       additionalProperties: false
       required: [mode, capability_required, policy_revision]
       properties:
-        mode: {type: string, enum: [closed, invite_only, open]}
+        mode: {type: string, enum: [closed, invite_only, open], default: open}
         capability_required: {type: boolean}
         policy_revision: {type: integer, minimum: 1}
+      examples:
+        - {mode: open, capability_required: false, policy_revision: 2}
     Username: {type: string, minLength: 3, maxLength: 32, pattern: '^[a-z][a-z0-9_]{2,31}$'}
     CreateAccountRegistrationRequest:
       type: object
