@@ -28,6 +28,8 @@ let shell: ReturnType<typeof createShell>;
 
 /** 使用最新偏好重建静态外壳。Rebuilds the static shell with the latest preferences. */
 function buildShell(): void {
+  const skipLink = document.querySelector<HTMLAnchorElement>(".skip-link");
+  if (skipLink) skipLink.textContent = translate(preferences.locale, "skipLink");
   shell = createShell({ locale: preferences.locale, theme: preferences.theme, accountOrigin: resolveAccountOrigin(window.location), inAppBrowser: detectInAppBrowser(navigator.userAgent).name,
     onLocale(locale) { preferences = { ...preferences, locale }; applyPreferences(preferences, preferenceStorage); buildShell(); renderCurrentRoute(); },
     onTheme(theme) { preferences = { ...preferences, theme }; applyPreferences(preferences, preferenceStorage); },

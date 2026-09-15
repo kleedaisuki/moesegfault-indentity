@@ -56,7 +56,7 @@ pub fn normalize_username(input: &str) -> Result<String, PolicyError> {
 /// limit counts Unicode scalar values to avoid client/server disagreement over UTF-8 bytes.
 pub fn validate_password(input: &str) -> Result<(), PolicyError> {
     let length = input.chars().count();
-    if !(12..=128).contains(&length) || input.chars().any(char::is_control) {
+    if !(15..=128).contains(&length) || input.chars().any(char::is_control) {
         return Err(PolicyError::InvalidPassword);
     }
     Ok(())
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn password_policy_accepts_passphrases_without_composition_rules() {
         assert!(validate_password("correct horse battery staple").is_ok());
-        assert!(validate_password("萌えセグフォルトの長い合言葉").is_ok());
+        assert!(validate_password("萌えセグフォルトの長い合言葉です").is_ok());
         assert_eq!(
             validate_password("too-short"),
             Err(PolicyError::InvalidPassword)

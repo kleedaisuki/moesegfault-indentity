@@ -1391,7 +1391,7 @@ components:
       required: [username, password, display_name, email]
       properties:
         username: {$ref: '#/components/schemas/Username'}
-        password: {type: string, minLength: 12, maxLength: 128, writeOnly: true, description: Unicode password measured in Unicode scalar values by the current policy.}
+        password: {type: string, minLength: 15, maxLength: 128, writeOnly: true, description: Unicode password measured in Unicode scalar values by the current policy.}
         display_name: {type: string, minLength: 1, maxLength: 80, examples: ['星屑 Klee']}
         email: {type: string, format: email, maxLength: 254, examples: ['klee@example.net']}
         mobile: {$ref: '#/components/schemas/MobileNumberInput'}
@@ -1529,7 +1529,7 @@ components:
       required: [new_password]
       properties:
         current_password: {type: string, minLength: 1, maxLength: 128, writeOnly: true}
-        new_password: {type: string, minLength: 12, maxLength: 128, writeOnly: true}
+        new_password: {type: string, minLength: 15, maxLength: 128, writeOnly: true}
     AccountSecurityPosture:
       type: object
       additionalProperties: false

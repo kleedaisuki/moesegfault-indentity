@@ -123,7 +123,7 @@ async function renderSecurity(main: HTMLElement, c: PageContext): Promise<void> 
 function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
   const form = el("form", { className: "password-form" },
     security.password ? inputField(c.t("currentPassword"), "current_password", "", { required: true, type: "password", autocomplete: "current-password" }) : null,
-    inputField(c.t("newPassword"), "password", "", { required: true, type: "password", autocomplete: "new-password", minLength: "12" }),
+    inputField(c.t("newPassword"), "password", "", { required: true, type: "password", autocomplete: "new-password", minLength: "15" }),
     button(security.password ? c.t("save") : c.t("add"), "quiet", "submit"),
     security.password ? actionButton(c.t("remove"), async (btn) => { await c.api.deletePassword(proof(c)); await c.refresh(); busy(btn, false); }, "danger", c) : null,
     el("span", { className: "inline-message" }),

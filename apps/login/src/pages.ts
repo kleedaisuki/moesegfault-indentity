@@ -80,15 +80,15 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
     field(t("email"), "email", { required: true, autocomplete: "email", type: "email", placeholder: "klee@example.com", icon: "mail" }),
     field(t("avatar"), "avatar", { type: "file", icon: "user", accept: "image/avif,image/png,image/jpeg,image/webp" }), el("p", { className: "hint" }, t("addAvatar")),
-    el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: "今天也在修可爱的 bug ✦", icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
+    el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: t("statusPlaceholder"), icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
     field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
     el("label", { className: "field" }, el("span", { className: "field__label" }, t("mobile")), el("span", { className: "phone-field" }, callingCode, el("input", { attrs: { name: "mobile", type: "tel", autocomplete: "tel-national", inputmode: "tel", placeholder: "138 0000 0000" } }))), el("p", { className: "hint" }, t("phoneHint")),
-    el("div", { className: "field-grid" }, field(t("password"), "password", { autocomplete: "new-password", type: "password", minlength: "12", icon: "lock" }), field(t("passwordAgain"), "password_confirm", { autocomplete: "new-password", type: "password", minlength: "12", icon: "lock" })), el("p", { className: "hint" }, t("passwordHint")),
+    el("div", { className: "field-grid" }, field(t("password"), "password", { autocomplete: "new-password", type: "password", minlength: "15", icon: "lock" }), field(t("passwordAgain"), "password_confirm", { autocomplete: "new-password", type: "password", minlength: "15", icon: "lock" })), el("p", { className: "hint" }, t("passwordHint")),
     el("fieldset", { className: "method-picker" }, el("legend", {}, t("methodTitle")), el("p", { className: "hint" }, t("passkeyOptional")), el("div", { className: "button-pair" }, passwordButton, passkeyButton)), message, el("p", { className: "terms" }, t("terms")));
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; const method = submitter?.value === "passkey" ? "passkey" : "password";
     const data = new FormData(form); const password = String(data.get("password") ?? "");
-    if (method === "password" && password.length < 12) { replace(message, statePanel("error", t("registerFailed"), t("passwordHint"))); return; }
+    if (method === "password" && [...password].length < 15) { replace(message, statePanel("error", t("registerFailed"), t("passwordHint"))); return; }
     if (method === "password" && password !== String(data.get("password_confirm") ?? "")) { replace(message, statePanel("error", t("registerFailed"), t("mismatch"))); return; }
     setButtonBusy(submitter ?? passwordButton, true, method === "passkey" ? t("waitingPasskey") : t("registering"));
     const mobile = mobileFromForm(data); const avatar = data.get("avatar") instanceof File && (data.get("avatar") as File).size > 0 ? data.get("avatar") as File : undefined;

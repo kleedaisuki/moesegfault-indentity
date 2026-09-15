@@ -1082,7 +1082,7 @@ pub async fn put_password(mut request: Request, context: RouteContext<()>) -> Re
         Err(_) => return invalid_request("Invalid JSON request", &correlation),
     };
     if identity_domain::validate_password(&input.new_password).is_err() {
-        return invalid_request("Password must contain 12 to 128 characters", &correlation);
+        return invalid_request("Password must contain 15 to 128 characters", &correlation);
     }
     let db = context.d1("DB")?;
     let existing = db
