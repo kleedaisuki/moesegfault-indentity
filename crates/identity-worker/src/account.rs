@@ -11,6 +11,7 @@ use identity_domain::{
     AuditEventId, AuthenticatorId, IdentifierId, LifetimePolicy, SecretDigest, TransactionId,
     normalize_email, normalize_mobile, normalize_username,
 };
+use imagesize::{Compression, ImageType};
 use passkey_auth::{Attachment, CredentialId, RegistrationResponse, RegistrationState, Webauthn};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,10 @@ use crate::{account_repository as repository, ceremony_state, guard, problem};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
+const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
+// Multipart headers and the boundary are bounded separately from the file payload.
+// multipart 头与 boundary 的额度独立于文件载荷，避免 Content-Length 绕过内存边界。
+const MAX_AVATAR_REQUEST_BYTES: u64 = MAX_AVATAR_BYTES as u64 + 64 * 1024;
 const RECOVERY_CODE_COUNT: usize = 8;
 
 #[derive(Debug, Serialize)]
@@ -39,6 +44,29 @@ struct ProfileWire {
     display_name: String,
     avatar_url: Option<String>,
     locale: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AvatarWire {
+    avatar_id: String,
+    url: String,
+    media_type: String,
+    width: usize,
+    height: usize,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurrentAvatarRow {
+    r2_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AvatarImage {
+    media_type: &'static str,
+    extension: &'static str,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +306,7 @@ impl RegistrationCredentialWire {
 enum MutationBody {
     Json,
     MergePatch,
+    MultipartAvatar,
     None,
 }
 
@@ -833,42 +862,143 @@ pub async fn complete_contact_verification(
     )
 }
 
-/// 头像处理器尚未部署时返回真实的服务状态。/ Returns the truthful service state until the avatar processor is deployed.
-pub async fn upload_avatar(request: Request, context: RouteContext<()>) -> Result<Response> {
+/// 验证并把当前账户的头像作为不可变对象写入 R2。
+/// Validates and stores the current account's avatar as an immutable R2 object.
+///
+/// R2 与 D1 不共享事务：先写新对象，再用一个 D1 batch 原子切换 current pointer；
+/// D1 失败时立即补偿删除新对象。被替换对象先在 D1 标记 deleted，再尽力删除；删除
+/// 失败的行会保留，供后续上传/删除重试以及运维 reaper 扫描。
+/// R2 and D1 do not share a transaction. The new object is written first, then one
+/// D1 batch atomically switches the current pointer. A failed D1 batch triggers an
+/// immediate compensating delete. Replaced rows remain `deleted` when best-effort
+/// deletion fails, making lifecycle cleanup observable and retryable.
+pub async fn upload_avatar(mut request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
-    if authenticate(&request, &context.env).await?.is_none() {
-        return authentication_required(&correlation);
-    }
-    if guard::allowed_origin(
+    let session = match mutation_session(
+        &request,
         &context.env,
-        guard::header(request.headers(), "origin").as_deref(),
-    )
-    .is_none()
-    {
-        return problem::response(
-            "invalid_request",
-            "Origin is not allowed",
-            403,
-            &correlation,
-        );
-    }
-    let valid_csrf = guard::cookie(&request, guard::SESSION_COOKIE).is_some_and(|wire| {
-        secret(&context.env, "CSRF_PEPPER")
-            .is_ok_and(|pepper| guard::validate_session_csrf(&request, &wire, pepper.as_bytes()))
-    });
-    if !valid_csrf {
-        return problem::response(
-            "invalid_request",
-            "CSRF validation failed",
-            403,
-            &correlation,
-        );
-    }
-    problem::response(
-        "service_unavailable",
-        "Avatar image processing is not available",
-        503,
+        MutationBody::MultipartAvatar,
         &correlation,
+    )
+    .await?
+    {
+        Ok(session) => session,
+        Err(response) => return Ok(response),
+    };
+    let form = match request.form_data().await {
+        Ok(form) => form,
+        Err(_) => return invalid_request("Invalid multipart form data", &correlation),
+    };
+    let Some(FormEntry::File(file)) = form.get("avatar") else {
+        return invalid_request("A single avatar file is required", &correlation);
+    };
+    if file.size() == 0 || file.size() > MAX_AVATAR_BYTES {
+        return problem::response(
+            "invalid_request",
+            "Avatar must be between 1 byte and 10 MiB",
+            413,
+            &correlation,
+        );
+    }
+    let bytes = file.bytes().await?;
+    if bytes.len() != file.size() || bytes.len() > MAX_AVATAR_BYTES {
+        return problem::response(
+            "invalid_request",
+            "Avatar must be between 1 byte and 10 MiB",
+            413,
+            &correlation,
+        );
+    }
+    let image = match validate_avatar(&bytes, &file.type_()) {
+        Ok(image) => image,
+        Err(title) => return invalid_request(title, &correlation),
+    };
+
+    let now = now_seconds();
+    let avatar_id = uuid::Uuid::now_v7().to_string();
+    let r2_key = format!(
+        "avatars/{}/{}.{}",
+        session.principal_id, avatar_id, image.extension
+    );
+    let digest = Sha256::digest(&bytes);
+    let bucket = context.bucket("AVATARS")?;
+    let metadata = HttpMetadata {
+        content_type: Some(image.media_type.to_owned()),
+        cache_control: Some("public, max-age=31536000, immutable".to_owned()),
+        content_disposition: Some("inline".to_owned()),
+        ..HttpMetadata::default()
+    };
+    let mut custom_metadata = std::collections::HashMap::new();
+    custom_metadata.insert("avatar_id".to_owned(), avatar_id.clone());
+    custom_metadata.insert("principal_id".to_owned(), session.principal_id.clone());
+    let stored = bucket
+        .put(&r2_key, bytes)
+        .http_metadata(metadata)
+        .custom_metadata(custom_metadata)
+        .sha256(digest.to_vec())
+        .only_if(Conditional {
+            etag_does_not_match: Some("*".to_owned()),
+            ..Conditional::default()
+        })
+        .execute()
+        .await?;
+    if stored.is_none() {
+        return Err(Error::RustError(
+            "generated avatar object key unexpectedly exists".into(),
+        ));
+    }
+
+    let db = context.d1("DB")?;
+    let old = db
+        .prepare("SELECT r2_key FROM avatar_assets WHERE principal_id=?1 AND is_current=1")
+        .bind(&[JsValue::from_str(&session.principal_id)])?
+        .first::<CurrentAvatarRow>(None)
+        .await?;
+    let batch = db.batch(vec![
+        db.prepare("UPDATE avatar_assets SET state='deleted',is_current=0,updated_at=?2 WHERE principal_id=?1 AND is_current=1")
+            .bind(&[JsValue::from_str(&session.principal_id), JsValue::from_f64(now as f64)])?,
+        db.prepare("INSERT INTO avatar_assets(avatar_id,principal_id,r2_key,media_type,byte_size,width,height,content_digest,state,is_current,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'ready',1,?9,?9)")
+            .bind(&[
+                JsValue::from_str(&avatar_id), JsValue::from_str(&session.principal_id),
+                JsValue::from_str(&r2_key), JsValue::from_str(image.media_type),
+                JsValue::from_f64(file.size() as f64), JsValue::from_f64(image.width as f64),
+                JsValue::from_f64(image.height as f64), worker::js_sys::Uint8Array::from(&digest[..]).into(),
+                JsValue::from_f64(now as f64),
+            ])?,
+        db.prepare("UPDATE human_profiles SET avatar_r2_key=?2,updated_at=?3 WHERE principal_id=?1")
+            .bind(&[JsValue::from_str(&session.principal_id), JsValue::from_str(&r2_key), JsValue::from_f64(now as f64)])?,
+    ]).await;
+    if let Err(error) = batch {
+        if let Err(cleanup_error) = bucket.delete(&r2_key).await {
+            console_error!(
+                "avatar_compensation_failed avatar_id={avatar_id} correlation_id={correlation} error={cleanup_error}"
+            );
+        }
+        return Err(error);
+    }
+    if let Some(old) = old
+        && let Err(error) = bucket.delete(&old.r2_key).await
+    {
+        console_error!(
+            "avatar_old_object_cleanup_failed avatar_id={avatar_id} correlation_id={correlation} old_key={} error={error}",
+            old.r2_key
+        );
+    }
+
+    let public_origin = avatar_public_origin(&context.env)?;
+    json(
+        &AvatarWire {
+            avatar_id,
+            url: format!("{public_origin}/{r2_key}"),
+            media_type: image.media_type.to_owned(),
+            width: image.width,
+            height: image.height,
+            updated_at: date_time(now),
+        },
+        201,
+        &correlation,
+        &context.env,
+        None,
     )
 }
 
@@ -882,10 +1012,26 @@ pub async fn delete_avatar(request: Request, context: RouteContext<()>) -> Resul
             Err(response) => return Ok(response),
         };
     let now = now_seconds();
-    context.d1("DB")?.batch(vec![
-        context.d1("DB")?.prepare("UPDATE avatar_assets SET state='deleted',is_current=0,updated_at=?2 WHERE principal_id=?1 AND is_current=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
-        context.d1("DB")?.prepare("UPDATE human_profiles SET avatar_r2_key=NULL,updated_at=?2 WHERE principal_id=?1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
+    let db = context.d1("DB")?;
+    let old = db
+        .prepare("SELECT r2_key FROM avatar_assets WHERE principal_id=?1 AND is_current=1")
+        .bind(&[JsValue::from_str(&session.principal_id)])?
+        .first::<CurrentAvatarRow>(None)
+        .await?;
+    db.batch(vec![
+        db.prepare("UPDATE avatar_assets SET state='deleted',is_current=0,updated_at=?2 WHERE principal_id=?1 AND is_current=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE human_profiles SET avatar_r2_key=NULL,updated_at=?2 WHERE principal_id=?1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
     ]).await?;
+    if let Some(old) = old
+        && let Err(error) = context.bucket("AVATARS")?.delete(&old.r2_key).await
+    {
+        // Metadata is already retired, so object-store cleanup must never break account UX.
+        // 元数据已退役，因此对象存储清理失败绝不能破坏账户管理体验。
+        console_error!(
+            "avatar_delete_cleanup_failed correlation_id={correlation} old_key={} error={error}",
+            old.r2_key
+        );
+    }
     no_content(&correlation, &context.env, None)
 }
 
@@ -1729,9 +1875,13 @@ fn mutation_problem(
     body: MutationBody,
     correlation: &str,
 ) -> Result<Option<Response>> {
+    let maximum_body_bytes = match body {
+        MutationBody::MultipartAvatar => MAX_AVATAR_REQUEST_BYTES,
+        _ => MAX_JSON_BYTES,
+    };
     if guard::header(request.headers(), "content-length")
         .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|length| length > MAX_JSON_BYTES)
+        .is_some_and(|length| length > maximum_body_bytes)
     {
         return problem::response(
             "invalid_request",
@@ -1774,6 +1924,7 @@ fn mutation_problem(
     let expected = match body {
         MutationBody::Json => Some("application/json"),
         MutationBody::MergePatch => Some("application/merge-patch+json"),
+        MutationBody::MultipartAvatar => Some("multipart/form-data"),
         MutationBody::None => None,
     };
     if let Some(expected) = expected {
@@ -1788,6 +1939,59 @@ fn mutation_problem(
         }
     }
     Ok(None)
+}
+
+/// 从真实文件签名读取受支持媒体类型和尺寸，而不信任浏览器声明。
+/// Reads the supported media type and dimensions from actual file signatures rather
+/// than trusting browser-provided metadata.
+fn validate_avatar(
+    bytes: &[u8],
+    declared_media_type: &str,
+) -> std::result::Result<AvatarImage, &'static str> {
+    let image_type =
+        imagesize::image_type(bytes).map_err(|_| "Unsupported or malformed avatar image")?;
+    let (media_type, extension) = match image_type {
+        ImageType::Heif(Compression::Av1) => ("image/avif", "avif"),
+        ImageType::Jpeg => ("image/jpeg", "jpg"),
+        ImageType::Png => ("image/png", "png"),
+        ImageType::Webp => ("image/webp", "webp"),
+        _ => return Err("Avatar must be AVIF, JPEG, PNG, or WebP"),
+    };
+    if !declared_media_type.is_empty() && !declared_media_type.eq_ignore_ascii_case(media_type) {
+        return Err("Avatar media type does not match its contents");
+    }
+    let size = imagesize::blob_size(bytes).map_err(|_| "Unsupported or malformed avatar image")?;
+    if !(1..=8192).contains(&size.width) || !(1..=8192).contains(&size.height) {
+        return Err("Avatar dimensions must be between 1 and 8192 pixels");
+    }
+    if size.width != size.height {
+        return Err("Avatar must be a square image");
+    }
+    Ok(AvatarImage {
+        media_type,
+        extension,
+        width: size.width,
+        height: size.height,
+    })
+}
+
+/// 返回绑定到专用 R2 bucket 自定义域名的公开 origin。
+/// Returns the public origin bound to the dedicated R2 bucket custom domain.
+fn avatar_public_origin(env: &Env) -> Result<String> {
+    let value = env.var("AVATAR_PUBLIC_ORIGIN")?.to_string();
+    let parsed = url::Url::parse(&value)
+        .map_err(|_| Error::BindingError("AVATAR_PUBLIC_ORIGIN must be an HTTPS origin".into()))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(Error::BindingError(
+            "AVATAR_PUBLIC_ORIGIN must be an HTTPS origin".into(),
+        ));
+    }
+    Ok(value.trim_end_matches('/').to_owned())
 }
 
 async fn authenticate(request: &Request, env: &Env) -> Result<Option<repository::AccountSession>> {
@@ -2162,5 +2366,84 @@ mod tests {
         ];
         canonicalize_transports(&mut transports);
         assert_eq!(transports, ["hybrid", "internal"]);
+    }
+
+    #[test]
+    fn avatar_validation_uses_magic_dimensions_and_declared_type() {
+        let png = png_header(256, 256);
+        assert_eq!(
+            validate_avatar(&png, "image/png"),
+            Ok(AvatarImage {
+                media_type: "image/png",
+                extension: "png",
+                width: 256,
+                height: 256,
+            })
+        );
+        assert_eq!(
+            validate_avatar(&png, "image/jpeg"),
+            Err("Avatar media type does not match its contents")
+        );
+        assert_eq!(
+            validate_avatar(&png_header(256, 128), "image/png"),
+            Err("Avatar must be a square image")
+        );
+        assert_eq!(
+            validate_avatar(&png_header(8193, 8193), "image/png"),
+            Err("Avatar dimensions must be between 1 and 8192 pixels")
+        );
+    }
+
+    #[test]
+    fn avatar_validation_accepts_avif_brand_and_rejects_other_heif() {
+        let avif = isobmff_image(*b"avif", 512, 512);
+        assert_eq!(
+            validate_avatar(&avif, "image/avif").unwrap().media_type,
+            "image/avif"
+        );
+        let heic = isobmff_image(*b"heic", 512, 512);
+        assert_eq!(
+            validate_avatar(&heic, "image/avif"),
+            Err("Avatar must be AVIF, JPEG, PNG, or WebP")
+        );
+    }
+
+    #[test]
+    fn avatar_validation_rejects_unrecognized_bytes() {
+        assert_eq!(
+            validate_avatar(b"not an image", "image/png"),
+            Err("Unsupported or malformed avatar image")
+        );
+    }
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        bytes
+    }
+
+    fn isobmff_image(brand: [u8; 4], width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&24_u32.to_be_bytes());
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(&brand);
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        bytes.extend_from_slice(&brand);
+        bytes.extend_from_slice(b"mif1");
+        bytes.extend_from_slice(&48_u32.to_be_bytes());
+        bytes.extend_from_slice(b"meta");
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        bytes.extend_from_slice(&36_u32.to_be_bytes());
+        bytes.extend_from_slice(b"iprp");
+        bytes.extend_from_slice(&28_u32.to_be_bytes());
+        bytes.extend_from_slice(b"ipco");
+        bytes.extend_from_slice(&20_u32.to_be_bytes());
+        bytes.extend_from_slice(b"ispe");
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes
     }
 }

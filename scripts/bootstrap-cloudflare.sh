@@ -8,6 +8,8 @@ readonly PRODUCTION_DB="moesegfault-identity-production"
 readonly PRODUCTION_DB_ID="b3f4a7dd-4415-417d-a1eb-47c36a47ad24"
 readonly STAGING_BUCKET="moesegfault-identity-audit-staging"
 readonly PRODUCTION_BUCKET="moesegfault-identity-audit-production"
+readonly STAGING_AVATAR_BUCKET="moesegfault-avatars-staging"
+readonly PRODUCTION_AVATAR_BUCKET="moesegfault-avatars-production"
 readonly TARGET="${1:-}"
 
 if [[ "$TARGET" != "staging" && "$TARGET" != "production" ]]; then
@@ -104,7 +106,15 @@ ensure_d1 "$STAGING_DB" "$STAGING_DB_ID"
 ensure_d1 "$PRODUCTION_DB" "$PRODUCTION_DB_ID"
 ensure_bucket "$STAGING_BUCKET"
 ensure_bucket "$PRODUCTION_BUCKET"
+ensure_bucket "$STAGING_AVATAR_BUCKET"
+ensure_bucket "$PRODUCTION_AVATAR_BUCKET"
 verify_runtime_secrets "$TARGET"
+
+# Avatar object names are immutable UUIDs. Replaced/deleted objects are removed best-effort by
+# the Worker; their retained `avatar_assets(state='deleted')` rows are the retry inventory for an
+# operational reaper. Do not install a bucket-wide expiry rule: it would also delete current
+# avatars. / 头像对象名为不可变 UUID；Worker 会尽力清除被替换/删除对象，保留的 deleted 行是
+# 运维 reaper 的重试清单。不要配置全桶过期规则，否则当前头像也会被删除。
 
 # Custom Domains are declarative in wrangler.*.jsonc; do not mutate DNS here. / 自定义域名由 Wrangler 声明，此处不改 DNS。
 printf 'bootstrap complete; Custom Domains will reconcile during deploy / 引导完成，自定义域名将在发布时调和\n'
