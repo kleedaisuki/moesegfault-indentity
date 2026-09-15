@@ -8,6 +8,8 @@ import { translate } from "./i18n";
 import { el, errorMessage, field, replace, setButtonBusy, statePanel } from "./ui/dom";
 import { icon, iconLabel } from "./ui/icons";
 import { pageHeading } from "./ui/shell";
+import { InlineStepUpCoordinator } from "./step-up";
+import { resolveAccountReturnUri } from "./environment";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -22,6 +24,8 @@ export async function renderPage(route: AppRoute, main: HTMLElement, api: Identi
   try {
     if (route === "/register") renderRegister(main, api, signal, t, context.locale);
     else if (route === "/recovery") renderRecovery(main, api, signal, t);
+    else if (route === "/passkey/enroll") await renderPasskeyEnrollment(main, api, signal, t);
+    else if (route === "/recovery-codes/rotate") renderRecoveryCodeRotation(main, api, signal, t);
     else renderLogin(main, api, signal, t);
   } catch (error) {
     if (!signal.aborted) replace(main, statePanel("error", t("loginFailed"), errorMessage(error)));
@@ -75,9 +79,9 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
   const form = el("form", { className: "moe-glass auth-card register-form" },
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
     field(t("email"), "email", { required: true, autocomplete: "email", type: "email", placeholder: "klee@example.com", icon: "mail" }),
-    field(t("avatar"), "avatar", { type: "file", icon: "user", accept: "image/png,image/jpeg,image/webp,image/gif" }), el("p", { className: "hint" }, t("addAvatar")),
-    el("div", { className: "field-grid" }, field("状态签名 / Status", "status_message", { placeholder: "今天也在修可爱的 bug ✦", icon: "star" }), field("最喜欢的角色 / Oshi", "favorite_character", { placeholder: "可莉 / Klee", icon: "star" })),
-    field("兴趣标签 / Interests", "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
+    field(t("avatar"), "avatar", { type: "file", icon: "user", accept: "image/avif,image/png,image/jpeg,image/webp" }), el("p", { className: "hint" }, t("addAvatar")),
+    el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: "今天也在修可爱的 bug ✦", icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
+    field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
     el("label", { className: "field" }, el("span", { className: "field__label" }, t("mobile")), el("span", { className: "phone-field" }, callingCode, el("input", { attrs: { name: "mobile", type: "tel", autocomplete: "tel-national", inputmode: "tel", placeholder: "138 0000 0000" } }))), el("p", { className: "hint" }, t("phoneHint")),
     el("div", { className: "field-grid" }, field(t("password"), "password", { autocomplete: "new-password", type: "password", minlength: "12", icon: "lock" }), field(t("passwordAgain"), "password_confirm", { autocomplete: "new-password", type: "password", minlength: "12", icon: "lock" })), el("p", { className: "hint" }, t("passwordHint")),
     el("fieldset", { className: "method-picker" }, el("legend", {}, t("methodTitle")), el("p", { className: "hint" }, t("passkeyOptional")), el("div", { className: "button-pair" }, passwordButton, passkeyButton)), message, el("p", { className: "terms" }, t("terms")));
@@ -92,9 +96,14 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: String(data.get("email") ?? "").trim(), locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
     try {
       if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); finishAuthentication(main, result, t); if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
-      const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel() };
+      const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel(t) };
       const transaction = await api.startRegistration(input, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(transaction.public_key, signal);
-      const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal }); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); finishRegistration(main, result, t); if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
+      const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
+      // 恢复代码必须先于任何次要上传或导航呈现。Recovery codes must render before secondary uploads or navigation.
+      if (result.recovery_codes?.length) finishRegistration(main, result, t);
+      const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
+      if (!result.recovery_codes?.length) finishRegistration(main, result, t);
+      if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
     } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); }
   });
   replace(main, pageHeading("CREATE_PRINCIPAL", t("newTitle"), t("newIntro")), form, el("p", { className: "switcher" }, t("haveAccount"), " ", el("a", { attrs: { href: "/login" } }, t("login"))));
@@ -103,22 +112,82 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
 /** 呈现恢复代码加新 Passkey 流程。Renders recovery-code plus new-passkey flow. */
 function renderRecovery(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string): void {
   const message = el("div", { attrs: { "aria-live": "polite" } }); const submit = el("button", { className: "button button--primary button--wide", attrs: { type: "submit" } }, iconLabel("key", t("recover")));
-  const form = el("form", { className: "moe-glass auth-card auth-form" }, field(t("recoveryCode"), "recovery_code", { required: true, autocomplete: "off", placeholder: "msf_rc_…", icon: "lock" }), field(t("newPasskeyLabel"), "authenticator_label", { required: true, placeholder: browserPasskeyLabel(), icon: "key" }), submit, message);
+  const form = el("form", { className: "moe-glass auth-card auth-form" }, field(t("recoveryCode"), "recovery_code", { required: true, autocomplete: "off", placeholder: "msf_rc_…", icon: "lock" }), field(t("newPasskeyLabel"), "authenticator_label", { required: true, placeholder: browserPasskeyLabel(t), icon: "key" }), submit, message);
   form.addEventListener("submit", async (event) => { event.preventDefault(); setButtonBusy(submit, true, t("waitingPasskey")); const data = new FormData(form);
-    try { const started = await api.startRecovery({ recovery_code: String(data.get("recovery_code") ?? ""), authenticator_label: String(data.get("authenticator_label") ?? "") }, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(started.public_key, signal); const result = await api.completeRecovery(started.transaction_id, started.csrf_token, credential, signal); rememberCsrf(result.csrf_token); replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t))); }
+    try { const started = await api.startRecovery({ recovery_code: String(data.get("recovery_code") ?? ""), authenticator_label: String(data.get("authenticator_label") ?? "") }, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(started.public_key, signal); const result = await api.completeRecovery(started.transaction_id, started.csrf_token, credential, signal); rememberCsrf(result.csrf_token); replace(main, pageHeading("RECOVERY_COMPLETE", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t)); }
     catch (error) { replace(message, statePanel("error", t("recoveryFailed"), errorMessage(error))); setButtonBusy(submit, false); }
   });
   replace(main, pageHeading("RECOVERY_LINK", t("recovery"), t("recoveryIntro")), form, el("p", { className: "switcher" }, el("a", { attrs: { href: "/login" } }, t("back"))));
 }
 
+/** 为账号中心执行单一的 Passkey 登记仪式，不承载管理列表。Performs one passkey enrollment ceremony without hosting management UI. */
+async function renderPasskeyEnrollment(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string): Promise<void> {
+  const session = await api.getPrincipal(signal); rememberCsrf(session.csrf_token);
+  const message = el("div", { attrs: { "aria-live": "polite" } });
+  const submit = el("button", { className: "button button--primary button--wide", attrs: { type: "submit", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("enroll")));
+  const form = el("form", { className: "moe-glass auth-card auth-form" }, field(t("passkeyName"), "label", { required: true, value: browserPasskeyLabel(t), icon: "key" }), submit, message);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault(); setButtonBusy(submit, true, t("waitingPasskey"));
+    try {
+      const label = String(new FormData(form).get("label") ?? "").trim();
+      const transaction = await stepUpCoordinator(api).execute((controls) => api.startAuthenticatorRegistration(label, controls), { signal, onStepUpRequired: () => replace(message, statePanel("info", t("stepUp"), t("waitingPasskey"))) });
+      const credential = await createPasskey(transaction.public_key, signal);
+      const completed = await api.completeAuthenticatorRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
+      rememberCsrf(completed.csrf_token); replace(main, statePanel("success", t("enrolled"), label, accountLink(t)));
+    } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submit, false); }
+  });
+  replace(main, pageHeading("PASSKEY_ENROLLMENT", t("enrollTitle"), t("enrollIntro")), form);
+}
+
+/** 执行恢复代码轮换并只在本页展示一次结果。Rotates recovery codes and shows the result only on this page. */
+function renderRecoveryCodeRotation(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string): void {
+  const message = el("div", { attrs: { "aria-live": "polite" } });
+  const button = el("button", { className: "button button--primary button--wide", attrs: { type: "button" } }, iconLabel("lock", t("rotate")));
+  button.addEventListener("click", async () => {
+    setButtonBusy(button, true, t("waitingPasskey"));
+    try {
+      const result = await stepUpCoordinator(api).execute((controls) => api.rotateRecoveryCodes(controls), { signal, onStepUpRequired: () => replace(message, statePanel("info", t("stepUp"), t("waitingPasskey"))) });
+      replace(main, pageHeading("RECOVERY_CODES", t("success"), t("codesIntro")), recoveryCodePanel(result.recovery_codes, t));
+    } catch (error) { replace(message, statePanel("error", t("recoveryFailed"), errorMessage(error))); setButtonBusy(button, false); }
+  });
+  replace(main, pageHeading("RECOVERY_ROTATION", t("rotateTitle"), t("rotateIntro")), el("section", { className: "moe-glass auth-card" }, button, message));
+}
+
+/** 创建一次性恢复代码的复制和下载界面。Creates copy and download controls for one-time recovery codes. */
+function recoveryCodePanel(codes: string[], t: (key: MessageKey) => string, nextUri?: string): HTMLElement {
+  const text = codes.join("\n");
+  const copy = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("copyCodes"));
+  copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(text); copy.textContent = t("copied"); } catch { window.prompt(t("copyCodes"), text); } });
+  const download = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("downloadCodes"));
+  download.addEventListener("click", () => { const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain;charset=utf-8" })); const anchor = el("a", { attrs: { href: url, download: "moesegfault-recovery-codes.txt" } }); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0); });
+  const proceed = nextUri
+    ? el("button", { className: "button button--primary", attrs: { type: "button" }, on: { click: () => navigateToHttpUrl(nextUri) } }, t("continueAccount"))
+    : accountLink(t);
+  return el("section", { className: "moe-glass auth-card recovery-codes", attrs: { "aria-labelledby": "recovery-code-title" } }, el("h2", { attrs: { id: "recovery-code-title" } }, t("codesTitle")), el("p", { className: "hint" }, t("codesIntro")), el("ul", {}, ...codes.map((code) => el("li", {}, el("code", {}, code)))), el("div", { className: "button-pair" }, copy, download), proceed);
+}
+
+/** 每个 API 客户端共享一个页面内再认证协调器。One in-page step-up coordinator is shared per API client. */
+const stepUpCoordinators = new WeakMap<IdentityApiClient, InlineStepUpCoordinator>();
+function stepUpCoordinator(api: IdentityApiClient): InlineStepUpCoordinator {
+  const existing = stepUpCoordinators.get(api); if (existing) return existing;
+  const readSession = async (signal: AbortSignal) => { const current = await api.getPrincipal(signal); rememberCsrf(current.csrf_token); return current.csrf_token; };
+  const coordinator = new InlineStepUpCoordinator(api, { readSessionCsrf: async (signal) => sessionCsrfToken ?? readSession(signal), refreshSessionCsrf: readSession, readBrowserCsrf: async (signal) => (await api.getBrowserContext(signal)).csrf_token, rememberSessionCsrf: rememberCsrf });
+  stepUpCoordinators.set(api, coordinator); return coordinator;
+}
+
 function finishAuthentication(main: HTMLElement, result: PasswordSessionResult, t: (key: MessageKey) => string): void { rememberCsrf(result.csrf_token); if (result.authorization_resume_uri) { navigateToHttpUrl(result.authorization_resume_uri); return; } replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t))); }
-function finishRegistration(main: HTMLElement, result: RegistrationResult, t: (key: MessageKey) => string): void { rememberCsrf(result.csrf_token); if (result.next_uri) { navigateToHttpUrl(result.next_uri); return; } replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t))); }
-function accountLink(t: (key: MessageKey) => string): HTMLAnchorElement { return el("a", { className: "button button--primary", attrs: { href: "https://account.moesegfault.dev" } }, iconLabel("external", t("accountLink"))); }
-function accountCenterNote(t: (key: MessageKey) => string): HTMLElement { return el("aside", { className: "account-note" }, icon("external"), el("div", {}, el("a", { attrs: { href: "https://account.moesegfault.dev" } }, t("accountLink")), el("p", {}, t("accountHint")))); }
+function finishRegistration(main: HTMLElement, result: RegistrationResult, t: (key: MessageKey) => string): void {
+  rememberCsrf(result.csrf_token);
+  if (result.recovery_codes?.length) { replace(main, pageHeading("ACCOUNT_CREATED", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t, result.next_uri)); return; }
+  if (result.next_uri) { navigateToHttpUrl(result.next_uri); return; }
+  replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t)));
+}
+function accountLink(t: (key: MessageKey) => string): HTMLAnchorElement { return el("a", { className: "button button--primary", attrs: { href: resolveAccountReturnUri(location) } }, iconLabel("external", t("accountLink"))); }
+function accountCenterNote(t: (key: MessageKey) => string): HTMLElement { return el("aside", { className: "account-note" }, icon("external"), el("div", {}, el("a", { attrs: { href: resolveAccountReturnUri(location) } }, t("accountLink")), el("p", {}, t("accountHint")))); }
 function divider(label: string): HTMLElement { return el("div", { className: "divider", attrs: { role: "separator" } }, el("span", {}, label)); }
 function optionalString(data: FormData, name: string): string | undefined { const value = String(data.get(name) ?? "").trim(); return value || undefined; }
 function mobileFromForm(data: FormData): MobileNumberInput | undefined { const national = optionalString(data, "mobile")?.replace(/[\s()-]/g, ""); return national ? { country_calling_code: String(data.get("calling_code") ?? "+86"), national_number: national } : undefined; }
-function browserPasskeyLabel(): string { return /Android|iPhone|iPad/i.test(navigator.userAgent) ? "My phone" : "This device"; }
+function browserPasskeyLabel(t: (key: MessageKey) => string): string { return /Android|iPhone|iPad/i.test(navigator.userAgent) ? t("mobileDevice") : t("desktopDevice"); }
 async function uploadOptionalAvatar(api: IdentityApiClient, avatar: File | undefined, csrfToken: string, signal: AbortSignal): Promise<boolean> { if (!avatar) return true; try { await api.uploadAvatar(avatar, csrfToken, signal); return true; } catch { return false; } }
 function rememberCsrf(token: string): void { sessionCsrfToken = token; }
 async function requireBrowserCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> { if (!sessionCsrfToken) rememberCsrf((await api.getBrowserContext(signal)).csrf_token); return sessionCsrfToken as string; }

@@ -9,7 +9,7 @@ import { icon } from "./icons";
 export interface AppShell { root: HTMLElement; main: HTMLElement; setActiveRoute(route: AppRoute): void }
 
 /** 外壳中的显示偏好与事件。Display preferences and events used by the shell. */
-export interface ShellOptions { locale: Locale; theme: Theme; inAppBrowser?: string; onLocale(locale: Locale): void; onTheme(theme: Theme): void }
+export interface ShellOptions { locale: Locale; theme: Theme; accountOrigin: string; inAppBrowser?: string; onLocale(locale: Locale): void; onTheme(theme: Theme): void }
 
 /** 构建轻量、可本地化的登录外壳。Builds a lightweight, localizable login shell. */
 export function createShell(options: ShellOptions): AppShell {
@@ -30,7 +30,7 @@ export function createShell(options: ShellOptions): AppShell {
       el("nav", { className: "top-nav", attrs: { "aria-label": t("brand") } }, ...links),
       el("div", { className: "display-tools" }, icon("globe"), language, icon("moon"), theme)),
     options.inAppBrowser ? inAppNotice(options.inAppBrowser, t) : undefined, main,
-    el("footer", { className: "site-footer" }, el("p", {}, t("privacy")), el("a", { attrs: { href: "https://account.moesegfault.dev" } }, t("accountLink"))));
+    el("footer", { className: "site-footer" }, el("p", {}, t("privacy")), el("a", { attrs: { href: options.accountOrigin } }, t("accountLink"))));
   return { root, main, setActiveRoute(route) { for (const link of links) link.toggleAttribute("aria-current", link.dataset.route === route); } };
 }
 

@@ -2,12 +2,16 @@
 export type AppRoute =
   | "/register"
   | "/login"
-  | "/recovery";
+  | "/recovery"
+  | "/passkey/enroll"
+  | "/recovery-codes/rotate";
 
 const routes = new Set<AppRoute>([
   "/register",
   "/login",
   "/recovery",
+  "/passkey/enroll",
+  "/recovery-codes/rotate",
 ]);
 
 /** 将任意 pathname 归一到受支持路由。Normalizes any pathname to a supported route. */

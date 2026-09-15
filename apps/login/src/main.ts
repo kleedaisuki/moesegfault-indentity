@@ -1,6 +1,6 @@
 import "./styles.css";
 import { IdentityApiClient } from "./api/client";
-import { resolveIdentityOrigin } from "./environment";
+import { resolveAccountOrigin, resolveIdentityOrigin } from "./environment";
 import { renderPage } from "./pages";
 import { installRouter, resolveRoute } from "./router";
 import { captureAndScrubTransaction } from "./transaction";
@@ -28,7 +28,7 @@ let shell: ReturnType<typeof createShell>;
 
 /** 使用最新偏好重建静态外壳。Rebuilds the static shell with the latest preferences. */
 function buildShell(): void {
-  shell = createShell({ locale: preferences.locale, theme: preferences.theme, inAppBrowser: detectInAppBrowser(navigator.userAgent).name,
+  shell = createShell({ locale: preferences.locale, theme: preferences.theme, accountOrigin: resolveAccountOrigin(window.location), inAppBrowser: detectInAppBrowser(navigator.userAgent).name,
     onLocale(locale) { preferences = { ...preferences, locale }; applyPreferences(preferences, preferenceStorage); buildShell(); renderCurrentRoute(); },
     onTheme(theme) { preferences = { ...preferences, theme }; applyPreferences(preferences, preferenceStorage); },
   });
@@ -54,6 +54,8 @@ function routeTitle(route: ReturnType<typeof resolveRoute>, locale: DisplayPrefe
     "/register": translate(locale, "register"),
     "/login": translate(locale, "login"),
     "/recovery": translate(locale, "recovery"),
+    "/passkey/enroll": translate(locale, "enrollTitle"),
+    "/recovery-codes/rotate": translate(locale, "rotateTitle"),
   }[route];
 }
 

@@ -12,6 +12,13 @@ The login origin only authenticates and creates accounts. Password and Passkey a
 - OAuth authorization transaction handles are held in memory and forwarded to every login method;
 - UI language (`zh-CN`, `en`, `ja`) and theme are the only values persisted locally. Credentials and CSRF material are never persisted.
 
+Account Center may invoke two narrow Login-owned ceremonies:
+
+- `/passkey/enroll?return_uri=…` adds one authenticator;
+- `/recovery-codes/rotate?return_uri=…` performs required step-up and rotates recovery codes.
+
+`return_uri` is accepted only when its origin exactly matches the Account origin paired with the current Login environment. These pages never list, rename, revoke, or otherwise manage account resources. Newly issued recovery codes are shown before any onward navigation and can be copied or downloaded once.
+
 The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
 
 ## 内联 Passkey 再认证
