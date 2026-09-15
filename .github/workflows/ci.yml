@@ -113,7 +113,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - name: Validate contracts and fresh migration / 验证契约与全新迁移
-        run: npm run lint:openapi && npm run migrate:local
+        run: npm run lint:openapi && npm run migrate:local && npm run test:migrations
       - name: Validate scripts and JSONC / 验证脚本与 JSONC
         run: |
           shellcheck scripts/*.sh

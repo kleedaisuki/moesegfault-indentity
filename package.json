@@ -9,19 +9,26 @@
     "npm": ">=11.0.0"
   },
   "workspaces": [
-    "apps/login"
+    "apps/login",
+    "apps/account"
   ],
   "scripts": {
     "build:identity": "worker-build --release crates/identity-worker",
     "build:login": "npm run build --workspace=@moesegfault/login",
+    "build:account": "npm run build --workspace=@moesegfault/account",
     "lint:login": "npm run lint --workspace=@moesegfault/login",
+    "lint:account": "npm run lint --workspace=@moesegfault/account",
     "test:login": "npm run test --workspace=@moesegfault/login -- --run",
+    "test:account": "npm run test --workspace=@moesegfault/account -- --run",
     "typecheck:login": "npm run typecheck --workspace=@moesegfault/login",
+    "typecheck:account": "npm run typecheck --workspace=@moesegfault/account",
     "lint:openapi": "redocly lint --config openapi/redocly.yaml openapi/identity.yaml",
     "migrate:local": "wrangler d1 migrations apply moesegfault-identity-staging --local --persist-to=.wrangler/ci --config wrangler.identity.jsonc",
+    "test:migrations": "node scripts/test-migrations.mjs",
     "package:identity": "wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc",
     "dry-run:identity": "npm run build:identity && npm run package:identity",
-    "dry-run:login": "wrangler deploy --dry-run --outdir=dist/dry-run/login --env production --config wrangler.login.jsonc"
+    "dry-run:login": "wrangler deploy --dry-run --outdir=dist/dry-run/login --env production --config wrangler.login.jsonc",
+    "dry-run:account": "wrangler deploy --dry-run --outdir=dist/dry-run/account --env production --config wrangler.account.jsonc"
   },
   "devDependencies": {
     "@redocly/cli": "2.52.1",

@@ -134,5 +134,6 @@ verify_runtime_secrets "$TARGET"
 # avatars. / 头像对象名为不可变 UUID；Worker 会尽力清除被替换/删除对象，保留的 deleted 行是
 # 运维 reaper 的重试清单。不要配置全桶过期规则，否则当前头像也会被删除。
 
-# Custom Domains are declarative in wrangler.*.jsonc; do not mutate DNS here. / 自定义域名由 Wrangler 声明，此处不改 DNS。
-printf 'bootstrap complete; Custom Domains will reconcile during deploy / 引导完成，自定义域名将在发布时调和\n'
+# Worker Custom Domains reconcile during deploy; avatar R2 domains were verified above.
+# Worker 自定义域名在发布时调和；头像 R2 域名已在上方完成验证。
+printf 'bootstrap complete; Worker domains reconcile during deploy / 引导完成，Worker 域名将在发布时调和\n'

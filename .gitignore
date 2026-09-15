@@ -27,3 +27,5 @@ Thumbs.db
 # Test output / 测试产物
 /coverage/
 **/coverage/
+/.cache/
+/.temp/
