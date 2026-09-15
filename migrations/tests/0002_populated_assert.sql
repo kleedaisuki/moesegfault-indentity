@@ -7,19 +7,22 @@ CREATE TABLE _0002_assertion (
 
 INSERT INTO _0002_assertion VALUES (
     'stable session foreign keys',
-    (SELECT count(*) = 4 FROM (
-        SELECT "table" FROM pragma_foreign_key_list('binding_transactions')
-        UNION ALL SELECT "table" FROM pragma_foreign_key_list('oauth_authorization_transactions')
-        UNION ALL SELECT "table" FROM pragma_foreign_key_list('oauth_authorization_codes')
-        UNION ALL SELECT "table" FROM pragma_foreign_key_list('oauth_refresh_token_families')
-    ) WHERE "table" = 'identity_sessions')
+    (SELECT
+        (SELECT count(*) FROM pragma_foreign_key_list('binding_transactions')
+         WHERE "table" = 'identity_sessions') = 1
+        AND (SELECT count(*) FROM pragma_foreign_key_list('oauth_authorization_transactions')
+             WHERE "table" = 'identity_sessions') = 1
+        AND (SELECT count(*) FROM pragma_foreign_key_list('oauth_authorization_codes')
+             WHERE "table" = 'identity_sessions') = 1
+        AND (SELECT count(*) FROM pragma_foreign_key_list('oauth_refresh_token_families')
+             WHERE "table" = 'identity_sessions') = 1)
 );
 
 INSERT INTO _0002_assertion VALUES (
     'no temporary schema references',
     (SELECT count(*) = 0 FROM sqlite_schema
      WHERE name <> '_0002_assertion'
-       AND (sql LIKE '%identity_sessions_v1%' OR sql LIKE '%_0002_%'))
+       AND (instr(sql, 'identity_sessions_v1') > 0 OR instr(sql, '_0002_') > 0))
 );
 
 INSERT INTO _0002_assertion VALUES (
