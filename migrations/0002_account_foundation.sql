@@ -276,4 +276,43 @@ CREATE TABLE session_authentication_methods (
     UNIQUE(session_id, method, mfa_method_id)
 ) WITHOUT ROWID;
 
+-- Deployment-reviewed presentation metadata is kept apart from OAuth protocol state.
+-- 经部署审核的展示元数据与 OAuth 协议状态分离。
+CREATE TABLE oauth_client_presentation (
+    client_id TEXT PRIMARY KEY REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    logo_url TEXT CHECK (logo_url IS NULL OR logo_url LIKE 'https://%'),
+    homepage_url TEXT CHECK (homepage_url IS NULL OR homepage_url LIKE 'https://%'),
+    privacy_policy_url TEXT CHECK (privacy_policy_url IS NULL OR privacy_policy_url LIKE 'https://%'),
+    updated_at INTEGER NOT NULL CHECK (updated_at > 0)
+);
+
+-- Durable user grants make connected-app management explicit. Token families are
+-- issuance artifacts, not a substitute for the user's authorization decision.
+-- 持久化用户授权使已连接应用可显式管理；令牌族是签发产物，不能替代用户授权决定。
+CREATE TABLE oauth_user_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(principal_id) ON DELETE RESTRICT,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
+    scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+    granted_at INTEGER NOT NULL CHECK (granted_at > 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= granted_at),
+    last_used_at INTEGER,
+    revoked_at INTEGER,
+    revocation_reason TEXT,
+    CHECK (last_used_at IS NULL OR last_used_at >= granted_at),
+    CHECK ((revoked_at IS NULL AND revocation_reason IS NULL)
+        OR (revoked_at IS NOT NULL AND revocation_reason IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX idx_oauth_user_authorizations_active
+    ON oauth_user_authorizations(principal_id, client_id) WHERE revoked_at IS NULL;
+CREATE INDEX idx_oauth_user_authorizations_principal
+    ON oauth_user_authorizations(principal_id, revoked_at, last_used_at);
+
+-- Standard OIDC contact scopes become available to deployment-managed clients.
+-- 标准 OIDC 联系方式 scope 可供部署管理的客户端按需授权。
+INSERT INTO oauth_scopes(scope, description, audience, is_oidc, created_at) VALUES
+    ('email', 'Read primary email claims / 读取主邮箱声明', 'identity', 1, unixepoch()),
+    ('phone', 'Read primary mobile claims / 读取主手机号声明', 'identity', 1, unixepoch());
+
 PRAGMA foreign_keys = ON;

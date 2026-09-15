@@ -1173,6 +1173,36 @@ paths:
               schema: {$ref: '#/components/schemas/AccountSecurityPosture'}
         default: {$ref: '#/components/responses/Problem'}
 
+  /v1/me/authorizations:
+    get:
+      tags: [account, oauth]
+      operationId: listMyAuthorizations
+      summary: List applications authorized by the current account
+      description: Returns durable user grants rather than individual access or refresh tokens. Revoked grants are omitted.
+      security: [{identity_cookie: []}]
+      responses:
+        '200':
+          description: Active grants ordered by most recent use.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConnectedAppAuthorizationList'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/authorizations/{authorization_id}:
+    delete:
+      tags: [account, oauth]
+      operationId: revokeMyAuthorization
+      summary: Disconnect an authorized application
+      description: Atomically revokes the durable grant and every authorization code and refresh-token family for the same principal and client. Repetition is idempotent.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/AuthorizationId'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Problem'}
+
 components:
   securitySchemes:
     browser_cookie:
@@ -1247,6 +1277,11 @@ components:
       schema: {$ref: '#/components/schemas/UuidV7'}
     ContactId:
       name: contact_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/UuidV7'}
+    AuthorizationId:
+      name: authorization_id
       in: path
       required: true
       schema: {$ref: '#/components/schemas/UuidV7'}
@@ -1353,13 +1388,7 @@ components:
         mobile: {$ref: '#/components/schemas/MobileNumberInput'}
         locale: {type: string, minLength: 2, maxLength: 35, default: zh-CN, examples: [zh-CN, ja-JP, en]}
         registration_capability: {type: string, minLength: 20, maxLength: 512, writeOnly: true}
-        profile:
-          type: object
-          additionalProperties: false
-          properties:
-            status_message: {type: string, maxLength: 100, examples: ['今天也在和 segfault 和解！']}
-            favorite_character: {type: string, maxLength: 100}
-            interests: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 40}}
+        profile: {$ref: '#/components/schemas/AccountRegistrationProfile'}
       examples:
         - username: klee_dev
           password: correct-horse-battery-anime
@@ -1368,6 +1397,14 @@ components:
           mobile: {country_calling_code: '+86', national_number: '13800138000'}
           locale: zh-CN
           profile: {status_message: 今天也在和 segfault 和解！, interests: [Linux, 动画, 编译器]}
+    AccountRegistrationProfile:
+      type: object
+      additionalProperties: false
+      description: Optional playful profile seed shared by password and Passkey registration; it never participates in authentication.
+      properties:
+        status_message: {type: string, maxLength: 100, examples: ['今天也在和 segfault 和解！']}
+        favorite_character: {type: string, maxLength: 100}
+        interests: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 40}}
     PasswordAuthenticationRequest:
       type: object
       additionalProperties: false
@@ -1496,6 +1533,26 @@ components:
         verified_mobile_count: {type: integer, minimum: 0}
         recovery_ready: {type: boolean}
         recommendations: {type: array, uniqueItems: true, items: {type: string, enum: [verify_email, add_passkey, add_second_factor, generate_recovery_codes]}}
+    ConnectedAppAuthorizationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ConnectedAppAuthorization'}
+    ConnectedAppAuthorization:
+      type: object
+      additionalProperties: false
+      required: [authorization_id, client_id, display_name, scopes, granted_at]
+      properties:
+        authorization_id: {$ref: '#/components/schemas/UuidV7'}
+        client_id: {type: string, minLength: 1, maxLength: 255}
+        display_name: {type: string, minLength: 1, maxLength: 100}
+        logo_url: {type: ['string', 'null'], format: uri, pattern: '^https://'}
+        scopes: {type: array, minItems: 1, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 255}}
+        granted_at: {$ref: '#/components/schemas/DateTime'}
+        last_used_at: {oneOf: [{$ref: '#/components/schemas/DateTime'}, {type: 'null'}]}
     # Browser bootstrap / 浏览器启动上下文
     BrowserContext:
       type: object
@@ -1613,11 +1670,15 @@ components:
     CreateAccountRegistrationRequest:
       type: object
       additionalProperties: false
-      required: [username, display_name, authenticator_label]
+      required: [username, display_name, email, authenticator_label]
+      description: Passkey registration creates the same account, primary email, optional mobile, preferences, and playful profile as password registration.
       properties:
         username: {$ref: '#/components/schemas/Username'}
         display_name: {type: string, minLength: 1, maxLength: 80}
+        email: {type: string, format: email, maxLength: 254}
+        mobile: {$ref: '#/components/schemas/MobileNumberInput'}
         locale: {type: string, minLength: 2, maxLength: 35, default: zh-CN}
+        profile: {$ref: '#/components/schemas/AccountRegistrationProfile'}
         authenticator_label: {type: string, minLength: 1, maxLength: 80}
         registration_capability: {type: string, minLength: 32, maxLength: 512, writeOnly: true}
     CreateAuthenticatorRegistrationRequest:
