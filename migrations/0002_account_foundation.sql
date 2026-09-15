@@ -20,6 +20,12 @@ CREATE TABLE _0002_webauthn_authorization_links_backup AS SELECT * FROM webauthn
 CREATE TABLE _0002_oauth_authorization_code_uses_backup AS SELECT * FROM oauth_authorization_code_uses;
 CREATE TABLE _0002_oauth_refresh_tokens_backup AS SELECT * FROM oauth_refresh_tokens;
 
+-- Break only the live self-reference before DROP; the backup retains and restores it.
+-- DROP 前仅断开当前表的自引用；备份仍完整保留并恢复该关系。
+UPDATE identity_sessions
+SET created_from_session_id = NULL
+WHERE created_from_session_id IS NOT NULL;
+
 DROP TABLE binding_transaction_consumptions;
 DROP TABLE webauthn_authorization_links;
 DROP TABLE oauth_authorization_code_uses;

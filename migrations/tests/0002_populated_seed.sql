@@ -5,6 +5,7 @@ INSERT INTO human_profiles VALUES('p1','Klee',NULL,'zh-CN',1000,1000);
 INSERT INTO identifiers VALUES('i1','p1','username','klee','klee',1000,1000);
 INSERT INTO authenticators VALUES('a1','p1',randomblob(32),randomblob(64),0,randomblob(16),'[]',0,0,'Key',1000,NULL,NULL);
 INSERT INTO identity_sessions VALUES('s1',randomblob(32),'p1','a1',NULL,'passkey','["passkey"]','urn:test',1000,1000,2000,3000,NULL,NULL,NULL);
+INSERT INTO identity_sessions VALUES('s2',randomblob(32),'p1','a1',NULL,'passkey','["passkey"]','urn:test',1001,1001,2001,3001,NULL,NULL,'s1');
 
 INSERT INTO binding_providers VALUES(
     'github','https://github.com','GitHub','https://github.com/login/oauth/authorize',
