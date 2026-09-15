@@ -21,7 +21,12 @@ test -f apps/login/dist/index.html
 test -f apps/account/dist/index.html
 
 env_args() {
-  [[ "$TARGET" == "production" ]] && printf '%s\n' --env production
+  printf '%s\n' --env
+  if [[ "$TARGET" == "production" ]]; then
+    printf '%s\n' production
+  else
+    printf '\n'
+  fi
 }
 
 verify_runtime_secrets() {
@@ -55,7 +60,12 @@ verify_runtime_secrets
 # Worker 回滚无法恢复数据；迁移必须保持扩展—迁移—收缩兼容性。
 readonly DB_NAME="moesegfault-identity-${TARGET}"
 declare -a d1_args=(--remote --config "$IDENTITY_CONFIG")
-[[ "$TARGET" == "production" ]] && d1_args+=(--env production)
+d1_args+=(--env)
+if [[ "$TARGET" == "production" ]]; then
+  d1_args+=(production)
+else
+  d1_args+=("")
+fi
 npx --no-install wrangler d1 migrations list "$DB_NAME" "${d1_args[@]}"
 npx --no-install wrangler d1 migrations apply "$DB_NAME" "${d1_args[@]}"
 

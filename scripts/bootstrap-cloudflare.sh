@@ -68,6 +68,7 @@ verify_runtime_secrets() {
     SESSION_PEPPER
     CSRF_PEPPER
   )
+  env_args=(--env "")
   [[ "$target" == "production" ]] && env_args=(--env production)
   if [[ "$(jq -r ".env.${target}.vars.OAUTH_ENABLED // .vars.OAUTH_ENABLED" wrangler.identity.jsonc)" == "true" ]]; then
     required+=(

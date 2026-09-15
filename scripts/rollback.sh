@@ -17,7 +17,12 @@ readonly REASON="${ROLLBACK_REASON:-operator-requested rollback}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 
 declare -a args=(--yes --message "$REASON")
-[[ "$TARGET" == "production" ]] && args+=(--env production)
+args+=(--env)
+if [[ "$TARGET" == "production" ]]; then
+  args+=(production)
+else
+  args+=("")
+fi
 
 # Restore both presentations before their authority. / 先恢复两个展示层，再恢复身份权威。
 npx --no-install wrangler rollback "$ACCOUNT_VERSION" "${args[@]}" --config wrangler.account.jsonc
