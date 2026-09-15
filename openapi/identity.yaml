@@ -5,10 +5,12 @@ openapi: 3.1.1
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: moeSegFault Identity API
-  version: 1.0.0
-  summary: Passkey-first identity authority and OAuth/OIDC issuer
+  version: 2.0.0
+  summary: Multi-method identity authority, account API, and OAuth/OIDC issuer
   description: |
-    The implementable first-release contract for `identity.moesegfault.dev`.
+    The implementable contract shared by `login.moesegfault.dev`,
+    `account.moesegfault.dev`, and relying services. Password, Passkey, and
+    configured federation are peers: Passkeys are encouraged but never required.
     JSON property names use `snake_case`. Ordinary API errors use RFC 9457
     Problem Details; OAuth/OIDC protocol endpoints retain their standards-defined
     error payloads and redirects. Browser session secrets are delivered only in
@@ -32,7 +34,7 @@ tags:
   - name: ceremonies
     description: Browser-bound WebAuthn and recovery ceremonies.
   - name: account
-    description: Current-principal account and credential management.
+    description: Modern account, profile, contact, preference, and credential management for account.moesegfault.dev.
   - name: bindings
     description: External identity provider bindings.
   - name: oauth
@@ -841,6 +843,336 @@ paths:
         '200': {$ref: '#/components/responses/LogoutComplete'}
         default: {$ref: '#/components/responses/Problem'}
 
+  /v1/password/registrations:
+    post:
+      tags: [ceremonies]
+      operationId: registerWithPassword
+      summary: Create an account with a password
+      description: |
+        Creates the principal, verified username, unverified contacts, password credential,
+        and browser session atomically. In invite-only mode `registration_capability`
+        is consumed only when the entire operation succeeds. Email is required for account
+        recovery; mobile and avatar are optional. Passkey enrollment remains an optional
+        next step in account settings.
+      security: [{browser_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PasswordRegistrationRequest'}
+      responses:
+        '201':
+          description: Account and session created; contacts still require verification.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Set-Cookie: {$ref: '#/components/headers/IdentitySetCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthenticationCompletion'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/password/authentications:
+    post:
+      tags: [ceremonies]
+      operationId: authenticateWithPassword
+      summary: Authenticate using username, email, or mobile and password
+      description: |
+        `login` is normalized according to its detected identifier kind. A successful
+        OAuth entry returns an authorization resume URI.
+      security: [{browser_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PasswordAuthenticationRequest'}
+      responses:
+        '200':
+          description: Authenticated browser session.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Set-Cookie: {$ref: '#/components/headers/IdentitySetCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthenticationCompletion'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me:
+    get:
+      tags: [account]
+      operationId: getMyAccount
+      summary: Bootstrap the account application
+      description: Returns account data and a memory-only CSRF token in one round trip for direct links and in-app browsers.
+      security: [{identity_cookie: []}]
+      responses:
+        '200':
+          description: Current account and mutation context.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessionEnvelope'}
+        default: {$ref: '#/components/responses/Problem'}
+    patch:
+      tags: [account]
+      operationId: updateMyAccount
+      summary: Update profile fields
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: {$ref: '#/components/schemas/UpdateAccountRequest'}
+      responses:
+        '200':
+          description: Updated account.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Account'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/avatar:
+    post:
+      tags: [account]
+      operationId: uploadMyAvatar
+      summary: Replace the current avatar
+      description: Accepts a cropped square image. The service validates and re-encodes it before publication; clients must not assume the uploaded encoding is retained.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [avatar]
+              properties:
+                avatar: {type: string, format: binary, description: 'AVIF, JPEG, PNG, or WebP; at most 10 MiB.'}
+      responses:
+        '201':
+          description: Processed current avatar.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Avatar'}
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [account]
+      operationId: deleteMyAvatar
+      summary: Remove the current avatar
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/contacts:
+    get:
+      tags: [account]
+      operationId: listMyContacts
+      summary: List email and mobile identifiers
+      security: [{identity_cookie: []}]
+      responses:
+        '200':
+          description: Contacts ordered by kind, primary status, and creation time.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Contact'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [account]
+      operationId: createMyContact
+      summary: Add an unverified email or mobile identifier
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ContactInput'}
+      responses:
+        '201':
+          description: Contact created; verification is a separate explicit operation.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contact'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/contacts/{contact_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ContactId'}
+    patch:
+      tags: [account]
+      operationId: updateMyContact
+      summary: Change primary status or replace a contact value
+      description: Replacing the value clears verification. Promoting a contact atomically demotes the previous primary contact of the same kind.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: {$ref: '#/components/schemas/UpdateContactRequest'}
+      responses:
+        '200':
+          description: Updated contact.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contact'}
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [account]
+      operationId: deleteMyContact
+      summary: Remove a non-required contact
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/contacts/{contact_id}/verification-transactions:
+    post:
+      tags: [account]
+      operationId: createContactVerification
+      summary: Send a short-lived contact verification code
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ContactId'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      responses:
+        '201':
+          description: Delivery accepted. The response is identical whether the provider has already accepted delivery.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ContactVerificationTransaction'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/contacts/{contact_id}/verification-transactions/{transaction_id}/completion:
+    post:
+      tags: [account]
+      operationId: completeContactVerification
+      summary: Verify a contact with the delivered code
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ContactId'}
+        - {$ref: '#/components/parameters/TransactionId'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ContactVerificationCompletionRequest'}
+      responses:
+        '200':
+          description: Verified contact.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contact'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/preferences:
+    get:
+      tags: [account]
+      operationId: getMyPreferences
+      summary: Read presentation and notification preferences
+      security: [{identity_cookie: []}]
+      responses:
+        '200':
+          description: Account application preferences.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountPreferences'}
+        default: {$ref: '#/components/responses/Problem'}
+    patch:
+      tags: [account]
+      operationId: updateMyPreferences
+      summary: Update presentation and notification preferences
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: {$ref: '#/components/schemas/UpdateAccountPreferencesRequest'}
+      responses:
+        '200':
+          description: Updated preferences.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountPreferences'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/password:
+    put:
+      tags: [account]
+      operationId: setMyPassword
+      summary: Add or replace the password credential
+      description: Existing password users supply `current_password`; passwordless users must have a recent step-up session.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetPasswordRequest'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [account]
+      operationId: deleteMyPassword
+      summary: Remove password authentication
+      description: Rejected when it would leave the account with no usable authentication method.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/Origin'}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Problem'}
+
+  /v1/me/security:
+    get:
+      tags: [account]
+      operationId: getMySecurityPosture
+      summary: Summarize available sign-in, recovery, and MFA methods
+      security: [{identity_cookie: []}]
+      responses:
+        '200':
+          description: Actionable security posture without credential secrets.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSecurityPosture'}
+        default: {$ref: '#/components/responses/Problem'}
+
 components:
   securitySchemes:
     browser_cookie:
@@ -868,6 +1200,8 @@ components:
           scopes:
             openid: Establish an OpenID Connect identity
             profile: Read minimal public profile claims
+            email: Read the primary email and its verification state
+            phone: Read the primary mobile number and its verification state
             offline_access: Receive a rotating refresh token
   headers:
     CorrelationId:
@@ -887,7 +1221,8 @@ components:
       name: Origin
       in: header
       required: true
-      schema: {type: string, const: 'https://login.moesegfault.dev'}
+      description: Exact reviewed first-party origin; deployments may add explicitly configured origins rather than reflecting arbitrary values.
+      schema: {type: string, enum: ['https://login.moesegfault.dev', 'https://account.moesegfault.dev']}
     CsrfToken:
       name: x-moesegfault-csrf
       in: header
@@ -907,6 +1242,11 @@ components:
       schema: {$ref: '#/components/schemas/UuidV7'}
     IdentifierId:
       name: identifier_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/UuidV7'}
+    ContactId:
+      name: contact_id
       in: path
       required: true
       schema: {$ref: '#/components/schemas/UuidV7'}
@@ -1001,6 +1341,161 @@ components:
             properties:
               logged_out: {type: boolean, const: true}
   schemas:
+    PasswordRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, display_name, email]
+      properties:
+        username: {$ref: '#/components/schemas/Username'}
+        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true, description: Unicode password; the service measures the UTF-8 byte limit after normalization policy checks.}
+        display_name: {type: string, minLength: 1, maxLength: 80, examples: ['星屑 Klee']}
+        email: {type: string, format: email, maxLength: 254, examples: ['klee@example.net']}
+        mobile: {$ref: '#/components/schemas/MobileNumberInput'}
+        locale: {type: string, minLength: 2, maxLength: 35, default: zh-CN, examples: [zh-CN, ja-JP, en]}
+        registration_capability: {type: string, minLength: 20, maxLength: 512, writeOnly: true}
+        profile:
+          type: object
+          additionalProperties: false
+          properties:
+            status_message: {type: string, maxLength: 100, examples: ['今天也在和 segfault 和解！']}
+            favorite_character: {type: string, maxLength: 100}
+            interests: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 40}}
+      examples:
+        - username: klee_dev
+          password: correct-horse-battery-anime
+          display_name: 星屑 Klee
+          email: klee@example.net
+          mobile: {country_calling_code: '+86', national_number: '13800138000'}
+          locale: zh-CN
+          profile: {status_message: 今天也在和 segfault 和解！, interests: [Linux, 动画, 编译器]}
+    PasswordAuthenticationRequest:
+      type: object
+      additionalProperties: false
+      required: [login, password]
+      properties:
+        login: {type: string, minLength: 3, maxLength: 320, description: 'Username, normalized email address, or E.164 mobile number.'}
+        password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
+        authorization_transaction_id: {$ref: '#/components/schemas/UuidV7'}
+    MobileNumberInput:
+      type: object
+      additionalProperties: false
+      required: [country_calling_code, national_number]
+      description: UI country selection and national digits are transported separately; the server derives the canonical E.164 value.
+      properties:
+        country_calling_code: {type: string, pattern: '^\+[1-9][0-9]{0,2}$', examples: ['+86', '+81']}
+        national_number: {type: string, pattern: '^[0-9]{4,14}$', examples: ['13800138000']}
+    ContactInput:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, email]
+          properties:
+            kind: {type: string, const: email}
+            email: {type: string, format: email, maxLength: 254}
+            is_primary: {type: boolean, default: false}
+        - type: object
+          additionalProperties: false
+          required: [kind, mobile]
+          properties:
+            kind: {type: string, const: mobile}
+            mobile: {$ref: '#/components/schemas/MobileNumberInput'}
+            is_primary: {type: boolean, default: false}
+    UpdateContactRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        email: {type: string, format: email, maxLength: 254}
+        mobile: {$ref: '#/components/schemas/MobileNumberInput'}
+        is_primary: {type: boolean}
+      description: Supply only the value matching the existing contact kind. Any value change clears verification.
+    Contact:
+      type: object
+      additionalProperties: false
+      required: [contact_id, kind, value, is_primary, verification_state, created_at, updated_at]
+      properties:
+        contact_id: {$ref: '#/components/schemas/UuidV7'}
+        kind: {type: string, enum: [email, mobile]}
+        value: {type: string, minLength: 3, maxLength: 320, description: Email or canonical E.164 mobile value.}
+        country_calling_code: {type: ['string', 'null'], pattern: '^\+[1-9][0-9]{0,2}$'}
+        national_number: {type: ['string', 'null'], pattern: '^[0-9]{4,14}$'}
+        is_primary: {type: boolean}
+        verification_state: {type: string, enum: [unverified, pending, verified]}
+        verified_at: {oneOf: [{$ref: '#/components/schemas/DateTime'}, {type: 'null'}]}
+        created_at: {$ref: '#/components/schemas/DateTime'}
+        updated_at: {$ref: '#/components/schemas/DateTime'}
+    ContactVerificationTransaction:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, expires_at, delivery_hint]
+      properties:
+        transaction_id: {$ref: '#/components/schemas/UuidV7'}
+        expires_at: {$ref: '#/components/schemas/DateTime'}
+        delivery_hint: {type: string, minLength: 3, maxLength: 100, examples: ['k***@example.net', '+86 138****8000']}
+    ContactVerificationCompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: {type: string, minLength: 4, maxLength: 12, pattern: '^[A-Za-z0-9]+$', writeOnly: true}
+    Avatar:
+      type: object
+      additionalProperties: false
+      required: [avatar_id, url, media_type, width, height, updated_at]
+      properties:
+        avatar_id: {$ref: '#/components/schemas/UuidV7'}
+        url: {type: string, format: uri, pattern: '^https://'}
+        media_type: {type: string, enum: [image/avif, image/jpeg, image/png, image/webp]}
+        width: {type: integer, minimum: 1, maximum: 8192}
+        height: {type: integer, minimum: 1, maximum: 8192}
+        updated_at: {$ref: '#/components/schemas/DateTime'}
+    AccountPreferences:
+      type: object
+      additionalProperties: false
+      required: [locale, theme, timezone, reduced_motion, compact_mode, notifications]
+      properties:
+        locale: {type: string, minLength: 2, maxLength: 35, examples: [zh-CN]}
+        theme: {type: string, enum: [system, light, dark]}
+        timezone: {type: string, minLength: 1, maxLength: 64, examples: [Asia/Shanghai]}
+        reduced_motion: {type: boolean}
+        compact_mode: {type: boolean}
+        notifications:
+          type: object
+          additionalProperties: false
+          required: [security_email]
+          properties:
+            security_email: {type: boolean, description: Critical security notices may remain mandatory regardless of this presentation preference.}
+            product_email: {type: boolean, default: false}
+    UpdateAccountPreferencesRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        locale: {type: string, minLength: 2, maxLength: 35}
+        theme: {type: string, enum: [system, light, dark]}
+        timezone: {type: string, minLength: 1, maxLength: 64}
+        reduced_motion: {type: boolean}
+        compact_mode: {type: boolean}
+        notifications: {type: object, additionalProperties: {type: boolean}}
+    SetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [new_password]
+      properties:
+        current_password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
+        new_password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+    AccountSecurityPosture:
+      type: object
+      additionalProperties: false
+      required: [password, passkey_count, mfa_methods, verified_email_count, verified_mobile_count, recovery_ready]
+      properties:
+        password: {type: boolean}
+        passkey_count: {type: integer, minimum: 0}
+        mfa_methods: {type: array, uniqueItems: true, items: {type: string, enum: [totp, passkey, push, hardware_otp]}}
+        verified_email_count: {type: integer, minimum: 0}
+        verified_mobile_count: {type: integer, minimum: 0}
+        recovery_ready: {type: boolean}
+        recommendations: {type: array, uniqueItems: true, items: {type: string, enum: [verify_email, add_passkey, add_second_factor, generate_recovery_codes]}}
     # Browser bootstrap / 浏览器启动上下文
     BrowserContext:
       type: object
@@ -1039,7 +1534,7 @@ components:
         instance: {type: string, format: uri-reference}
         error_code:
           type: string
-          enum: [invalid_request, authentication_failed, invalid_transaction, transaction_expired, transaction_consumed, reauthentication_required, binding_conflict, identifier_conflict, idempotency_conflict, idempotency_in_progress, idempotency_result_unavailable, last_authenticator, invalid_redirect_uri, invalid_client, invalid_scope, registration_disabled, principal_suspended, rate_limited, not_found, internal_error, service_unavailable]
+          enum: [invalid_request, authentication_failed, invalid_verification_code, password_policy_failed, invalid_transaction, transaction_expired, transaction_consumed, reauthentication_required, binding_conflict, identifier_conflict, idempotency_conflict, idempotency_in_progress, idempotency_result_unavailable, last_authenticator, last_authentication_method, invalid_redirect_uri, invalid_client, invalid_scope, registration_disabled, principal_suspended, rate_limited, not_found, internal_error, service_unavailable]
         correlation_id: {$ref: '#/components/schemas/UuidV7'}
         retry_after_seconds: {type: integer, minimum: 1}
         invalid_parameters:
@@ -1086,7 +1581,7 @@ components:
         token_endpoint_auth_methods_supported: {type: array, const: [private_key_jwt, none]}
         token_endpoint_auth_signing_alg_values_supported: {type: array, const: [RS256, ES256]}
         code_challenge_methods_supported: {type: array, const: [S256]}
-        claims_supported: {type: array, const: [sub, name, preferred_username]}
+        claims_supported: {type: array, const: [sub, name, preferred_username, picture, locale, email, email_verified, phone_number, phone_number_verified]}
     JsonWebKeySet:
       type: object
       additionalProperties: false
@@ -1337,7 +1832,7 @@ components:
         principal_id: {$ref: '#/components/schemas/UuidV4'}
         lifecycle_state: {type: string, enum: [active, suspended, pending_deletion, deleted]}
         profile: {$ref: '#/components/schemas/HumanProfile'}
-        identifiers: {type: array, items: {$ref: '#/components/schemas/Identifier'}, maxItems: 1}
+        identifiers: {type: array, items: {$ref: '#/components/schemas/Identifier'}, maxItems: 32}
         created_at: {$ref: '#/components/schemas/DateTime'}
         updated_at: {$ref: '#/components/schemas/DateTime'}
     HumanProfile:
@@ -1348,6 +1843,13 @@ components:
         display_name: {type: string, minLength: 1, maxLength: 80}
         avatar_url: {type: ['string', 'null'], format: uri}
         locale: {type: string, minLength: 2, maxLength: 35}
+        bio: {type: ['string', 'null'], maxLength: 500}
+        status_message: {type: ['string', 'null'], maxLength: 100}
+        pronouns: {type: ['string', 'null'], maxLength: 40}
+        favorite_character: {type: ['string', 'null'], maxLength: 100}
+        interests: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 40}}
+        links: {type: array, maxItems: 10, items: {type: string, format: uri, maxLength: 2048}}
+        profile_visibility: {type: string, enum: [private, members, public], default: members}
     UpdateAccountRequest:
       type: object
       additionalProperties: false
@@ -1355,6 +1857,13 @@ components:
       properties:
         display_name: {type: string, minLength: 1, maxLength: 80}
         locale: {type: string, minLength: 2, maxLength: 35}
+        bio: {type: ['string', 'null'], maxLength: 500}
+        status_message: {type: ['string', 'null'], maxLength: 100}
+        pronouns: {type: ['string', 'null'], maxLength: 40}
+        favorite_character: {type: ['string', 'null'], maxLength: 100}
+        interests: {type: array, maxItems: 20, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 40}}
+        links: {type: array, maxItems: 10, items: {type: string, format: uri, maxLength: 2048}}
+        profile_visibility: {type: string, enum: [private, members, public]}
     IdentifierInput:
       type: object
       additionalProperties: false
@@ -1365,11 +1874,14 @@ components:
     Identifier:
       type: object
       additionalProperties: false
-      required: [identifier_id, kind, value, created_at, updated_at]
+      required: [identifier_id, kind, value, is_primary, verification_state, created_at, updated_at]
       properties:
         identifier_id: {$ref: '#/components/schemas/UuidV7'}
-        kind: {type: string, const: username}
-        value: {$ref: '#/components/schemas/Username'}
+        kind: {type: string, enum: [username, email, mobile]}
+        value: {type: string, minLength: 3, maxLength: 320}
+        is_primary: {type: boolean}
+        verification_state: {type: string, enum: [unverified, pending, verified]}
+        verified_at: {oneOf: [{$ref: '#/components/schemas/DateTime'}, {type: 'null'}]}
         created_at: {$ref: '#/components/schemas/DateTime'}
         updated_at: {$ref: '#/components/schemas/DateTime'}
     Authenticator:
@@ -1433,7 +1945,7 @@ components:
       required: [session_id, authentication_method, amr, acr, is_current, authenticated_at, last_seen_at, expires_at]
       properties:
         session_id: {$ref: '#/components/schemas/UuidV7'}
-        authentication_method: {type: string, enum: [passkey, federated]}
+        authentication_method: {type: string, enum: [password, passkey, federated]}
         authenticator_id: {oneOf: [{$ref: '#/components/schemas/UuidV7'}, {type: 'null'}]}
         binding_id: {oneOf: [{$ref: '#/components/schemas/UuidV7'}, {type: 'null'}]}
         amr: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
@@ -1539,3 +2051,9 @@ components:
         sub: {type: string, minLength: 16, maxLength: 255}
         name: {type: string, minLength: 1, maxLength: 80}
         preferred_username: {$ref: '#/components/schemas/Username'}
+        picture: {type: string, format: uri, pattern: '^https://'}
+        locale: {type: string, minLength: 2, maxLength: 35}
+        email: {type: string, format: email, maxLength: 254}
+        email_verified: {type: boolean}
+        phone_number: {type: string, pattern: '^\+[1-9][0-9]{4,14}$'}
+        phone_number_verified: {type: boolean}
