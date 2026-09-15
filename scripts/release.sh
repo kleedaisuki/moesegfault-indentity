@@ -21,6 +21,8 @@ test -f apps/login/dist/index.html
 test -f apps/account/dist/index.html
 
 env_args() {
+  # Wrangler represents the reviewed top-level staging config as an explicit empty environment.
+  # Wrangler 用显式空环境表示已评审的顶层 staging 配置；省略会产生多环境歧义警告。
   printf '%s\n' --env
   if [[ "$TARGET" == "production" ]]; then
     printf '%s\n' production

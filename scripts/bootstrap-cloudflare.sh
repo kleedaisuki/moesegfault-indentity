@@ -68,6 +68,8 @@ verify_runtime_secrets() {
     SESSION_PEPPER
     CSRF_PEPPER
   )
+  # An empty Wrangler environment explicitly selects the top-level staging configuration.
+  # 空 Wrangler 环境会明确选择顶层 staging 配置，而不是含糊地省略目标。
   env_args=(--env "")
   [[ "$target" == "production" ]] && env_args=(--env production)
   if [[ "$(jq -r ".env.${target}.vars.OAUTH_ENABLED // .vars.OAUTH_ENABLED" wrangler.identity.jsonc)" == "true" ]]; then
