@@ -112,4 +112,17 @@ describe("IdentityApiClient", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/v1/password/authentications");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ authorization_transaction_id: "oauth-1" });
   });
+
+  it("uploads an optional avatar as multipart after registration", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ principal_id: "p1" }), { headers: { "content-type": "application/json" } }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    await client.uploadAvatar(new File(["image"], "klee.png", { type: "image/png" }), "session-csrf");
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://identity.moesegfault.dev/v1/me/avatar");
+    expect(init?.body).toBeInstanceOf(FormData);
+    expect((init?.body as FormData).get("avatar")).toBeInstanceOf(File);
+    const headers = new Headers(init?.headers);
+    expect(headers.get("content-type")).toBeNull();
+    expect(headers.get("x-moesegfault-csrf")).toBe("session-csrf");
+  });
 });
