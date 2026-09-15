@@ -32,5 +32,8 @@ INSERT INTO oauth_refresh_token_families VALUES(
     'rf1','app','p1','s1','openid offline_access','identity',1000,5000,NULL,NULL,NULL
 );
 INSERT INTO oauth_refresh_tokens VALUES(
-    'rt1','rf1',randomblob(32),0,1000,4000,'active',NULL,NULL
+    'rt2','rf1',randomblob(32),1,1100,4000,'active',NULL,NULL
+);
+INSERT INTO oauth_refresh_tokens VALUES(
+    'rt1','rf1',randomblob(32),0,1000,4000,'rotated',1500,'rt2'
 );

@@ -26,6 +26,13 @@ UPDATE identity_sessions
 SET created_from_session_id = NULL
 WHERE created_from_session_id IS NOT NULL;
 
+-- Rotated refresh tokens also form a self-referencing chain. Move only the disposable
+-- live copy to a constraint-valid terminal state; backup rows remain authoritative.
+-- 已轮换刷新令牌同样形成自引用链；仅把即将删除的当前副本转为合法终态，备份仍为权威数据。
+UPDATE oauth_refresh_tokens
+SET state = 'revoked', replacement_token_id = NULL
+WHERE replacement_token_id IS NOT NULL;
+
 DROP TABLE binding_transaction_consumptions;
 DROP TABLE webauthn_authorization_links;
 DROP TABLE oauth_authorization_code_uses;

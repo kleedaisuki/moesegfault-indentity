@@ -38,7 +38,9 @@ INSERT INTO _0002_assertion VALUES (
         AND (SELECT count(*) FROM oauth_authorization_transactions) = 1
         AND (SELECT count(*) FROM oauth_authorization_codes) = 1
         AND (SELECT count(*) FROM oauth_refresh_token_families) = 1
-        AND (SELECT count(*) FROM oauth_refresh_tokens) = 1
+        AND (SELECT count(*) FROM oauth_refresh_tokens) = 2
+        AND coalesce((SELECT state = 'rotated' AND replacement_token_id = 'rt2'
+                      FROM oauth_refresh_tokens WHERE refresh_token_id = 'rt1'), 0)
         AND coalesce((SELECT created_from_session_id = 's1' FROM identity_sessions
                       WHERE session_id = 's2'), 0))
 );
