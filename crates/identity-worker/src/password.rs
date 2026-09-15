@@ -199,10 +199,10 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
     let user_handle = random_bytes()?;
     let transaction_digest = Sha256::digest(random_bytes()?);
     let mut statements = vec![
-        db.prepare("INSERT INTO password_registration_transactions(transaction_id,registration_capability_id,request_digest,state,created_at,expires_at,consumed_at,result_principal_id) VALUES(?1,?2,?3,'consumed_success',?4,?5,?4,?6)")
-            .bind(&[text(&transaction_id), optional_text(decision.capability_id.as_deref()), blob(&transaction_digest), integer(now), integer(now + 300), text(&principal_id)])?,
         db.prepare("INSERT INTO principals(principal_id,kind,lifecycle_state,webauthn_user_handle,created_at,updated_at,state_changed_at) VALUES(?1,'human','active',?2,?3,?3,?3)")
             .bind(&[text(&principal_id), blob(&user_handle), integer(now)])?,
+        db.prepare("INSERT INTO password_registration_transactions(transaction_id,registration_capability_id,request_digest,state,created_at,expires_at,consumed_at,result_principal_id) VALUES(?1,?2,?3,'consumed_success',?4,?5,?4,?6)")
+            .bind(&[text(&transaction_id), optional_text(decision.capability_id.as_deref()), blob(&transaction_digest), integer(now), integer(now + 300), text(&principal_id)])?,
         db.prepare("INSERT INTO human_profiles(principal_id,display_name,locale,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)")
             .bind(&[text(&principal_id), text(display_name), text(&input.locale), integer(now)])?,
         db.prepare("INSERT INTO account_profile_details(principal_id,status_message,favorite_character,interests_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)")
@@ -275,10 +275,13 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
         account,
         &session_id,
         &session_wire,
-        now,
-        201,
-        &correlation,
-        &context.env,
+        AuthenticationResponseContext {
+            now,
+            status: 201,
+            correlation: &correlation,
+            env: &context.env,
+            authorization_transaction_id: None,
+        },
     )
 }
 
@@ -370,10 +373,13 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
         account,
         &session_id,
         &session_wire,
-        now,
-        200,
-        &correlation,
-        &context.env,
+        AuthenticationResponseContext {
+            now,
+            status: 200,
+            correlation: &correlation,
+            env: &context.env,
+            authorization_transaction_id: input.authorization_transaction_id.as_deref(),
+        },
     )
 }
 
@@ -468,16 +474,22 @@ fn account_json(
     })
 }
 
+struct AuthenticationResponseContext<'a> {
+    now: i64,
+    status: u16,
+    correlation: &'a str,
+    env: &'a Env,
+    authorization_transaction_id: Option<&'a str>,
+}
+
 fn authentication_response(
     account: serde_json::Value,
     session_id: &str,
     session_wire: &str,
-    now: i64,
-    status: u16,
-    correlation: &str,
-    env: &Env,
+    context: AuthenticationResponseContext<'_>,
 ) -> Result<Response> {
-    let csrf = guard::session_csrf_token(session_wire, secret(env, "CSRF_PEPPER")?.as_bytes());
+    let csrf =
+        guard::session_csrf_token(session_wire, secret(context.env, "CSRF_PEPPER")?.as_bytes());
     let session = SessionWire {
         session_id,
         authentication_method: "password",
@@ -486,15 +498,20 @@ fn authentication_response(
         amr: ["password"],
         acr: "urn:moesegfault:acr:password",
         is_current: true,
-        authenticated_at: date_time(now),
-        last_seen_at: date_time(now),
-        expires_at: date_time(now + 2_592_000),
+        authenticated_at: date_time(context.now),
+        last_seen_at: date_time(context.now),
+        expires_at: date_time(context.now + 2_592_000),
         revoked_at: None,
     };
+    let mut body = serde_json::json!({"account":account,"session":session,"csrf_token":csrf,"csrf_expires_at":date_time(context.now+43_200)});
+    if let Some(id) = context.authorization_transaction_id {
+        body["authorization_resume_uri"] =
+            serde_json::json!(format!("/v1/oauth/authorization-transactions/{id}/resume"));
+    }
     json(
-        &serde_json::json!({"account":account,"session":session,"csrf_token":csrf,"csrf_expires_at":date_time(now+43_200)}),
-        status,
-        correlation,
+        &body,
+        context.status,
+        context.correlation,
         Some(&guard::session_cookie(session_wire)),
     )
 }
