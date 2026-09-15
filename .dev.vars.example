@@ -2,6 +2,7 @@
 ENVIRONMENT=development
 ISSUER=http://localhost:8787
 LOGIN_ORIGIN=http://localhost:5173
+ACCOUNT_ORIGIN=http://localhost:5174
 OAUTH_ENABLED=false
 OIDC_ACTIVE_KID=disabled
 PUBLIC_JWKS={"keys":[]}

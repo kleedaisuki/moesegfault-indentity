@@ -1,14 +1,24 @@
-name: Rollback production
+name: Rollback deployment
 
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Target environment / 目标环境
+        required: true
+        default: production
+        type: choice
+        options: [staging, production]
       identity_version:
         description: Identity Worker version ID / Identity Worker 版本 ID
         required: true
         type: string
       login_version:
         description: Login Worker version ID / Login Worker 版本 ID
+        required: true
+        type: string
+      account_version:
+        description: Account Worker version ID / Account Worker 版本 ID
         required: true
         type: string
       reason:
@@ -20,22 +30,23 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-production
+  group: cloudflare-${{ inputs.target }}
   cancel-in-progress: false
 
 jobs:
   rollback:
-    name: Roll back both Workers
+    name: Roll back all Workers
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: cloudflare-deployment
-      url: https://login.moesegfault.dev
+      name: cloudflare-${{ inputs.target }}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       IDENTITY_VERSION: ${{ inputs.identity_version }}
       LOGIN_VERSION: ${{ inputs.login_version }}
+      ACCOUNT_VERSION: ${{ inputs.account_version }}
+      TARGET: ${{ inputs.target }}
       ROLLBACK_REASON: ${{ inputs.reason }}
     steps:
       - name: Check out runbook and scripts / 检出手册与脚本
@@ -49,4 +60,4 @@ jobs:
       - name: Install locked deployment tooling / 安装锁定发布工具
         run: npm ci --ignore-scripts
       - name: Roll back and smoke / 回滚并冒烟检查
-        run: scripts/rollback.sh "$IDENTITY_VERSION" "$LOGIN_VERSION"
+        run: scripts/rollback.sh "$TARGET" "$IDENTITY_VERSION" "$LOGIN_VERSION" "$ACCOUNT_VERSION"

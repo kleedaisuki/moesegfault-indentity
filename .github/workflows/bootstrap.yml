@@ -2,6 +2,13 @@ name: Cloudflare bootstrap
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Environment whose secrets are verified / 要验证密钥的环境
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
 
 permissions:
   contents: read
@@ -15,7 +22,7 @@ jobs:
     name: Verify or provision data resources
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    environment: cloudflare-deployment
+    environment: cloudflare-${{ inputs.target }}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -33,4 +40,4 @@ jobs:
       - name: Install locked tooling / 安装锁定工具
         run: npm ci --ignore-scripts
       - name: Bootstrap idempotently / 幂等执行引导
-        run: scripts/bootstrap-cloudflare.sh
+        run: scripts/bootstrap-cloudflare.sh "${{ inputs.target }}"

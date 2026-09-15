@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "moesegfault-identity-staging",
   "main": "./crates/identity-worker/build/worker/shim.mjs",
-  "compatibility_date": "2026-09-13",
+  "compatibility_date": "2026-09-15",
   "workers_dev": false,
   "preview_urls": false,
   "minify": true,
@@ -16,6 +16,7 @@
     "ENVIRONMENT": "staging",
     "ISSUER": "https://identity-staging.moesegfault.dev",
     "LOGIN_ORIGIN": "https://login-staging.moesegfault.dev",
+    "ACCOUNT_ORIGIN": "https://account-staging.moesegfault.dev",
     "OAUTH_ENABLED": "true",
     "OIDC_ACTIVE_KID": "2026-09-staging-MMquFyCapXIv",
     "PUBLIC_JWKS": "{\"keys\":[{\"n\":\"sobH4mQamhMOB6P_vJaJE1_DSEyiB7XNGJED3EBjFV1JmfXn4rlfJJhHNXh5UEvdJn0g5vVWk65NLIOF-s-cXR9hhWzPl2I4IwnlUPrs-WGTpibZiTn-vKpAWiIU3d_6qp6nIvbR3xhQSbNnyF7WWMTuOzi5FUQmTC_MCH8uzsjqLSJb2c8yzKtVULO7ZHrrt_oDz60RBpx8iat4iM3Cv7z-KSZ6cMG_0HCDTtNQGy1hRrJwIFc9dsyN_xO_fqgNuCP5rvBv8OyAglB9-94A0_gnP0fr7JB7_kHT-yADi_-_ri9x7zAaAirZd87GF0hNC4sNrefERjQ2MdczrVZvSQ\",\"e\":\"AQAB\",\"kid\":\"2026-09-staging-MMquFyCapXIv\",\"use\":\"sig\",\"kty\":\"RSA\",\"alg\":\"RS256\"}]}",
@@ -40,7 +41,14 @@
   },
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
   },
   "env": {
     "production": {
@@ -57,6 +65,7 @@
         "ENVIRONMENT": "production",
         "ISSUER": "https://identity.moesegfault.dev",
         "LOGIN_ORIGIN": "https://login.moesegfault.dev",
+        "ACCOUNT_ORIGIN": "https://account.moesegfault.dev",
         "OAUTH_ENABLED": "true",
         "OIDC_ACTIVE_KID": "2026-09-production-5U2LPcGnYCuO",
         "PUBLIC_JWKS": "{\"keys\":[{\"n\":\"2z1Wrw4fk21qP2zFWU1b9IoonS4rff2QrgdyXDQXL7LQlE4nYikxc4l32Q-hE2y4tSxj2hT3FfqWNjTTBOH7zw9rnXHzjrBCMW89noENRw4pC-2qhAiWrsK7zerv004pvmGUXPqR_bI7JFta13UFH4JTquQTVAvmsylvuNSERX06dpffbJr3Oy0E6L5wi8Lw-8B5t_0Yg_R8SbriEciUo5ZYVZ2lG5d8YMR2OLmxH4HrLZJrNKutumF6sgEALT6aLQ36Q3AMHQq5cQnXoW1Q3RHSt5zk4Y5WwTwJF6yCij9waPmTnBBlIZRKHvMBnqaK7X3n0jhBFtBnTJpCIQMXYQ\",\"e\":\"AQAB\",\"kid\":\"2026-09-production-5U2LPcGnYCuO\",\"use\":\"sig\",\"kty\":\"RSA\",\"alg\":\"RS256\"}]}",

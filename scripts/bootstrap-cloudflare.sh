@@ -8,6 +8,12 @@ readonly PRODUCTION_DB="moesegfault-identity-production"
 readonly PRODUCTION_DB_ID="b3f4a7dd-4415-417d-a1eb-47c36a47ad24"
 readonly STAGING_BUCKET="moesegfault-identity-audit-staging"
 readonly PRODUCTION_BUCKET="moesegfault-identity-audit-production"
+readonly TARGET="${1:-}"
+
+if [[ "$TARGET" != "staging" && "$TARGET" != "production" ]]; then
+  printf 'usage: %s <staging|production>\n' "$0" >&2
+  exit 2
+fi
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -51,7 +57,9 @@ ensure_bucket() {
 }
 
 verify_runtime_secrets() {
+  local target="$1"
   local secrets_json secret
+  local -a env_args=()
   local -a required=(
     REGISTRATION_PEPPER
     RECOVERY_CODE_PEPPER
@@ -60,7 +68,8 @@ verify_runtime_secrets() {
     SESSION_PEPPER
     CSRF_PEPPER
   )
-  if [[ "$(jq -r '.env.production.vars.OAUTH_ENABLED' wrangler.identity.jsonc)" == "true" ]]; then
+  [[ "$target" == "production" ]] && env_args=(--env production)
+  if [[ "$(jq -r ".env.${target}.vars.OAUTH_ENABLED // .vars.OAUTH_ENABLED" wrangler.identity.jsonc)" == "true" ]]; then
     required+=(
       AUTHORIZATION_CODE_PEPPER
       REFRESH_TOKEN_PEPPER
@@ -69,18 +78,18 @@ verify_runtime_secrets() {
     )
   fi
 
-  if ! secrets_json="$(npx --no-install wrangler secret list --env production --config wrangler.identity.jsonc 2>/dev/null)"; then
-    printf 'identity Worker is not deployed yet; set runtime secrets immediately after its initial deployment / Identity Worker 尚未发布，首次发布后必须立即设置运行时密钥\n'
+  if ! secrets_json="$(npx --no-install wrangler secret list "${env_args[@]}" --config wrangler.identity.jsonc 2>/dev/null)"; then
+    printf '%s Identity Worker is not deployed yet; set runtime secrets before release / %s Identity Worker 尚未发布，请在发布前设置密钥\n' "$target" "$target"
     return
   fi
 
   for secret in "${required[@]}"; do
     jq -e --arg name "$secret" 'any(.[]; .name == $name)' <<<"$secrets_json" >/dev/null || {
-      printf 'missing production Worker secret / 缺少生产 Worker 密钥: %s\n' "$secret" >&2
+      printf 'missing %s Worker secret / 缺少 %s Worker 密钥: %s\n' "$target" "$target" "$secret" >&2
       exit 1
     }
   done
-  printf 'verified production Worker secret names / 生产 Worker 密钥名称已验证\n'
+  printf 'verified %s Worker secret names / %s Worker 密钥名称已验证\n' "$target" "$target"
 }
 
 require_command jq
@@ -92,7 +101,7 @@ ensure_d1 "$STAGING_DB" "$STAGING_DB_ID"
 ensure_d1 "$PRODUCTION_DB" "$PRODUCTION_DB_ID"
 ensure_bucket "$STAGING_BUCKET"
 ensure_bucket "$PRODUCTION_BUCKET"
-verify_runtime_secrets
+verify_runtime_secrets "$TARGET"
 
 # Custom Domains are declarative in wrangler.*.jsonc; do not mutate DNS here. / 自定义域名由 Wrangler 声明，此处不改 DNS。
 printf 'bootstrap complete; Custom Domains will reconcile during deploy / 引导完成，自定义域名将在发布时调和\n'
