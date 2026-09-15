@@ -852,8 +852,8 @@ paths:
         Creates the principal, verified username, unverified contacts, password credential,
         and browser session atomically. In invite-only mode `registration_capability`
         is consumed only when the entire operation succeeds. Email is required for account
-        recovery; mobile and avatar are optional. Passkey enrollment remains an optional
-        next step in account settings.
+        recovery; mobile is optional. Avatar upload and Passkey enrollment remain optional
+        next steps in account settings.
       security: [{browser_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
@@ -925,6 +925,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       requestBody:
         required: true
@@ -974,6 +975,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
@@ -1025,6 +1027,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       requestBody:
         required: true
@@ -1045,6 +1048,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
@@ -1079,6 +1083,7 @@ paths:
         - {$ref: '#/components/parameters/ContactId'}
         - {$ref: '#/components/parameters/TransactionId'}
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       requestBody:
         required: true
@@ -1113,6 +1118,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       requestBody:
         required: true
@@ -1154,6 +1160,7 @@ paths:
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
@@ -1198,6 +1205,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/AuthorizationId'}
         - {$ref: '#/components/parameters/CsrfToken'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
         - {$ref: '#/components/parameters/Origin'}
       responses:
         '204': {$ref: '#/components/responses/NoContent'}
@@ -1382,7 +1390,7 @@ components:
       required: [username, password, display_name, email]
       properties:
         username: {$ref: '#/components/schemas/Username'}
-        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true, description: Unicode password; the service measures the UTF-8 byte limit after normalization policy checks.}
+        password: {type: string, minLength: 12, maxLength: 128, writeOnly: true, description: Unicode password measured in Unicode scalar values by the current policy.}
         display_name: {type: string, minLength: 1, maxLength: 80, examples: ['星屑 Klee']}
         email: {type: string, format: email, maxLength: 254, examples: ['klee@example.net']}
         mobile: {$ref: '#/components/schemas/MobileNumberInput'}
@@ -1411,7 +1419,7 @@ components:
       required: [login, password]
       properties:
         login: {type: string, minLength: 3, maxLength: 320, description: 'Username, normalized email address, or E.164 mobile number.'}
-        password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
+        password: {type: string, minLength: 1, maxLength: 128, writeOnly: true}
         authorization_transaction_id: {$ref: '#/components/schemas/UuidV7'}
     MobileNumberInput:
       type: object
@@ -1519,8 +1527,8 @@ components:
       additionalProperties: false
       required: [new_password]
       properties:
-        current_password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
-        new_password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+        current_password: {type: string, minLength: 1, maxLength: 128, writeOnly: true}
+        new_password: {type: string, minLength: 12, maxLength: 128, writeOnly: true}
     AccountSecurityPosture:
       type: object
       additionalProperties: false
