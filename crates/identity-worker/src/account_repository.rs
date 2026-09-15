@@ -11,6 +11,15 @@ use worker::{D1Database, D1SessionConstraint, Error, Result, wasm_bindgen::JsVal
 
 use crate::repository::{self, CredentialRow, NewRecoveryCode, WebauthnTransactionRow};
 
+const CREATE_CONTACT_SQL: &str = "INSERT INTO identifiers(\
+    identifier_id,principal_id,kind,value,normalized_value,country_calling_code,\
+    national_number,is_primary,verification_state,verified_at,created_at,updated_at) \
+    SELECT ?1,principal_id,?3,?4,?5,?6,?7,CASE WHEN ?8=1 OR NOT EXISTS(\
+    SELECT 1 FROM identifiers x WHERE x.principal_id=?2 AND x.kind=?3) \
+    THEN 1 ELSE 0 END,'unverified',NULL,?9,?9 FROM principals \
+    WHERE principal_id=?2 AND kind='human' AND lifecycle_state='active' \
+    AND ?3 IN ('email','mobile')";
+
 const STEP_UP_SESSION_INSERT_SQL: &str = "INSERT INTO identity_sessions(\
     session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,\
     authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at,created_from_session_id) \
@@ -468,7 +477,7 @@ pub async fn create_contact(
     let results = db.batch(vec![
         db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND is_primary=1 AND ?3=1")
             .bind(&[text(principal_id),text(kind),integer(i64::from(is_primary)),integer(now)])?,
-        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,country_calling_code,national_number,is_primary,verification_state,created_at,updated_at) SELECT ?1,principal_id,?3,?4,?5,?6,?7,CASE WHEN ?8=1 OR NOT EXISTS(SELECT 1 FROM identifiers x WHERE x.principal_id=?2 AND x.kind=?3) THEN 1 ELSE 0 END,'unverified',?9,?9 FROM principals WHERE principal_id=?2 AND kind='human' AND lifecycle_state='active' AND ?3 IN ('email','mobile')")
+        db.prepare(CREATE_CONTACT_SQL)
             .bind(&[text(identifier_id),text(principal_id),text(kind),text(value),text(normalized_value),optional_text(calling_code),optional_text(national_number),integer(i64::from(is_primary)),integer(now)])?,
         db.prepare("UPDATE principals SET updated_at=?3 WHERE principal_id=?1 AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?2 AND principal_id=?1)")
             .bind(&[text(principal_id),text(identifier_id),integer(now)])?,
@@ -1698,5 +1707,11 @@ mod tests {
         }
         assert!(STEP_UP_SESSION_GUARD_SQL.contains("n.session_digest=?3"));
         assert!(STEP_UP_SOURCE_GUARD_SQL.contains("s.revocation_reason='step_up_replaced'"));
+    }
+
+    #[test]
+    fn unverified_contact_explicitly_clears_schema_verified_default() {
+        assert!(CREATE_CONTACT_SQL.contains("verification_state,verified_at"));
+        assert!(CREATE_CONTACT_SQL.contains("'unverified',NULL"));
     }
 }

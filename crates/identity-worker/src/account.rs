@@ -1675,7 +1675,7 @@ pub async fn revoke_authenticator(request: Request, context: RouteContext<()>) -
             Ok(session) => session,
             Err(response) => return Ok(response),
         };
-    if !recent_passkey(&session, now_seconds()) {
+    if !recent_enrollment_session(&session, now_seconds()) {
         return reauthentication_required(&correlation);
     }
     let Some(id) = path_uuid_v7(&context, "authenticator_id") else {
