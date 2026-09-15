@@ -11,16 +11,16 @@
 | Login assets | `login-staging.moesegfault.dev` | `login.moesegfault.dev` | 无 / none |
 | Account assets | `account-staging.moesegfault.dev` | `account.moesegfault.dev` | 无 / none |
 
-Custom Domains、Cron、bindings 与非敏感变量的唯一事实源（single source of truth）是三个 `wrangler.*.jsonc`。密钥只用 `wrangler secret put` 管理。发布通过 Wrangler 调和 Custom Domain，不直接编辑 DNS 记录。
+Cron、bindings 与非敏感变量的唯一事实源（single source of truth）是三个 `wrangler.*.jsonc`；Custom Domains 则由 `scripts/bootstrap-cloudflare.sh` 通过 Cloudflare account API 幂等调和。密钥只用 `wrangler secret put` 管理。域名生命周期与应用发布分开，日常 CI 无需 zone-level Workers Routes 权限。
 
 ## 首次引导 / Bootstrap
 
 1. 建立 GitHub Environments `cloudflare-staging` 与 `cloudflare-production`；production 限制为 `main` 并要求人工审批，两个环境分别保存 Cloudflare 凭据。
-2. 为 staging 与 production 各手动运行一次 **Cloudflare bootstrap**。它验证固定的 D1 UUID、幂等创建私有 audit R2，并检查所选环境的密钥名称。
+2. 为 staging 与 production 各手动运行一次 **Cloudflare bootstrap**。它验证固定的 D1 UUID、幂等创建私有 audit/avatar R2、调和 Worker/R2 Custom Domains，并检查所选环境的密钥名称。
 3. 对两个 Identity 环境设置 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER`、`CSRF_PEPPER`。`TRANSACTION_STATE_KEY` 是 32-byte 随机值的无填充 Base64URL。
 4. OAuth/OIDC 启用时还需 `AUTHORIZATION_CODE_PEPPER`、`REFRESH_TOKEN_PEPPER`、`PAIRWISE_SUBJECT_KEY`、`OIDC_PRIVATE_KEY_PKCS8`，并确认 `PUBLIC_JWKS` 的 `kid` 与 `OIDC_ACTIVE_KID` 一致。
 
-日常发布 token 需要 Workers Scripts/Routes 与 D1 Edit；bootstrap 额外需要 R2 Storage Write。GitHub Environment 在审批通过前不会向 job 暴露 secrets，这是生产提升边界，而不是把正常边界情况推回用户。[GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)
+日常发布 token 需要 Workers Scripts Write 与 D1 Edit；不需要 zone-level Workers Routes。bootstrap 额外需要 R2 Storage Write，并使用相同的 Workers Scripts Write 权限调用 account-level Custom Domains API。GitHub Environment 在审批通过前不会向 job 暴露 secrets，这是生产提升边界，而不是把正常边界情况推回用户。[GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)
 
 ## 发布流水线 / Release pipeline
 

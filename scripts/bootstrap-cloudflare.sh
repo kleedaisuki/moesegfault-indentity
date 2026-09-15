@@ -12,6 +12,7 @@ readonly STAGING_AVATAR_BUCKET="moesegfault-avatars-staging"
 readonly PRODUCTION_AVATAR_BUCKET="moesegfault-avatars-production"
 readonly STAGING_AVATAR_DOMAIN="avatars-staging.moesegfault.dev"
 readonly PRODUCTION_AVATAR_DOMAIN="avatars.moesegfault.dev"
+readonly ZONE_NAME="moesegfault.dev"
 readonly TARGET="${1:-}"
 
 if [[ "$TARGET" != "staging" && "$TARGET" != "production" ]]; then
@@ -73,6 +74,30 @@ ensure_bucket_domain() {
   printf 'verified avatar custom domain / 头像自定义域名已验证: %s -> %s\n' "$domain" "$bucket"
 }
 
+ensure_worker_domain() {
+  local service="$1"
+  local hostname="$2"
+  local response
+
+  # The account-level Custom Domains API needs Workers Scripts Write, not the broader zone-level
+  # Workers Routes permission. This keeps application delivery and DNS lifecycle independently
+  # operable. / account 级 Custom Domains API 仅需 Workers Scripts Write，无需范围更大的
+  # zone Workers Routes 权限，从而让应用发布与域名生命周期可以独立运维。
+  response="$(curl --fail-with-body --silent --show-error \
+    "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+    --request PUT \
+    --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    --header 'Content-Type: application/json' \
+    --data "$(jq -cn \
+      --arg hostname "$hostname" \
+      --arg service "$service" \
+      --arg zone_id "$CLOUDFLARE_ZONE_ID" \
+      --arg zone_name "$ZONE_NAME" \
+      '{hostname: $hostname, service: $service, zone_id: $zone_id, zone_name: $zone_name}')")"
+  jq -e '.success == true' <<<"$response" >/dev/null
+  printf 'verified Worker custom domain / Worker 自定义域名已验证: %s -> %s\n' "$hostname" "$service"
+}
+
 verify_runtime_secrets() {
   local target="$1"
   local secrets_json secret
@@ -114,6 +139,7 @@ verify_runtime_secrets() {
 
 require_command jq
 require_command npx
+require_command curl
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 : "${CLOUDFLARE_ZONE_ID:?CLOUDFLARE_ZONE_ID is required for avatar custom domains}"
@@ -126,6 +152,12 @@ ensure_bucket "$STAGING_AVATAR_BUCKET"
 ensure_bucket "$PRODUCTION_AVATAR_BUCKET"
 ensure_bucket_domain "$STAGING_AVATAR_BUCKET" "$STAGING_AVATAR_DOMAIN"
 ensure_bucket_domain "$PRODUCTION_AVATAR_BUCKET" "$PRODUCTION_AVATAR_DOMAIN"
+ensure_worker_domain "moesegfault-identity-staging" "identity-staging.moesegfault.dev"
+ensure_worker_domain "moesegfault-login-staging" "login-staging.moesegfault.dev"
+ensure_worker_domain "moesegfault-account-staging" "account-staging.moesegfault.dev"
+ensure_worker_domain "moesegfault-identity" "identity.moesegfault.dev"
+ensure_worker_domain "moesegfault-login" "login.moesegfault.dev"
+ensure_worker_domain "moesegfault-account" "account.moesegfault.dev"
 verify_runtime_secrets "$TARGET"
 
 # Avatar object names are immutable UUIDs. Replaced/deleted objects are removed best-effort by
@@ -134,6 +166,4 @@ verify_runtime_secrets "$TARGET"
 # avatars. / 头像对象名为不可变 UUID；Worker 会尽力清除被替换/删除对象，保留的 deleted 行是
 # 运维 reaper 的重试清单。不要配置全桶过期规则，否则当前头像也会被删除。
 
-# Worker Custom Domains reconcile during deploy; avatar R2 domains were verified above.
-# Worker 自定义域名在发布时调和；头像 R2 域名已在上方完成验证。
-printf 'bootstrap complete; Worker domains reconcile during deploy / 引导完成，Worker 域名将在发布时调和\n'
+printf 'bootstrap complete; data resources and custom domains are reconciled / 引导完成：数据资源与自定义域名均已调和\n'

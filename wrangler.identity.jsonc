@@ -6,12 +6,6 @@
   "workers_dev": false,
   "preview_urls": false,
   "minify": true,
-  "routes": [
-    {
-      "pattern": "identity-staging.moesegfault.dev",
-      "custom_domain": true
-    }
-  ],
   "vars": {
     "ENVIRONMENT": "staging",
     "ISSUER": "https://identity-staging.moesegfault.dev",
@@ -60,12 +54,6 @@
       "name": "moesegfault-identity",
       "workers_dev": false,
       "preview_urls": false,
-      "routes": [
-        {
-          "pattern": "identity.moesegfault.dev",
-          "custom_domain": true
-        }
-      ],
       "vars": {
         "ENVIRONMENT": "production",
         "ISSUER": "https://identity.moesegfault.dev",

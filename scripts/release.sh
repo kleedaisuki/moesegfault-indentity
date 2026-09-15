@@ -51,8 +51,10 @@ deploy_unit() {
   local config="$1"
   local -a args
   mapfile -t args < <(env_args)
-  # Deploy reconciles the reviewed Custom Domain on first release and creates a reversible version.
-  # Deploy 会在首次发布时调和已评审的 Custom Domain，并创建可回滚版本。
+  # Domains are long-lived infrastructure reconciled by bootstrap-cloudflare.sh. Keeping them out
+  # of application deploys lets the least-privilege CI token publish code without zone-route access.
+  # 域名属于由 bootstrap-cloudflare.sh 调和的长期基础设施。将其与应用发布分离后，
+  # 最小权限 CI token 无需 zone-route 权限即可发布代码。
   npx --no-install wrangler deploy --strict --tag "$RELEASE_TAG" --message "$RELEASE_MESSAGE" "${args[@]}" --config "$config"
 }
 

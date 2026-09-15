@@ -4,12 +4,6 @@
   "compatibility_date": "2026-09-15",
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [
-    {
-      "pattern": "account-staging.moesegfault.dev",
-      "custom_domain": true
-    }
-  ],
   "assets": {
     "directory": "./apps/account/dist",
     "html_handling": "auto-trailing-slash",
@@ -30,13 +24,7 @@
     "production": {
       "name": "moesegfault-account",
       "workers_dev": false,
-      "preview_urls": false,
-      "routes": [
-        {
-          "pattern": "account.moesegfault.dev",
-          "custom_domain": true
-        }
-      ]
+      "preview_urls": false
     }
   }
 }
