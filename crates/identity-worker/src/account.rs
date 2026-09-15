@@ -1384,9 +1384,6 @@ pub async fn start_authenticator_registration(
             Ok(session) => session,
             Err(response) => return Ok(response),
         };
-    if !recent_passkey(&session, now_seconds()) {
-        return reauthentication_required(&correlation);
-    }
     let input: CreateAuthenticatorRegistrationRequest = match request.json().await {
         Ok(input) => input,
         Err(_) => return invalid_request("Invalid JSON request", &correlation),
@@ -1398,6 +1395,15 @@ pub async fn start_authenticator_registration(
     let Some(identity) = repository::addition_identity(&db, &session.principal_id).await? else {
         return authentication_required(&correlation);
     };
+    let initial_enrollment = identity.credential_ids.is_empty();
+    let recently_authenticated = if initial_enrollment {
+        recent_enrollment_session(&session, now_seconds())
+    } else {
+        recent_passkey(&session, now_seconds())
+    };
+    if !recently_authenticated {
+        return reauthentication_required(&correlation);
+    }
     let existing = identity
         .credential_ids
         .into_iter()
@@ -2010,6 +2016,16 @@ fn recent_passkey(session: &repository::AccountSession, now: i64) -> bool {
             <= LifetimePolicy::default().recent_authentication_seconds as i64
 }
 
+/// 初次 Passkey 登记允许近期密码会话，后续登记仍要求 Passkey step-up。
+/// Initial passkey enrollment accepts a recent password session; subsequent
+/// enrollment still requires passkey step-up.
+fn recent_enrollment_session(session: &repository::AccountSession, now: i64) -> bool {
+    matches!(session.auth_method.as_str(), "password" | "passkey")
+        && session.authenticated_at <= now
+        && now - session.authenticated_at
+            <= LifetimePolicy::default().recent_authentication_seconds as i64
+}
+
 fn identifier_value(input: &IdentifierInput) -> std::result::Result<String, ()> {
     if input.kind != "username" {
         return Err(());
@@ -2322,6 +2338,24 @@ mod tests {
         assert!(!recent_passkey(&session("passkey", 699), 1_000));
         assert!(!recent_passkey(&session("federated", 1_000), 1_000));
         assert!(!recent_passkey(&session("passkey", 1_001), 1_000));
+    }
+
+    #[test]
+    fn initial_passkey_enrollment_accepts_only_recent_password_or_passkey() {
+        let session = |method: &str, authenticated_at| repository::AccountSession {
+            session_id: "session".into(),
+            principal_id: "principal".into(),
+            authenticator_id: None,
+            auth_method: method.into(),
+            authenticated_at,
+        };
+        assert!(recent_enrollment_session(&session("password", 700), 1_000));
+        assert!(recent_enrollment_session(&session("passkey", 700), 1_000));
+        assert!(!recent_enrollment_session(&session("password", 699), 1_000));
+        assert!(!recent_enrollment_session(
+            &session("federated", 1_000),
+            1_000
+        ));
     }
 
     #[test]

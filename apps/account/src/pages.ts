@@ -1,5 +1,5 @@
 import { ApiError, AccountApiClient } from "./api/client";
-import type { Account, AccountPreferences, Contact, MutationProof, SecuritySummary } from "./api/types";
+import type { Account, AccountPreferences, Contact, Credential, MutationProof, SecuritySummary } from "./api/types";
 import type { Locale, MessageKey } from "./i18n";
 import type { Route } from "./router";
 import { busy, el, formatTime, icon, replace } from "./ui/dom";
@@ -42,19 +42,19 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
   avatarButton.addEventListener("click", () => avatarInput.click());
   avatarInput.addEventListener("change", async () => {
     const file = avatarInput.files?.[0]; if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { avatarMessage.textContent = "Max 10 MiB"; return; }
+    if (file.size > 10 * 1024 * 1024) { avatarMessage.textContent = c.t("avatarTooLarge"); return; }
     busy(avatarButton, true);
-    try { await c.api.uploadAvatar(file, proof(c)); avatarMessage.textContent = c.t("saved"); await c.refresh(); } catch (error) { avatarMessage.textContent = errorText(error); } finally { busy(avatarButton, false); }
+    try { await c.api.uploadAvatar(file, proof(c)); avatarMessage.textContent = c.t("saved"); await c.refresh(); } catch (error) { avatarMessage.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(avatarButton, false); }
   });
   const profileForm = el("form", { className: "card form-card moe-glass" },
     el("h2", {}, c.t("editProfile")), inputField(c.t("displayName"), "display_name", c.account.profile.display_name, { required: true, maxLength: "80", autocomplete: "name", dir: "auto" }),
     textAreaField(c.t("bio"), "bio", c.account.profile.bio ?? "", 500),
-    inputField("Status / 状态", "status_message", c.account.profile.status_message ?? "", { maxLength: "100", dir: "auto" }),
-    inputField("Pronouns / 称谓", "pronouns", c.account.profile.pronouns ?? "", { maxLength: "40" }),
-    inputField("Favorite character / 最喜欢的角色", "favorite_character", c.account.profile.favorite_character ?? "", { maxLength: "100", dir: "auto" }),
-    inputField("Interests / 兴趣标签", "interests", c.account.profile.interests?.join(", ") ?? "", { placeholder: "Touhou, Vocaloid, Rust" }),
-    inputField("Links / 链接", "links", c.account.profile.links?.join("\n") ?? "", { placeholder: "https://example.com" }),
-    selectField("Visibility / 可见范围", "profile_visibility", [["private", "Private / 仅自己"], ["members", "Members / 站内"], ["public", "Public / 公开"]], c.account.profile.profile_visibility ?? "members"),
+    inputField(c.t("statusMessage"), "status_message", c.account.profile.status_message ?? "", { maxLength: "100", dir: "auto" }),
+    inputField(c.t("pronouns"), "pronouns", c.account.profile.pronouns ?? "", { maxLength: "40" }),
+    inputField(c.t("favoriteCharacter"), "favorite_character", c.account.profile.favorite_character ?? "", { maxLength: "100", dir: "auto" }),
+    inputField(c.t("interests"), "interests", c.account.profile.interests?.join(", ") ?? "", { placeholder: "Touhou, Vocaloid, Rust" }),
+    inputField(c.t("links"), "links", c.account.profile.links?.join("\n") ?? "", { placeholder: "https://example.com" }),
+    selectField(c.t("visibility"), "profile_visibility", [["private", c.t("private")], ["members", c.t("members")], ["public", c.t("public")]], c.account.profile.profile_visibility ?? "members"),
     selectField(c.t("locale"), "locale", [["zh-CN", "简体中文"], ["en", "English"], ["ja", "日本語"]], c.preferences.locale),
     inputField(c.t("timezone"), "timezone", c.preferences.timezone, { required: true, placeholder: "Asia/Shanghai" }),
     el("div", { className: "form-actions" }, button(c.t("save"), "primary", "submit"), el("span", { className: "inline-message", attrs: { "aria-live": "polite" } })),
@@ -68,10 +68,10 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
         c.api.updatePreferences({ locale: String(data.get("locale")), timezone: String(data.get("timezone")) }, proof(c)),
       ]);
       message.textContent = c.t("saved"); await c.refresh();
-    } catch (error) { message.textContent = errorText(error); } finally { busy(submit, false); }
+    } catch (error) { message.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(submit, false); }
   });
   replace(main, heading(c.t("profile"), `@${username(c.account)}`),
-    el("section", { className: "card avatar-card moe-glass" }, avatar(c.account), el("div", {}, el("h2", {}, c.t("avatar")), el("p", { className: "muted" }, "AVIF · PNG · JPEG · WebP · ≤ 10 MiB"), el("div", { className: "button-row" }, avatarInput, avatarButton, c.account.profile.avatar_url ? actionButton(c.t("remove"), async (btn) => { await c.api.deleteAvatar(proof(c)); await c.refresh(); busy(btn, false); }, "danger") : null, avatarMessage))),
+    el("section", { className: "card avatar-card moe-glass" }, avatar(c.account), el("div", {}, el("h2", {}, c.t("avatar")), el("p", { className: "muted" }, c.t("avatarFormats")), el("div", { className: "button-row" }, avatarInput, avatarButton, c.account.profile.avatar_url ? actionButton(c.t("remove"), async (btn) => { await c.api.deleteAvatar(proof(c)); await c.refresh(); busy(btn, false); }, "danger", c.t("unexpectedError")) : null, avatarMessage))),
     profileForm, contactsPanel(contacts, c));
 }
 
@@ -85,20 +85,20 @@ function contactsPanel(contacts: Contact[], c: PageContext): HTMLElement {
     )),
     el("div", { className: "row-actions" },
       contact.verification_state !== "verified" ? verificationButton(contact, c) : null,
-      !contact.is_primary && contact.verification_state === "verified" ? actionButton(c.t("makePrimary"), async (btn) => { await c.api.makePrimary(contact.contact_id, proof(c)); await c.refresh(); busy(btn, false); }, "quiet") : null,
-      actionButton(c.t("remove"), async (btn) => { await c.api.deleteContact(contact.contact_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger"),
+      !contact.is_primary && contact.verification_state === "verified" ? actionButton(c.t("makePrimary"), async (btn) => { await c.api.makePrimary(contact.contact_id, proof(c)); await c.refresh(); busy(btn, false); }, "quiet", c.t("unexpectedError")) : null,
+      actionButton(c.t("remove"), async (btn) => { await c.api.deleteContact(contact.contact_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c.t("unexpectedError")),
     ),
   ));
   const list = el("div", { className: "entity-list" }, ...rows);
   const form = el("form", { className: "contact-form" },
     selectField(c.t("contacts"), "kind", [["email", c.t("email")], ["mobile", c.t("mobile")]], "email"),
-    selectField("Country / Region", "calling_code", [["+86", "+86 中国大陆"], ["+81", "+81 日本"], ["+65", "+65 Singapore"], ["+1", "+1 US / Canada"], ["+44", "+44 UK"], ["+852", "+852 Hong Kong"]], "+86"),
+    selectField(c.t("countryRegion"), "calling_code", [["+86", `+86 ${c.t("mainlandChina")}`], ["+81", `+81 ${c.t("japan")}`], ["+65", `+65 ${c.t("singapore")}`], ["+1", `+1 ${c.t("usCanada")}`], ["+44", `+44 ${c.t("unitedKingdom")}`], ["+852", `+852 ${c.t("hongKong")}`]], "+86"),
     inputField(c.t("value"), "value", "", { required: true, autocomplete: "email" }), button(c.t("add"), "primary", "submit"), el("span", { className: "inline-message" }),
   );
   const codeField = form.querySelector<HTMLElement>("[name=calling_code]")!.closest("label")!;
   const kind = form.querySelector<HTMLSelectElement>("[name=kind]")!;
   const syncKind = () => { codeField.hidden = kind.value !== "mobile"; const input = form.querySelector<HTMLInputElement>("[name=value]")!; input.type = kind.value === "email" ? "email" : "tel"; input.autocomplete = kind.value === "email" ? "email" : "tel-national"; }; kind.addEventListener("change", syncKind); syncKind();
-  form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("[type=submit]")!; const message = form.querySelector<HTMLElement>(".inline-message")!; const data = new FormData(form); busy(submit, true); try { const contactKind = String(data.get("kind")) as "email" | "mobile"; const raw = String(data.get("value")).trim(); const code = String(data.get("calling_code")); const national = raw.replace(/^0+|[\s()-]/gu, ""); await c.api.addContact(contactKind === "mobile" ? { kind: contactKind, mobile: { country_calling_code: code, national_number: national } } : { kind: contactKind, email: raw }, proof(c)); await c.refresh(); } catch (error) { message.textContent = errorText(error); } finally { busy(submit, false); } });
+  form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("[type=submit]")!; const message = form.querySelector<HTMLElement>(".inline-message")!; const data = new FormData(form); busy(submit, true); try { const contactKind = String(data.get("kind")) as "email" | "mobile"; const raw = String(data.get("value")).trim(); const code = String(data.get("calling_code")); const national = raw.replace(/^0+|[\s()-]/gu, ""); await c.api.addContact(contactKind === "mobile" ? { kind: contactKind, mobile: { country_calling_code: code, national_number: national } } : { kind: contactKind, email: raw }, proof(c)); await c.refresh(); } catch (error) { message.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(submit, false); } });
   return el("section", { className: "card moe-glass" }, el("h2", {}, c.t("contacts")), list, form);
 }
 
@@ -110,23 +110,23 @@ async function renderSecurity(main: HTMLElement, c: PageContext): Promise<void> 
     el("div", { className: "security-grid" },
       securityCard("key", c.t("passkeys"), `${security.passkey_count}`, el("a", { className: "button primary", attrs: { href: loginUrl } }, c.t("manageAtLogin"))),
       passwordCard(security, c),
-      securityCard("shield", c.t("twoFactor"), security.mfa_methods.length > 1 ? c.t("enabled") : c.t("comingSoon"), el("span", { className: "badge warm" }, "TOTP · WebAuthn")),
+      securityCard("shield", c.t("twoFactor"), security.mfa_methods.length > 1 ? c.t("enabled") : c.t("comingSoon"), el("span", { className: "badge warm" }, c.t("technicalMethods"))),
       securityCard("sparkle", c.t("recovery"), security.recovery_ready ? c.t("enabled") : c.t("disabled"), el("a", { className: "button quiet", attrs: { href: loginManagementUrl("recovery") } }, c.t("manageAtLogin"))),
     ),
-    el("section", { className: "card moe-glass" }, el("h2", {}, c.t("passkeys")), ...credentials.items.map((credential) => el("article", { className: "entity-row" }, icon("key"), el("div", {}, el("strong", {}, credential.label), el("p", { className: "muted" }, formatTime(credential.last_used_at, c.locale))), credential.is_current ? badge(c.t("current"), "accent") : null))),
+    el("section", { className: "card moe-glass" }, el("h2", {}, c.t("passkeys")), ...credentials.items.map((credential) => passkeyRow(credential, c))),
   );
 }
 
 /** 密码可选，且绝不暗示 Passkey 是唯一选项。Password is optional and passkeys are never presented as mandatory. */
 function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
   const form = el("form", { className: "password-form" },
-    security.password ? inputField("Current password / 当前密码", "current_password", "", { required: true, type: "password", autocomplete: "current-password" }) : null,
-    inputField("New password / 新密码", "password", "", { required: true, type: "password", autocomplete: "new-password", minLength: "12" }),
+    security.password ? inputField(c.t("currentPassword"), "current_password", "", { required: true, type: "password", autocomplete: "current-password" }) : null,
+    inputField(c.t("newPassword"), "password", "", { required: true, type: "password", autocomplete: "new-password", minLength: "12" }),
     button(security.password ? c.t("save") : c.t("add"), "quiet", "submit"),
-    security.password ? actionButton(c.t("remove"), async (btn) => { await c.api.deletePassword(proof(c)); await c.refresh(); busy(btn, false); }, "danger") : null,
+    security.password ? actionButton(c.t("remove"), async (btn) => { await c.api.deletePassword(proof(c)); await c.refresh(); busy(btn, false); }, "danger", c.t("unexpectedError")) : null,
     el("span", { className: "inline-message" }),
   );
-  form.addEventListener("submit", async (event) => { event.preventDefault(); const btn = form.querySelector<HTMLButtonElement>("button[type=submit]")!; const data = new FormData(form); busy(btn, true); try { await c.api.setPassword(String(data.get("password")), proof(c), String(data.get("current_password") ?? "")); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error); } finally { busy(btn, false); } });
+  form.addEventListener("submit", async (event) => { event.preventDefault(); const btn = form.querySelector<HTMLButtonElement>("button[type=submit]")!; const data = new FormData(form); busy(btn, true); try { await c.api.setPassword(String(data.get("password")), proof(c), String(data.get("current_password") ?? "")); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(btn, false); } });
   return securityCard("shield", c.t("password"), security.password ? c.t("enabled") : c.t("disabled"), form);
 }
 
@@ -135,8 +135,8 @@ async function renderSessions(main: HTMLElement, c: PageContext): Promise<void> 
   const sessions = await c.api.listSessions(c.signal); if (c.signal.aborted) return;
   const rows = sessions.items.map((session) => el("article", { className: "entity-row" },
     icon("devices"),
-    el("div", {}, el("strong", {}, session.authentication_method), el("p", { className: "muted" }, [session.amr.join(" + "), formatTime(session.last_seen_at, c.locale)].join(" · "))),
-    session.is_current ? badge(c.t("current"), "accent") : actionButton(c.t("revoke"), async (btn) => { await c.api.revokeSession(session.session_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger"),
+    el("div", {}, el("strong", {}, session.authentication_method === "password" ? c.t("password") : session.authentication_method === "passkey" ? c.t("passkeys") : c.t("federated")), el("p", { className: "muted" }, [session.amr.join(" + "), formatTime(session.last_seen_at, c.locale)].join(" · "))),
+    session.is_current ? badge(c.t("current"), "accent") : actionButton(c.t("revoke"), async (btn) => { await c.api.revokeSession(session.session_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c.t("unexpectedError")),
   ));
   replace(main, heading(c.t("sessions"), c.t("devicesIntro")), el("section", { className: "card moe-glass" }, ...(rows.length ? rows : [empty(c.t("noSessions"))])));
 }
@@ -148,7 +148,7 @@ async function renderApps(main: HTMLElement, c: PageContext): Promise<void> {
 }
 
 /** 页面标题。Page heading. */
-function heading(title: string, intro: string): HTMLElement { return el("header", { className: "page-heading" }, el("p", { className: "eyebrow" }, "MOESEGFAULT · ACCOUNT"), el("h1", {}, title), el("p", { className: "lede" }, intro)); }
+function heading(title: string, intro: string): HTMLElement { return el("header", { className: "page-heading" }, el("p", { className: "eyebrow" }, "MOESEGFAULT"), el("h1", {}, title), el("p", { className: "lede" }, intro)); }
 /** 快捷入口。Quick entry. */
 function quick(iconName: string, title: string, text: string, href: Route): HTMLElement { return el("a", { className: "quick-card moe-glass", attrs: { href }, dataset: { route: href } }, icon(iconName), el("div", {}, el("h2", {}, title), el("p", {}, text)), icon("chevron")); }
 /** 用户头像，缺省使用品牌而非远程占位服务。User avatar with a local brand fallback. */
@@ -162,7 +162,7 @@ function selectField(label: string, name: string, options: ReadonlyArray<readonl
 /** 一致按钮。Consistent button. */
 function button(text: string, tone: "primary" | "quiet" | "danger", type: "button" | "submit" = "button"): HTMLButtonElement { return el("button", { className: `button ${tone}`, attrs: { type } }, text); }
 /** 异步动作按钮。Async action button. */
-function actionButton(text: string, action: (button: HTMLButtonElement) => Promise<void>, tone: "primary" | "quiet" | "danger"): HTMLButtonElement { const result = button(text, tone); result.addEventListener("click", async () => { busy(result, true); try { await action(result); } catch (error) { result.insertAdjacentElement("afterend", el("span", { className: "inline-message" }, errorText(error))); busy(result, false); } }); return result; }
+function actionButton(text: string, action: (button: HTMLButtonElement) => Promise<void>, tone: "primary" | "quiet" | "danger", fallback = ""): HTMLButtonElement { const result = button(text, tone); result.addEventListener("click", async () => { busy(result, true); try { await action(result); } catch (error) { result.insertAdjacentElement("afterend", el("span", { className: "inline-message" }, errorText(error, fallback))); busy(result, false); } }); return result; }
 /** 状态徽章。Status badge. */
 function badge(text: string, tone: "good" | "warm" | "accent"): HTMLElement { return el("span", { className: `badge ${tone}` }, text); }
 /** 空状态。Empty state. */
@@ -172,13 +172,26 @@ function status(text: string): HTMLElement { return el("div", { className: "load
 /** 生成 mutation proof。Constructs a mutation proof. */
 function proof(c: PageContext): MutationProof { return { csrfToken: c.csrfToken, signal: c.signal }; }
 /** 规范化展示错误，保留关联 ID 供支持排障。Normalizes errors while retaining correlation IDs for support. */
-export function errorText(error: unknown): string { if (error instanceof ApiError) return `${error.message}${error.correlationId ? ` · ID ${error.correlationId}` : ""}`; return error instanceof Error ? error.message : "Unexpected error"; }
+export function errorText(error: unknown, fallback = ""): string { if (error instanceof ApiError) return `${error.message}${error.correlationId ? ` · ID ${error.correlationId}` : ""}`; return error instanceof Error ? error.message : fallback; }
 /** 安全摘要是否需要注意。Whether a security summary needs attention. */
 export function securityAttention(value: SecuritySummary): boolean { return value.passkey_count + Number(value.password) === 0 || !value.recovery_ready; }
 /** 由 Login origin 完成 WebAuthn，Account 不跨 RP 调用 ceremony。Routes WebAuthn through the Login origin instead of crossing RP boundaries. */
-export function loginManagementUrl(section: "passkeys" | "recovery"): string { const staging = location.hostname.includes("staging"); const origin = staging ? "https://login-staging.moesegfault.dev" : "https://login.moesegfault.dev"; const returnTo = `${location.origin}/security`; return `${origin}/manage/${section}?return_to=${encodeURIComponent(returnTo)}`; }
+export function loginManagementUrl(section: "passkeys" | "recovery"): string { const staging = location.hostname.includes("staging"); const origin = staging ? "https://login-staging.moesegfault.dev" : "https://login.moesegfault.dev"; const path = section === "passkeys" ? "/passkey/enroll" : "/recovery-codes/rotate"; return `${origin}${path}?return_uri=${encodeURIComponent(`${location.origin}/security`)}`; }
 /** 安全卡片。Security card. */
 function securityCard(iconName: string, title: string, value: string, child: HTMLElement): HTMLElement { return el("article", { className: "card security-card moe-glass" }, icon(iconName), el("div", {}, el("h2", {}, title), el("strong", { className: "security-value" }, value)), child); }
+
+/** Passkey 行提供本地管理动作；只有登记 ceremony 回到 Login。Passkey rows manage metadata locally; only enrollment returns to Login. */
+function passkeyRow(credential: Credential, c: PageContext): HTMLElement {
+  const actions = el("div", { className: "row-actions" });
+  const rename = button(c.t("rename"), "quiet");
+  rename.addEventListener("click", () => {
+    const form = el("form", { className: "verification-form" }, inputField(c.t("passkeyLabel"), "label", credential.label, { required: true, maxlength: "80" }), buttonElement(c.t("save")), el("span", { className: "inline-message" }));
+    form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("button")!; busy(submit, true); try { await c.api.renameCredential(credential.authenticator_id, String(new FormData(form).get("label")), proof(c)); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error, c.t("unexpectedError")); busy(submit, false); } });
+    actions.replaceWith(form);
+  });
+  actions.append(rename, actionButton(c.t("revoke"), async (btn) => { await c.api.revokeCredential(credential.authenticator_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c.t("unexpectedError")));
+  return el("article", { className: "entity-row" }, icon("key"), el("div", {}, el("strong", { attrs: { dir: "auto" } }, credential.label), el("p", { className: "muted" }, formatTime(credential.last_used_at, c.locale)), credential.is_current ? badge(c.t("current"), "accent") : null), actions);
+}
 
 /** 把发送与输入验证码保留在当前联系方式行内。Keeps code delivery and entry within the contact row. */
 function verificationButton(contact: Contact, c: PageContext): HTMLButtonElement {
@@ -188,9 +201,9 @@ function verificationButton(contact: Contact, c: PageContext): HTMLButtonElement
       inputField(`${c.t("verificationCode")} · ${transaction.delivery_hint}`, "code", "", { required: true, autocomplete: "one-time-code", inputmode: "numeric", maxlength: "12" }),
       buttonElement(c.t("confirm")), el("span", { className: "inline-message" }),
     );
-    form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("button")!; busy(submit, true); try { await c.api.completeContactVerification(contact.contact_id, transaction.transaction_id, String(new FormData(form).get("code")), proof(c)); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error); busy(submit, false); } });
+    form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("button")!; busy(submit, true); try { await c.api.completeContactVerification(contact.contact_id, transaction.transaction_id, String(new FormData(form).get("code")), proof(c)); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error, c.t("unexpectedError")); busy(submit, false); } });
     button.replaceWith(form);
-  }, "quiet");
+  }, "quiet", c.t("unexpectedError"));
 }
 
 /** 验证表单提交按钮。Verification form submit button. */

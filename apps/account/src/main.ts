@@ -3,7 +3,7 @@ import { AccountApiClient, ApiError } from "./api/client";
 import type { Account, AccountPreferences } from "./api/types";
 import { resolveIdentityOrigin } from "./environment";
 import { normalizeLocale, translator } from "./i18n";
-import { applyTheme, isInAppBrowser, readPreferences, type Theme } from "./preferences";
+import { applyTheme, isInAppBrowser, readPreferences, safeStorage, writePreference, type Theme } from "./preferences";
 import { renderPage } from "./pages";
 import { installRouter, resolveRoute } from "./router";
 import { el, icon, replace } from "./ui/dom";
@@ -12,7 +12,8 @@ import { createShell } from "./ui/shell";
 const mount = document.querySelector<HTMLElement>("#app");
 if (!mount) throw new Error("Missing #app mount point");
 const media = matchMedia("(prefers-color-scheme: dark)");
-const preferences = readPreferences(localStorage, navigator.language);
+const storage = safeStorage(() => window.localStorage);
+const preferences = readPreferences(storage, navigator.language);
 let locale = preferences.locale;
 let theme = preferences.theme;
 let t = translator(locale);
@@ -20,7 +21,7 @@ applyTheme(theme, document.documentElement, media);
 document.documentElement.lang = locale;
 
 const api = new AccountApiClient(resolveIdentityOrigin(location, import.meta.env.VITE_IDENTITY_API_ORIGIN));
-const shell = createShell(t, isInAppBrowser(navigator.userAgent));
+const shell = createShell(t, isInAppBrowser(navigator.userAgent), logoutUrl());
 mount.append(shell.root);
 installPreferenceControls();
 let active: AbortController | undefined;
@@ -52,7 +53,7 @@ async function refreshCurrent(): Promise<void> { account = undefined; serverPref
 /** 失败页面区分未登录与可重试故障。Failure UI distinguishes unauthenticated and retryable states. */
 function renderFailure(error: unknown): void {
   const unauthenticated = error instanceof ApiError && error.status === 401;
-  replace(shell.main, el("section", { className: "failure card moe-glass", attrs: { role: "alert" } }, icon(unauthenticated ? "key" : "shield"), el("h1", {}, unauthenticated ? t("notSignedIn") : "Oops, something segfaulted"), el("p", {}, unauthenticated ? t("notSignedInBody") : error instanceof Error ? error.message : "Unexpected error"), unauthenticated ? el("a", { className: "button primary", attrs: { href: loginUrl() } }, t("signIn")) : retryButton()));
+  replace(shell.main, el("section", { className: "failure card moe-glass", attrs: { role: "alert" } }, icon(unauthenticated ? "key" : "shield"), el("h1", {}, unauthenticated ? t("notSignedIn") : t("errorTitle")), el("p", {}, unauthenticated ? t("notSignedInBody") : error instanceof ApiError ? error.message : t("unexpectedError")), unauthenticated ? el("a", { className: "button primary", attrs: { href: loginUrl() } }, t("signIn")) : retryButton()));
 }
 
 /** 重试按钮。Retry button. */
@@ -60,16 +61,21 @@ function retryButton(): HTMLButtonElement { const button = el("button", { classN
 
 /** 顶栏中的语言和主题偏好只保存非敏感数据。Header controls persist only non-sensitive language and theme preferences. */
 function installPreferenceControls(): void {
-  const language = el("select", { className: "compact-select", attrs: { "aria-label": t("language") } }, ...([["zh-CN", "中"], ["en", "EN"], ["ja", "日"]] as const).map(([value, label]) => el("option", { attrs: { value, selected: locale === value } }, label)));
-  language.addEventListener("change", () => { locale = normalizeLocale(language.value); localStorage.setItem("moe.account.locale", locale); location.reload(); });
-  const themeButton = el("button", { className: "icon-button", attrs: { type: "button", title: t("appearance"), "aria-label": t("appearance") } }, icon(theme === "dark" ? "moon" : "palette"));
-  themeButton.addEventListener("click", () => { const order: Theme[] = ["system", "light", "dark"]; theme = order[(order.indexOf(theme) + 1) % order.length] ?? "system"; localStorage.setItem("moe.account.theme", theme); applyTheme(theme, document.documentElement, media); themeButton.replaceChildren(icon(theme === "dark" ? "moon" : "palette")); themeButton.title = t(theme); });
-  shell.controls.append(language, themeButton);
+  for (const target of shell.controls) {
+    const language = el("select", { className: "compact-select", attrs: { "aria-label": t("language") } }, ...([["zh-CN", "中"], ["en", "EN"], ["ja", "日"]] as const).map(([value, label]) => el("option", { attrs: { value, selected: locale === value } }, label)));
+    language.addEventListener("change", () => { locale = normalizeLocale(language.value); writePreference(storage, "locale", locale); location.reload(); });
+    const themeButton = el("button", { className: "icon-button", attrs: { type: "button", title: t("appearance"), "aria-label": t("appearance") } }, icon(theme === "dark" ? "moon" : "palette"));
+    themeButton.addEventListener("click", () => { const order: Theme[] = ["system", "light", "dark"]; theme = order[(order.indexOf(theme) + 1) % order.length] ?? "system"; writePreference(storage, "theme", theme); applyTheme(theme, document.documentElement, media); installPreferenceControls(); });
+    target.replaceChildren(language, themeButton);
+  }
   media.addEventListener("change", () => { if (theme === "system") applyTheme(theme, document.documentElement, media); });
 }
 
 /** 登录页 origin 与环境一致。Keeps the Login origin in the same environment. */
 function loginUrl(): string { return location.hostname.includes("staging") ? "https://login-staging.moesegfault.dev/login" : "https://login.moesegfault.dev/login"; }
+
+/** 退出端点使用允许的账号站回跳 URI。Logout endpoint uses an allowlisted Account post-logout URI. */
+function logoutUrl(): string { const identity = resolveIdentityOrigin(location, import.meta.env.VITE_IDENTITY_API_ORIGIN); return `${identity}/v1/oidc/logout-requests?post_logout_redirect_uri=${encodeURIComponent(loginUrl())}`; }
 
 installRouter(() => void renderCurrent());
 void renderCurrent();

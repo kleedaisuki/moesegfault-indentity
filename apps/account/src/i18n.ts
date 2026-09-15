@@ -11,7 +11,8 @@ const messages = {
     comingSoon: "准备中", devicesIntro: "查看登录过此账号的浏览器与设备。", current: "当前设备", revoke: "退出此设备", connectedIntro: "这些应用可以代表你访问已授权的数据。", permissions: "权限", disconnect: "撤销授权",
     noApps: "还没有连接任何应用。", noSessions: "没有其他活跃会话。", loading: "正在读取最新状态…", retry: "重试", signIn: "前往登录", signOut: "退出登录",
     appearance: "外观", light: "浅色", dark: "深色", system: "跟随系统", language: "语言", menu: "菜单", close: "关闭", danger: "需要留意", secure: "状态良好",
-    inApp: "当前是应用内浏览器；Passkey 管理会在系统浏览器中打开。", notSignedIn: "需要先登录", notSignedInBody: "账号中心没有检测到登录会话。",
+    inApp: "应用内浏览器可能无法完成 Passkey 操作；如遇问题，请复制链接并在系统浏览器打开。", copyLink: "复制链接", copied: "已复制", notSignedIn: "需要先登录", notSignedInBody: "账号中心没有检测到登录会话。",
+    avatarTooLarge: "头像不得超过 10 MiB", avatarFormats: "支持 AVIF、PNG、JPEG、WebP，不超过 10 MiB", statusMessage: "状态", pronouns: "称谓", favoriteCharacter: "最喜欢的角色", interests: "兴趣标签", links: "链接", visibility: "可见范围", private: "仅自己", members: "站内成员", public: "公开", countryRegion: "国家或地区", mainlandChina: "中国大陆", japan: "日本", singapore: "新加坡", usCanada: "美国或加拿大", unitedKingdom: "英国", hongKong: "中国香港", currentPassword: "当前密码", newPassword: "新密码", errorTitle: "页面暂时出了点小故障", unexpectedError: "发生了未知错误", federated: "联合登录", rename: "重命名", passkeyLabel: "Passkey 名称", technicalMethods: "TOTP 与 WebAuthn",
   },
   en: {
     account: "Account", overview: "Overview", profile: "Profile", security: "Security", sessions: "Sessions", apps: "Connected apps",
@@ -22,7 +23,8 @@ const messages = {
     comingSoon: "Coming soon", devicesIntro: "Review browsers and devices signed in to this account.", current: "This device", revoke: "Sign out device", connectedIntro: "These apps can access the data you approved.", permissions: "Permissions", disconnect: "Revoke access",
     noApps: "No connected apps yet.", noSessions: "No other active sessions.", loading: "Fetching the latest state…", retry: "Retry", signIn: "Go to Login", signOut: "Sign out",
     appearance: "Appearance", light: "Light", dark: "Dark", system: "System", language: "Language", menu: "Menu", close: "Close", danger: "Needs attention", secure: "Looking good",
-    inApp: "You are in an in-app browser; passkey management will open in your system browser.", notSignedIn: "Sign in required", notSignedInBody: "No sign-in session was found for the account center.",
+    inApp: "Passkey actions may not work in an in-app browser. If needed, copy this link and open it in your system browser.", copyLink: "Copy link", copied: "Copied", notSignedIn: "Sign in required", notSignedInBody: "No sign-in session was found for the account center.",
+    avatarTooLarge: "Avatar must be 10 MiB or smaller", avatarFormats: "AVIF, PNG, JPEG or WebP, up to 10 MiB", statusMessage: "Status", pronouns: "Pronouns", favoriteCharacter: "Favorite character", interests: "Interests", links: "Links", visibility: "Visibility", private: "Only me", members: "Members", public: "Public", countryRegion: "Country or region", mainlandChina: "Mainland China", japan: "Japan", singapore: "Singapore", usCanada: "United States or Canada", unitedKingdom: "United Kingdom", hongKong: "Hong Kong", currentPassword: "Current password", newPassword: "New password", errorTitle: "This page had a tiny segfault", unexpectedError: "An unexpected error occurred", federated: "Federated sign-in", rename: "Rename", passkeyLabel: "Passkey label", technicalMethods: "TOTP and WebAuthn",
   },
   ja: {
     account: "アカウント", overview: "概要", profile: "プロフィール", security: "セキュリティ", sessions: "ログイン端末", apps: "連携アプリ",
@@ -33,7 +35,8 @@ const messages = {
     comingSoon: "準備中", devicesIntro: "このアカウントにログイン中の端末を確認できます。", current: "この端末", revoke: "ログアウト", connectedIntro: "許可したデータにアクセスできるアプリです。", permissions: "権限", disconnect: "連携解除",
     noApps: "連携アプリはありません。", noSessions: "他のセッションはありません。", loading: "最新の状態を取得中…", retry: "再試行", signIn: "ログインへ", signOut: "ログアウト",
     appearance: "外観", light: "ライト", dark: "ダーク", system: "システム", language: "言語", menu: "メニュー", close: "閉じる", danger: "確認が必要", secure: "良好です",
-    inApp: "アプリ内ブラウザです。パスキー管理はシステムブラウザで開きます。", notSignedIn: "ログインが必要です", notSignedInBody: "アカウントセンターのログインセッションが見つかりません。",
+    inApp: "アプリ内ブラウザではパスキー操作に失敗する場合があります。リンクをコピーしてシステムブラウザで開いてください。", copyLink: "リンクをコピー", copied: "コピーしました", notSignedIn: "ログインが必要です", notSignedInBody: "アカウントセンターのログインセッションが見つかりません。",
+    avatarTooLarge: "アバターは10 MiB以下にしてください", avatarFormats: "AVIF・PNG・JPEG・WebP、10 MiB以下", statusMessage: "ステータス", pronouns: "代名詞", favoriteCharacter: "好きなキャラクター", interests: "興味タグ", links: "リンク", visibility: "公開範囲", private: "自分のみ", members: "メンバー", public: "公開", countryRegion: "国または地域", mainlandChina: "中国本土", japan: "日本", singapore: "シンガポール", usCanada: "米国またはカナダ", unitedKingdom: "英国", hongKong: "香港", currentPassword: "現在のパスワード", newPassword: "新しいパスワード", errorTitle: "ページで小さな不具合が発生しました", unexpectedError: "予期しないエラーが発生しました", federated: "連携ログイン", rename: "名前を変更", passkeyLabel: "パスキー名", technicalMethods: "TOTP と WebAuthn",
   },
 } as const;
 
