@@ -1,36 +1,44 @@
 # moeSegFault Identity
 
-`moesegfault-identity` 是 moeSegFault 的 Passkey-first 身份权威，采用纯 Rust Cloudflare Worker 后端和 TypeScript 登录前端。
+moeSegFault 的统一账户与身份平台：密码是可靠的基础入口，Passkey 是可选且抗钓鱼的增强入口；登录仪式、账号管理与身份权威分别部署。
 
-`moesegfault-identity` is moeSegFault's Passkey-first identity authority, implemented as a pure Rust Cloudflare Worker backend and a TypeScript login frontend.
+The unified account and identity platform for moeSegFault. Passwords provide the universal baseline while passkeys remain an optional phishing-resistant upgrade. Login ceremonies, account management, and identity authority are separate deployments.
 
 ## 架构 / Architecture
 
 ```text
-login.moesegfault.dev                  identity.moesegfault.dev
-TypeScript + Workers Static Assets --> Rust workers-rs Worker
-                                        |-- D1 identity facts
-                                        |-- private R2 audit archive
-                                        `-- UTC cron outbox drain
+login.moesegfault.dev      account.moesegfault.dev
+registration + sign-in    profile + contacts + security
+            \              /
+             identity.moesegfault.dev
+             D1 authority + OAuth/OIDC + R2 audit
 ```
 
-两者是独立 Worker 与独立发布单元。Login 不绑定 D1/R2，不签发令牌。详细的边界、数据模型与协议不变量见 [`docs/login-identity-design.md`](docs/login-identity-design.md)。
-
-They are independent Workers and deployment units. Login has no D1/R2 binding and issues no tokens. See [`docs/login-identity-design.md`](docs/login-identity-design.md) for boundaries, data models, and protocol invariants.
-
-| 路径 / Path | 职责 / Responsibility |
+| 单元 / Unit | 职责 / Responsibility |
 | --- | --- |
-| `crates/identity-domain` | 平台无关的领域类型、不变量与纯逻辑 / platform-independent domain logic |
-| `crates/identity-worker` | Cloudflare D1/R2/HTTP/Cron 适配层 / Cloudflare adapter |
-| `apps/login` | 无 token 持久化的 TypeScript UI / TypeScript UI without token persistence |
-| `migrations` | 只向前的 D1 migrations / forward-only D1 migrations |
-| `openapi` | OpenAPI 3.1.1 机器契约 / machine-readable contract |
+| `apps/login` | 注册、密码/Passkey 登录、恢复与 OAuth 恢复；不再承载账号管理 / registration, authentication, recovery, OAuth resume |
+| `apps/account` | 资料、头像、联系方式、偏好、凭据、会话与应用授权体验 / modern self-service account experience |
+| `crates/identity-domain` | 平台无关的领域类型与不变量 / platform-independent domain invariants |
+| `crates/identity-worker` | D1/R2、HTTP、OAuth/OIDC 与定时任务适配 / authority and protocol adapter |
+| `openapi/identity.yaml` | OpenAPI 3.1.1 唯一 HTTP 契约 / canonical HTTP contract |
+| `migrations` | 只向前的 D1 模式演进 / forward-only D1 schema |
+
+其他服务不“调用 Login 来验证 Token”。它们通过 `/.well-known/openid-configuration` 接入 Identity 的 OpenID Connect（OIDC），使用 Authorization Code + Proof Key for Code Exchange（PKCE）；浏览器应用优先采用前端专属后端（Backend for Frontend, BFF），令牌不进入浏览器存储。
+
+设计决策见 [`docs/adr/0003-account-platform-redesign.md`](docs/adr/0003-account-platform-redesign.md)，视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
+
+## 账户能力 / Account capabilities
+
+- Username、必填 Email、可选国际手机号（独立国家区号并规范化为 E.164）。
+- Unicode display name、avatar、bio、status、pronouns、favorite character、interest tags 与隐私可见性。
+- 密码与 Passkey 并存；认证方法参考（Authentication Method Reference, AMR）和多因素认证（Multi-Factor Authentication, MFA）模型可扩展至 TOTP 等方式。
+- 简体中文、English、日本語；`light`、`dark`、`system` 三态主题。
+- 320px 起的响应式布局、安全区、动态视口和内置浏览器降级；无法使用 Passkey 时密码路径仍可用。
+- 本地打包的 `moesegfault-style` v0.1.2 视觉令牌、品牌 SVG 与功能 SVG；认证关键路径不依赖第三方 CDN。
 
 ## 本地开发 / Local development
 
-需要 Rust `1.88.0`、Node.js `24` 和 npm `11`。版本已由 `rust-toolchain.toml` 与 lockfile 固定。
-
-Rust `1.88.0`, Node.js `24`, and npm `11` are required. Tool and dependency versions are pinned by `rust-toolchain.toml` and lockfiles.
+需要 Rust `1.88.0`、Node.js `24`、npm `11`，以及 WebAssembly target。
 
 ```bash
 npm ci --ignore-scripts
@@ -41,35 +49,27 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo check -p identity-worker --target wasm32-unknown-unknown --locked
 
-npm run lint:login
-npm run test:login
-npm run build:login
+npm run lint:login && npm run test:login && npm run build:login
+npm run lint:account && npm run test:account && npm run build:account
 npm run lint:openapi
 npm run migrate:local
+npm run test:migrations
 
-# worker-build 0.8.5 must be installed first / 需先安装 worker-build 0.8.5
+# worker-build 0.8.5 is required / 需要 worker-build 0.8.5
 npm run dry-run:identity
 npm run dry-run:login
+npm run dry-run:account
 ```
 
-`wrangler.identity.jsonc` 默认指向独立 staging D1/R2 和 staging Custom Domain。Wrangler 本地模式使用本地存储；不要在普通开发中使用 `--remote`。
+## CI/CD 与 SRE
 
-The default identity configuration names dedicated staging resources and Custom Domains. Wrangler local mode uses local storage; do not add `--remote` during routine development.
+GitHub Actions 对 Rust、Wasm、两个前端、OpenAPI、全新 D1 migration、脚本和三个 Wrangler 包执行门禁。`main` 把同一个校验和制品先部署至 staging 并冒烟验证，再经 GitHub Environment 提升至 production；不会在两个环境重新构建。
 
-## CI/CD
-
-- Pull request 不读取 Cloudflare secrets；它执行 Rust fmt/clippy/test/Wasm build、TypeScript lint/test/build、OpenAPI lint、全新本地 D1 migration 和两个 Wrangler dry-run。
-- `main` 在同一工作流的所有门禁通过后，通过 `cloudflare-deployment` GitHub Environment 串行执行 production D1 migration、identity deploy、login deploy 与公网冒烟检查。
-- 首次资源检查/创建仅在手动 **Cloudflare bootstrap** 工作流执行。日常发布不重建资源，不直接修改 DNS。
-- Custom Domains 声明在 `wrangler.*.jsonc`，由 Cloudflare 调和 DNS 与证书。
-
-Production operations, token permissions, migration discipline, and rollback steps are documented in [`infra/RUNBOOK.md`](infra/RUNBOOK.md).
+可观测性是发布契约的一部分：结构化日志和关联 ID 必须覆盖认证与 OAuth 路径，指标保持低基数，SLO 同时约束可用性与延迟。告警、回滚、迁移和故障响应见 [`infra/RUNBOOK.md`](infra/RUNBOOK.md)。
 
 ## 密钥 / Secrets
 
-仓库仅存储非敏感资源 ID。GitHub 需要 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`；Worker 基础运行时需要 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER` 与 `CSRF_PEPPER`。开启 OAuth 还需 `AUTHORIZATION_CODE_PEPPER`、`REFRESH_TOKEN_PEPPER`、`PAIRWISE_SUBJECT_KEY` 和 `OIDC_PRIVATE_KEY_PKCS8`。它们必须分别用 `wrangler secret put` 配置，不得写入 JSONC、D1 或前端构建物。`TRANSACTION_STATE_KEY` 是无填充 Base64URL 编码的 32-byte key；`OIDC_PRIVATE_KEY_PKCS8` 是 PKCS#8 PEM 编码的 RSA 私钥。
-
-Only non-secret resource IDs are committed. Runtime secrets belong in Workers Secrets, never JSONC, D1, or frontend bundles.
+仓库只保存非敏感资源配置。GitHub Environments 提供 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 与用于头像 R2 自定义域名的 `CLOUDFLARE_ZONE_ID`；运行时 pepper、事务加密密钥、OIDC 私钥及 provider secret 只能放入 Workers Secrets，不得写入 JSONC、D1、日志或前端制品。完整清单见 [`.dev.vars.example`](.dev.vars.example) 和运行手册。
 
 ## License
 
