@@ -19,6 +19,8 @@ Account Center may invoke two narrow Login-owned ceremonies:
 
 `return_uri` is accepted only when its origin exactly matches the Account origin paired with the current Login environment. These pages never list, rename, revoke, or otherwise manage account resources. Newly issued recovery codes are shown before any onward navigation and can be copied or downloaded once.
 
+Passkey enrollment keeps Passkey step-up as the primary recent-authentication path. A password-only account can instead expand the localized password fallback, refresh its recent session, and create its first Passkey; a failed password check never starts a registration ceremony.
+
 The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
 
 ## 内联 Passkey 再认证

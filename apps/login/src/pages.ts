@@ -1,5 +1,5 @@
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
-import type { MobileNumberInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
+import type { MobileNumberInput, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
 import { currentTransaction } from "./transaction";
 import type { AppRoute } from "./router";
 import { createPasskey, getPasskey, isWebAuthnAvailable } from "./webauthn/ceremony";
@@ -125,18 +125,44 @@ async function renderPasskeyEnrollment(main: HTMLElement, api: IdentityApiClient
   const session = await api.getPrincipal(signal); rememberCsrf(session.csrf_token);
   const message = el("div", { attrs: { "aria-live": "polite" } });
   const submit = el("button", { className: "button button--primary button--wide", attrs: { type: "submit", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("enroll")));
-  const form = el("form", { className: "moe-glass auth-card auth-form" }, field(t("passkeyName"), "label", { required: true, value: browserPasskeyLabel(t), icon: "key" }), submit, message);
+  const labelField = field(t("passkeyName"), "label", { required: true, value: browserPasskeyLabel(t), icon: "key" });
+  const passwordMessage = el("div", { attrs: { "aria-live": "polite" } });
+  const passwordSubmit = el("button", { className: "button button--secondary button--wide", attrs: { type: "submit" } }, iconLabel("lock", t("reauthWithPassword")));
+  const passwordForm = el("form", { className: "password-fallback auth-form" },
+    field(t("reauthIdentity"), "login", { required: true, autocomplete: "username", icon: "user" }),
+    field(t("reauthPassword"), "password", { required: true, autocomplete: "current-password", type: "password", icon: "lock" }), passwordSubmit, passwordMessage);
+  const fallback = el("details", { className: "password-fallback-wrap" }, el("summary", {}, t("passwordReauthTitle")), el("p", { className: "hint" }, t("passwordReauthIntro")), passwordForm);
+  const form = el("form", { className: "moe-glass auth-card auth-form" }, labelField, submit, message);
+  const complete = async (transaction: Awaited<ReturnType<IdentityApiClient["startAuthenticatorRegistration"]>>, label: string) => {
+    const credential = await createPasskey(transaction.public_key, signal);
+    const completed = await api.completeAuthenticatorRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
+    rememberCsrf(completed.csrf_token); replace(main, statePanel("success", t("enrolled"), label, accountLink(t)));
+  };
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); setButtonBusy(submit, true, t("waitingPasskey"));
     try {
       const label = String(new FormData(form).get("label") ?? "").trim();
       const transaction = await stepUpCoordinator(api).execute((controls) => api.startAuthenticatorRegistration(label, controls), { signal, onStepUpRequired: () => replace(message, statePanel("info", t("stepUp"), t("waitingPasskey"))) });
-      const credential = await createPasskey(transaction.public_key, signal);
-      const completed = await api.completeAuthenticatorRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
-      rememberCsrf(completed.csrf_token); replace(main, statePanel("success", t("enrolled"), label, accountLink(t)));
+      await complete(transaction, label);
     } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submit, false); }
   });
-  replace(main, pageHeading("PASSKEY_ENROLLMENT", t("enrollTitle"), t("enrollIntro")), form);
+  passwordForm.addEventListener("submit", async (event) => {
+    event.preventDefault(); setButtonBusy(passwordSubmit, true, t("signingIn"));
+    try {
+      const data = new FormData(passwordForm); const label = labelField.querySelector<HTMLInputElement>("input[name='label']")?.value.trim() ?? "";
+      const browserCsrf = (await api.getBrowserContext(signal)).csrf_token;
+      const started = await reauthenticateAndStartEnrollment(api, { login: String(data.get("login") ?? "").trim(), password: String(data.get("password") ?? "") }, label, browserCsrf, signal);
+      rememberCsrf(started.csrfToken); await complete(started.transaction, label);
+    } catch (error) { replace(passwordMessage, statePanel("error", t("loginFailed"), errorMessage(error))); setButtonBusy(passwordSubmit, false); }
+  });
+  replace(main, pageHeading("PASSKEY_ENROLLMENT", t("enrollTitle"), t("enrollIntro")), form, fallback);
+}
+
+/** 以密码刷新近期认证并立即创建 Passkey 登记事务。Refreshes recent authentication with a password and immediately starts passkey enrollment. */
+export async function reauthenticateAndStartEnrollment(api: IdentityApiClient, authentication: PasswordAuthenticationInput, label: string, browserCsrf: string, signal: AbortSignal) {
+  const session = await api.authenticateWithPassword(authentication, browserCsrf, signal);
+  const transaction = await api.startAuthenticatorRegistration(label, { csrfToken: session.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
+  return { csrfToken: session.csrf_token, transaction };
 }
 
 /** 执行恢复代码轮换并只在本页展示一次结果。Rotates recovery codes and shows the result only on this page. */

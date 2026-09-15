@@ -26,6 +26,7 @@ const messages = {
     avatarUploadFailed: "账号已创建，但头像暂未上传；请稍后在账号中心重试。", back: "返回登录", logoAlt: "moeSegFault 像素星标",
     statusLabel: "状态签名", oshiLabel: "最喜欢的角色", interestsLabel: "兴趣标签", mobileDevice: "我的手机", desktopDevice: "这台设备",
     enrollTitle: "添加一枚 Passkey", enrollIntro: "这是账号中心发起的短暂认证仪式。完成后请返回账号中心继续管理。", passkeyName: "Passkey 名称", enroll: "添加 Passkey", enrolled: "Passkey 已添加",
+    passwordReauthTitle: "还没有可用的 Passkey？", passwordReauthIntro: "先用现有账号密码确认身份，然后就能添加第一枚 Passkey。", reauthIdentity: "邮箱或用户名", reauthPassword: "当前密码", reauthWithPassword: "使用密码确认并继续",
     rotateTitle: "生成新的恢复代码", rotateIntro: "此操作会让旧恢复代码失效；代码只展示这一次。", rotate: "轮换恢复代码", codesTitle: "立即保存恢复代码", codesIntro: "每枚代码只能使用一次。请下载或复制后存放在安全的位置。", copyCodes: "复制全部", downloadCodes: "下载 .txt", continueAccount: "返回账号中心", stepUp: "请先用 Passkey 再确认一次身份。",
   },
   en: {
@@ -52,6 +53,7 @@ const messages = {
     avatarUploadFailed: "Your account was created, but the avatar was not uploaded. Try again later in Account Center.", back: "Back to sign in", logoAlt: "moeSegFault pixel star",
     statusLabel: "Status message", oshiLabel: "Favorite character", interestsLabel: "Interests", mobileDevice: "My phone", desktopDevice: "This device",
     enrollTitle: "Add a passkey", enrollIntro: "This is a brief ceremony started by Account Center. Return there to continue managing your account.", passkeyName: "Passkey name", enroll: "Add passkey", enrolled: "Passkey added",
+    passwordReauthTitle: "No passkey available yet?", passwordReauthIntro: "Confirm with your existing account password, then add your first passkey.", reauthIdentity: "Email or username", reauthPassword: "Current password", reauthWithPassword: "Confirm with password and continue",
     rotateTitle: "Generate new recovery codes", rotateIntro: "This invalidates your old recovery codes. The new codes are shown only once.", rotate: "Rotate recovery codes", codesTitle: "Save recovery codes now", codesIntro: "Each code works once. Copy or download them and keep them somewhere safe.", copyCodes: "Copy all", downloadCodes: "Download .txt", continueAccount: "Return to Account Center", stepUp: "Confirm your identity once more with a passkey.",
   },
   ja: {
@@ -78,6 +80,7 @@ const messages = {
     avatarUploadFailed: "アカウントは作成されましたが、アバターをアップロードできませんでした。後でアカウントセンターからお試しください。", back: "ログインへ戻る", logoAlt: "moeSegFault ピクセルスター",
     statusLabel: "ステータス", oshiLabel: "推しキャラ", interestsLabel: "興味タグ", mobileDevice: "自分のスマホ", desktopDevice: "このデバイス",
     enrollTitle: "Passkeyを追加", enrollIntro: "アカウントセンターから開始された短い認証手続きです。完了後はアカウントセンターへ戻ります。", passkeyName: "Passkeyの名前", enroll: "Passkeyを追加", enrolled: "Passkeyを追加しました",
+    passwordReauthTitle: "利用できるPasskeyがまだありませんか？", passwordReauthIntro: "現在のパスワードで本人確認してから、最初のPasskeyを追加できます。", reauthIdentity: "メールまたはユーザー名", reauthPassword: "現在のパスワード", reauthWithPassword: "パスワードで確認して続ける",
     rotateTitle: "新しい復旧コードを生成", rotateIntro: "古い復旧コードは無効になります。新しいコードの表示は一度だけです。", rotate: "復旧コードを更新", codesTitle: "今すぐ復旧コードを保存", codesIntro: "各コードは一度だけ使えます。コピーまたはダウンロードして安全に保管してください。", copyCodes: "すべてコピー", downloadCodes: ".txtをダウンロード", continueAccount: "アカウントセンターへ戻る", stepUp: "Passkeyでもう一度本人確認してください。",
   },
 } as const;
