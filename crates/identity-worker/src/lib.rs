@@ -124,7 +124,26 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
             "/v1/me/contacts/:contact_id",
             idempotent!(account::delete_contact, DeleteContact, Session, Replayable),
         )
+        .patch_async(
+            "/v1/me/contacts/:contact_id",
+            idempotent!(account::update_contact, UpdateContact, Session, Replayable),
+        )
         .get_async("/v1/me/security", account::security_posture)
+        .get_async("/v1/me/preferences", account::get_preferences)
+        .patch_async(
+            "/v1/me/preferences",
+            idempotent!(account::update_preferences, UpdatePreferences, Session, Replayable),
+        )
+        .post_async("/v1/me/avatar", account::upload_avatar)
+        .delete_async("/v1/me/avatar", account::delete_avatar)
+        .post_async(
+            "/v1/me/contacts/:contact_id/verification-transactions",
+            account::start_contact_verification,
+        )
+        .post_async(
+            "/v1/me/contacts/:contact_id/verification-transactions/:transaction_id/completion",
+            account::complete_contact_verification,
+        )
         .get_async("/v1/me/authorizations", account::list_authorizations)
         .delete_async(
             "/v1/me/authorizations/:authorization_id",

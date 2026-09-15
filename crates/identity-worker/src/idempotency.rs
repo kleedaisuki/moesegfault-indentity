@@ -33,6 +33,7 @@ pub enum Operation {
     PasswordRegistration,
     PasswordAuthentication,
     CreateContact,
+    UpdateContact,
     DeleteContact,
     PutPassword,
     CreateAccountRegistrationTransaction,
@@ -42,6 +43,7 @@ pub enum Operation {
     CreateRecoveryTransaction,
     CompleteRecoveryTransaction,
     UpdateSelf,
+    UpdatePreferences,
     ScheduleSelfDeletion,
     CreateSelfIdentifier,
     UpdateSelfIdentifier,
@@ -61,11 +63,12 @@ impl Operation {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PasswordRegistration => "passwordRegistration",
-            Self::PasswordAuthentication => "passwordAuthentication",
-            Self::CreateContact => "createContact",
-            Self::DeleteContact => "deleteContact",
-            Self::PutPassword => "putPassword",
+            Self::PasswordRegistration => "registerWithPassword",
+            Self::PasswordAuthentication => "authenticateWithPassword",
+            Self::CreateContact => "createMyContact",
+            Self::UpdateContact => "updateMyContact",
+            Self::DeleteContact => "deleteMyContact",
+            Self::PutPassword => "setMyPassword",
             Self::CreateAccountRegistrationTransaction => "createAccountRegistrationTransaction",
             Self::CompleteRegistrationTransaction => "completeRegistrationTransaction",
             Self::CreateAuthenticationTransaction => "createAuthenticationTransaction",
@@ -73,6 +76,7 @@ impl Operation {
             Self::CreateRecoveryTransaction => "createRecoveryTransaction",
             Self::CompleteRecoveryTransaction => "completeRecoveryTransaction",
             Self::UpdateSelf => "updateSelf",
+            Self::UpdatePreferences => "updateMyPreferences",
             Self::ScheduleSelfDeletion => "scheduleSelfDeletion",
             Self::CreateSelfIdentifier => "createSelfIdentifier",
             Self::UpdateSelfIdentifier => "updateSelfIdentifier",
@@ -91,9 +95,10 @@ impl Operation {
 
     const fn content_type(self) -> Option<&'static str> {
         match self {
-            Self::UpdateSelf | Self::UpdateSelfAuthenticator => {
-                Some("application/merge-patch+json")
-            }
+            Self::UpdateSelf
+            | Self::UpdatePreferences
+            | Self::UpdateContact
+            | Self::UpdateSelfAuthenticator => Some("application/merge-patch+json"),
             Self::ScheduleSelfDeletion
             | Self::DeleteSelfIdentifier
             | Self::DeleteContact

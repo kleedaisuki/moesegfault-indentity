@@ -121,6 +121,17 @@ struct ContactMobileInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ContactPatch {
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    mobile: Option<ContactMobileInput>,
+    #[serde(default)]
+    is_primary: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CreateAuthenticatorRegistrationRequest {
     authenticator_label: String,
 }
@@ -160,6 +171,46 @@ struct SecurityPostureRow {
 #[derive(Debug, Deserialize)]
 struct MfaKindRow {
     kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreferencesRow {
+    locale: String,
+    theme: String,
+    timezone: String,
+    reduced_motion: i64,
+    compact_mode: i64,
+    notification_preferences_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreferencesPatch {
+    #[serde(default)]
+    locale: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    reduced_motion: Option<bool>,
+    #[serde(default)]
+    compact_mode: Option<bool>,
+    #[serde(default)]
+    notifications: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerificationCompletionRequest {
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerificationRow {
+    code_digest: Vec<u8>,
+    state: String,
+    expires_at: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -468,6 +519,110 @@ pub async fn delete_contact(request: Request, context: RouteContext<()>) -> Resu
     no_content(&correlation, &context.env, None)
 }
 
+/// 更新联系方式值或原子切换同类主联系方式。/ Updates a contact value or atomically promotes it within its kind.
+pub async fn update_contact(mut request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session = match mutation_session(
+        &request,
+        &context.env,
+        MutationBody::MergePatch,
+        &correlation,
+    )
+    .await?
+    {
+        Ok(session) => session,
+        Err(response) => return Ok(response),
+    };
+    let Some(contact_id) = path_uuid_v7(&context, "contact_id") else {
+        return not_found("Contact was not found", &correlation);
+    };
+    let input: ContactPatch = match request.json().await {
+        Ok(input) => input,
+        Err(_) => return invalid_request("Invalid JSON request", &correlation),
+    };
+    let db = context.d1("DB")?;
+    let Some(current) = repository::identifiers(&db, &session.principal_id)
+        .await?
+        .into_iter()
+        .find(|item| {
+            item.identifier_id == contact_id && matches!(item.kind.as_str(), "email" | "mobile")
+        })
+    else {
+        return not_found("Contact was not found", &correlation);
+    };
+    let replacement = match current.kind.as_str() {
+        "email" if input.mobile.is_some() => {
+            return invalid_request("Contact value does not match its kind", &correlation);
+        }
+        "email" => input
+            .email
+            .as_deref()
+            .map(|email| {
+                normalize_email(email)
+                    .map(|normalized| (email.trim().to_owned(), normalized, None, None))
+            })
+            .transpose()
+            .map_err(|_| Error::RustError("invalid email".into())),
+        "mobile" if input.email.is_some() => {
+            return invalid_request("Contact value does not match its kind", &correlation);
+        }
+        "mobile" => input
+            .mobile
+            .as_ref()
+            .map(|mobile| {
+                normalize_mobile(&mobile.country_calling_code, &mobile.national_number).map(
+                    |normalized| {
+                        (
+                            normalized.clone(),
+                            normalized,
+                            Some(mobile.country_calling_code.clone()),
+                            Some(mobile.national_number.clone()),
+                        )
+                    },
+                )
+            })
+            .transpose()
+            .map_err(|_| Error::RustError("invalid mobile".into())),
+        _ => unreachable!(),
+    };
+    let replacement = match replacement {
+        Ok(value) => value,
+        Err(_) => return invalid_request("Invalid contact value", &correlation),
+    };
+    if replacement.is_none() && input.is_primary.is_none() {
+        return invalid_request("At least one contact field is required", &correlation);
+    }
+    let now = now_seconds();
+    let primary = input.is_primary.unwrap_or(current.is_primary);
+    let current_normalized = if current.kind == "email" {
+        normalize_email(&current.value).unwrap_or_else(|_| current.value.clone())
+    } else {
+        current.value.clone()
+    };
+    let (value, normalized, calling_code, national_number) = replacement.unwrap_or((
+        current.value.clone(),
+        current_normalized,
+        current.country_calling_code.clone(),
+        current.national_number.clone(),
+    ));
+    db.batch(vec![
+        db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND identifier_id<>?3 AND ?5=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&current.kind),JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_f64(i64::from(primary) as f64)])?,
+        db.prepare("UPDATE identifiers SET value=?3,normalized_value=?4,country_calling_code=?5,national_number=?6,is_primary=?7,verification_state=CASE WHEN normalized_value<>?4 THEN 'unverified' ELSE verification_state END,verified_at=CASE WHEN normalized_value<>?4 THEN NULL ELSE verified_at END,updated_at=?8 WHERE identifier_id=?1 AND principal_id=?2").bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_str(&value),JsValue::from_str(&normalized),optional_js_text(calling_code.as_deref()),optional_js_text(national_number.as_deref()),JsValue::from_f64(i64::from(primary) as f64),JsValue::from_f64(now as f64)])?,
+    ]).await?;
+    let item = repository::identifiers(&db, &session.principal_id)
+        .await?
+        .into_iter()
+        .find(|item| item.identifier_id == contact_id)
+        .ok_or_else(|| Error::RustError("updated contact projection missing".into()))?;
+    json(
+        &identifier_to_wire(item),
+        200,
+        &correlation,
+        &context.env,
+        None,
+    )
+}
+
 /// 返回不含秘密材料的认证与恢复能力概览。/ Returns an authentication and recovery posture without secret material.
 pub async fn security_posture(request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
@@ -507,6 +662,263 @@ pub async fn security_posture(request: Request, context: RouteContext<()>) -> Re
         &context.env,
         None,
     )
+}
+
+/// 读取 account 应用的展示偏好。/ Reads account-application presentation preferences.
+pub async fn get_preferences(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let Some(session) = authenticate(&request, &context.env).await? else {
+        return authentication_required(&correlation);
+    };
+    let row = read_preferences(&context.d1("DB")?, &session.principal_id)
+        .await?
+        .ok_or_else(|| Error::RustError("account preferences are missing".into()))?;
+    preferences_json(row, &correlation, &context.env)
+}
+
+/// 使用严格 Merge Patch 更新 i18n、主题与无障碍偏好。
+/// Updates i18n, theme, and accessibility preferences using a strict merge patch.
+pub async fn update_preferences(
+    mut request: Request,
+    context: RouteContext<()>,
+) -> Result<Response> {
+    let correlation = correlation_id();
+    let session = match mutation_session(
+        &request,
+        &context.env,
+        MutationBody::MergePatch,
+        &correlation,
+    )
+    .await?
+    {
+        Ok(session) => session,
+        Err(response) => return Ok(response),
+    };
+    let input: PreferencesPatch = match request.json().await {
+        Ok(input) => input,
+        Err(_) => return invalid_request("Invalid JSON request", &correlation),
+    };
+    if input
+        .locale
+        .as_deref()
+        .is_some_and(|v| !(2..=35).contains(&v.len()))
+        || input
+            .theme
+            .as_deref()
+            .is_some_and(|v| !matches!(v, "system" | "light" | "dark"))
+        || input
+            .timezone
+            .as_deref()
+            .is_some_and(|v| v.is_empty() || v.len() > 64)
+        || input
+            .notifications
+            .as_ref()
+            .is_some_and(|values| values.values().any(|v| !v.is_boolean()))
+    {
+        return invalid_request("Invalid account preferences", &correlation);
+    }
+    let notifications = input
+        .notifications
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let now = now_seconds();
+    context.d1("DB")?.prepare("UPDATE account_preferences SET locale=COALESCE(?2,locale),theme=COALESCE(?3,theme),timezone=COALESCE(?4,timezone),reduced_motion=COALESCE(?5,reduced_motion),compact_mode=COALESCE(?6,compact_mode),notification_preferences_json=COALESCE(?7,notification_preferences_json),updated_at=?8 WHERE principal_id=?1")
+        .bind(&[JsValue::from_str(&session.principal_id),optional_js_text(input.locale.as_deref()),optional_js_text(input.theme.as_deref()),optional_js_text(input.timezone.as_deref()),optional_js_bool(input.reduced_motion),optional_js_bool(input.compact_mode),optional_js_text(notifications.as_deref()),JsValue::from_f64(now as f64)])?.run().await?;
+    let row = read_preferences(&context.d1("DB")?, &session.principal_id)
+        .await?
+        .ok_or_else(|| Error::RustError("account preferences are missing".into()))?;
+    preferences_json(row, &correlation, &context.env)
+}
+
+/// 请求联系方式验证码；未配置投递适配器时明确报告不可用。
+/// Requests contact verification; explicitly reports unavailable when no delivery adapter exists.
+pub async fn start_contact_verification(
+    request: Request,
+    context: RouteContext<()>,
+) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let Some(contact_id) = path_uuid_v7(&context, "contact_id") else {
+        return not_found("Contact was not found", &correlation);
+    };
+    let owned = context.d1("DB")?.prepare("SELECT identifier_id FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND kind IN ('email','mobile')")
+        .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<IdentifierIdRow>(None).await?.is_some();
+    if !owned {
+        return not_found("Contact was not found", &correlation);
+    }
+    problem::response(
+        "delivery_unavailable",
+        "Contact verification delivery is not configured",
+        503,
+        &correlation,
+    )
+}
+
+/// 原子完成已有联系方式验证事务。/ Atomically completes an existing contact-verification transaction.
+pub async fn complete_contact_verification(
+    mut request: Request,
+    context: RouteContext<()>,
+) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::Json, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let (Some(contact_id), Some(transaction_id)) = (
+        path_uuid_v7(&context, "contact_id"),
+        path_uuid_v7(&context, "transaction_id"),
+    ) else {
+        return not_found("Verification transaction was not found", &correlation);
+    };
+    let input: VerificationCompletionRequest =
+        match request.json::<VerificationCompletionRequest>().await {
+            Ok(input)
+                if (4..=12).contains(&input.code.len())
+                    && input.code.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+            {
+                input
+            }
+            _ => return invalid_request("Invalid verification code", &correlation),
+        };
+    let db = context.d1("DB")?;
+    let Some(row) = db.prepare("SELECT t.code_digest,t.state,t.expires_at FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?1 AND t.identifier_id=?2 AND i.principal_id=?3")
+        .bind(&[JsValue::from_str(transaction_id),JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<VerificationRow>(None).await? else {
+        return not_found("Verification transaction was not found", &correlation);
+    };
+    let now = now_seconds();
+    if row.state != "pending" || row.expires_at <= now {
+        return problem::response(
+            "transaction_expired",
+            "Verification transaction is no longer active",
+            410,
+            &correlation,
+        );
+    }
+    let presented = SecretDigest::hmac(
+        secret(&context.env, "CONTACT_VERIFICATION_PEPPER")?.as_bytes(),
+        input.code.as_bytes(),
+    );
+    let expected = row.code_digest.as_slice().try_into().ok().map(SecretDigest);
+    if !expected.is_some_and(|value| value.ct_eq(&presented)) {
+        db.prepare("UPDATE identifier_verification_transactions SET attempt_count=attempt_count+1,state=CASE WHEN attempt_count>=9 THEN 'locked' ELSE state END,consumed_at=CASE WHEN attempt_count>=9 THEN ?2 ELSE NULL END WHERE transaction_id=?1 AND state='pending'")
+            .bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?.run().await?;
+        return problem::response(
+            "invalid_verification_code",
+            "Invalid verification code",
+            400,
+            &correlation,
+        );
+    }
+    db.batch(vec![
+        db.prepare("UPDATE identifier_verification_transactions SET state='verified',consumed_at=?2 WHERE transaction_id=?1 AND state='pending' AND expires_at>?2").bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE identifiers SET verification_state='verified',verified_at=?2,updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE transaction_id=?4 AND identifier_id=?1 AND state='verified')").bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(transaction_id)])?,
+    ]).await?;
+    let item = repository::identifiers(&db, &session.principal_id)
+        .await?
+        .into_iter()
+        .find(|item| item.identifier_id == contact_id)
+        .ok_or_else(|| Error::RustError("verified contact projection missing".into()))?;
+    json(
+        &identifier_to_wire(item),
+        200,
+        &correlation,
+        &context.env,
+        None,
+    )
+}
+
+/// 头像处理器尚未部署时返回真实的服务状态。/ Returns the truthful service state until the avatar processor is deployed.
+pub async fn upload_avatar(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    if authenticate(&request, &context.env).await?.is_none() {
+        return authentication_required(&correlation);
+    }
+    if guard::allowed_origin(
+        &context.env,
+        guard::header(request.headers(), "origin").as_deref(),
+    )
+    .is_none()
+    {
+        return problem::response(
+            "invalid_request",
+            "Origin is not allowed",
+            403,
+            &correlation,
+        );
+    }
+    let valid_csrf = guard::cookie(&request, guard::SESSION_COOKIE).is_some_and(|wire| {
+        secret(&context.env, "CSRF_PEPPER")
+            .is_ok_and(|pepper| guard::validate_session_csrf(&request, &wire, pepper.as_bytes()))
+    });
+    if !valid_csrf {
+        return problem::response(
+            "invalid_request",
+            "CSRF validation failed",
+            403,
+            &correlation,
+        );
+    }
+    problem::response(
+        "service_unavailable",
+        "Avatar image processing is not available",
+        503,
+        &correlation,
+    )
+}
+
+/// 移除当前头像元数据；不可变 R2 对象由归档生命周期异步回收。
+/// Removes current-avatar metadata; immutable R2 objects are reclaimed asynchronously.
+pub async fn delete_avatar(request: Request, context: RouteContext<()>) -> Result<Response> {
+    let correlation = correlation_id();
+    let session =
+        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        };
+    let now = now_seconds();
+    context.d1("DB")?.batch(vec![
+        context.d1("DB")?.prepare("UPDATE avatar_assets SET state='deleted',is_current=0,updated_at=?2 WHERE principal_id=?1 AND is_current=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
+        context.d1("DB")?.prepare("UPDATE human_profiles SET avatar_r2_key=NULL,updated_at=?2 WHERE principal_id=?1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
+    ]).await?;
+    no_content(&correlation, &context.env, None)
+}
+
+#[derive(Debug, Deserialize)]
+struct IdentifierIdRow {
+    #[allow(dead_code)]
+    identifier_id: String,
+}
+
+async fn read_preferences(db: &D1Database, principal_id: &str) -> Result<Option<PreferencesRow>> {
+    db.prepare("SELECT locale,theme,timezone,reduced_motion,compact_mode,notification_preferences_json FROM account_preferences WHERE principal_id=?1")
+        .bind(&[JsValue::from_str(principal_id)])?.first(None).await
+}
+
+fn preferences_json(row: PreferencesRow, correlation: &str, env: &Env) -> Result<Response> {
+    let notifications: serde_json::Value = serde_json::from_str(&row.notification_preferences_json)
+        .map_err(|error| {
+            Error::RustError(format!("invalid stored notification preferences: {error}"))
+        })?;
+    json(
+        &serde_json::json!({"locale":row.locale,"theme":row.theme,"timezone":row.timezone,"reduced_motion":row.reduced_motion != 0,"compact_mode":row.compact_mode != 0,"notifications":notifications}),
+        200,
+        correlation,
+        env,
+        None,
+    )
+}
+
+fn optional_js_text(value: Option<&str>) -> JsValue {
+    value.map_or(JsValue::NULL, JsValue::from_str)
+}
+fn optional_js_bool(value: Option<bool>) -> JsValue {
+    value.map_or(JsValue::NULL, JsValue::from_bool)
 }
 
 /// 创建或轮换可选密码；已有密码必须提交当前密码。/ Creates or rotates the optional password; an existing password requires the current password.
