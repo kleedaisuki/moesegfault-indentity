@@ -65,6 +65,14 @@ describe("AccountApiClient", () => {
     expect(error).toBeInstanceOf(ApiError); expect(error).toMatchObject({ status: 409, message: "Already exists", correlationId: "corr" });
   });
 
+  it("notifies the session owner before surfacing every 401", async () => {
+    const events: string[] = [];
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(json({ type: "urn:test", title: "Expired", status: 401 }, 401));
+    const error = await new AccountApiClient("https://identity.example", fetch, () => events.push("anonymous")).listSessions().catch((value: unknown) => value);
+    expect(events).toEqual(["anonymous"]);
+    expect(error).toMatchObject({ status: 401, message: "Expired" });
+  });
+
   it("normalizes network failures without exposing causes", async () => {
     const fetch = vi.fn<FetchLike>().mockRejectedValue(new Error("secret request data"));
     const error = await new AccountApiClient("https://identity.example", fetch).getSecurity().catch((value: unknown) => value);

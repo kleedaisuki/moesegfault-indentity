@@ -1,5 +1,8 @@
-/** 支持的界面语言。Supported UI locale. */
-export type Locale = "zh-CN" | "en" | "ja";
+import { normalizeLocale } from "@moesegfault/frontend-shared";
+import type { Locale } from "@moesegfault/frontend-shared";
+
+export { normalizeLocale };
+export type { Locale };
 
 const messages = {
   "zh-CN": {
@@ -41,14 +44,6 @@ const messages = {
 } as const;
 
 export type MessageKey = keyof typeof messages["zh-CN"];
-
-/** 浏览器语言规整为产品支持的语言。Normalizes browser language to a supported locale. */
-export function normalizeLocale(value?: string | null): Locale {
-  const locale = value?.toLowerCase();
-  if (locale?.startsWith("ja")) return "ja";
-  if (locale?.startsWith("en")) return "en";
-  return "zh-CN";
-}
 
 /** 创建无回退缺口的翻译函数。Creates a translation function with no missing-key fallback. */
 export function translator(locale: Locale): (key: MessageKey) => string { return (key) => messages[locale][key]; }

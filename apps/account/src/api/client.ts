@@ -25,11 +25,14 @@ export class ApiError extends Error {
 export class AccountApiClient {
   readonly #origin: string;
   readonly #fetch: FetchLike;
-  public constructor(origin: string, fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)) {
+  /** 让应用外壳在任意 401 上同步撤销本地会话。Lets the application shell synchronously revoke local session state on any 401. */
+  readonly #onUnauthorized: () => void;
+  public constructor(origin: string, fetchImpl: FetchLike = globalThis.fetch.bind(globalThis), onUnauthorized: () => void = () => undefined) {
     const value = new URL(origin);
     if (!/^https?:$/u.test(value.protocol) || value.pathname !== "/" || value.search || value.hash) throw new TypeError("API origin must be a plain HTTP(S) origin");
     this.#origin = value.origin;
     this.#fetch = fetchImpl;
+    this.#onUnauthorized = onUnauthorized;
   }
 
   /** 读取当前用户。Reads the current user. */
@@ -91,7 +94,10 @@ export class AccountApiClient {
       if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
       throw new ApiError(0, { type: "urn:moesegfault:problem:network", title: "Network unavailable", status: 0, detail: "Unable to reach the identity service." });
     }
-    if (!response.ok) throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
+    if (!response.ok) {
+      if (response.status === 401) this.#onUnauthorized();
+      throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
+    }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;
   }
