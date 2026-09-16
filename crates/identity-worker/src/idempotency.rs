@@ -35,6 +35,8 @@ pub enum Operation {
     CreateContact,
     UpdateContact,
     DeleteContact,
+    CreateContactVerification,
+    CompleteContactVerification,
     PutPassword,
     CreateAccountRegistrationTransaction,
     CompleteRegistrationTransaction,
@@ -68,6 +70,8 @@ impl Operation {
             Self::CreateContact => "createMyContact",
             Self::UpdateContact => "updateMyContact",
             Self::DeleteContact => "deleteMyContact",
+            Self::CreateContactVerification => "createContactVerification",
+            Self::CompleteContactVerification => "completeContactVerification",
             Self::PutPassword => "setMyPassword",
             Self::CreateAccountRegistrationTransaction => "createAccountRegistrationTransaction",
             Self::CompleteRegistrationTransaction => "completeRegistrationTransaction",
@@ -959,28 +963,76 @@ mod tests {
     #[test]
     fn operations_are_stable_and_fit_the_schema() {
         let operations = [
-            Operation::CreateAccountRegistrationTransaction,
-            Operation::CompleteRegistrationTransaction,
-            Operation::CreateAuthenticationTransaction,
-            Operation::CompleteAuthenticationTransaction,
-            Operation::CreateRecoveryTransaction,
-            Operation::CompleteRecoveryTransaction,
-            Operation::UpdateSelf,
-            Operation::ScheduleSelfDeletion,
-            Operation::CreateSelfIdentifier,
-            Operation::UpdateSelfIdentifier,
-            Operation::DeleteSelfIdentifier,
-            Operation::CreateAuthenticatorRegistrationTransaction,
-            Operation::UpdateSelfAuthenticator,
-            Operation::RevokeSelfAuthenticator,
-            Operation::RevokeSelfBinding,
-            Operation::RevokeAllSelfSessions,
-            Operation::RevokeSelfSession,
-            Operation::RotateSelfRecoveryCodes,
+            (Operation::PasswordRegistration, "registerWithPassword"),
+            (
+                Operation::PasswordAuthentication,
+                "authenticateWithPassword",
+            ),
+            (Operation::CreateContact, "createMyContact"),
+            (Operation::UpdateContact, "updateMyContact"),
+            (Operation::DeleteContact, "deleteMyContact"),
+            (
+                Operation::CreateContactVerification,
+                "createContactVerification",
+            ),
+            (
+                Operation::CompleteContactVerification,
+                "completeContactVerification",
+            ),
+            (Operation::PutPassword, "setMyPassword"),
+            (
+                Operation::CreateAccountRegistrationTransaction,
+                "createAccountRegistrationTransaction",
+            ),
+            (
+                Operation::CompleteRegistrationTransaction,
+                "completeRegistrationTransaction",
+            ),
+            (
+                Operation::CreateAuthenticationTransaction,
+                "createAuthenticationTransaction",
+            ),
+            (
+                Operation::CompleteAuthenticationTransaction,
+                "completeAuthenticationTransaction",
+            ),
+            (
+                Operation::CreateRecoveryTransaction,
+                "createRecoveryTransaction",
+            ),
+            (
+                Operation::CompleteRecoveryTransaction,
+                "completeRecoveryTransaction",
+            ),
+            (Operation::UpdateSelf, "updateSelf"),
+            (Operation::UpdatePreferences, "updateMyPreferences"),
+            (Operation::ScheduleSelfDeletion, "scheduleSelfDeletion"),
+            (Operation::CreateSelfIdentifier, "createSelfIdentifier"),
+            (Operation::UpdateSelfIdentifier, "updateSelfIdentifier"),
+            (Operation::DeleteSelfIdentifier, "deleteSelfIdentifier"),
+            (
+                Operation::CreateAuthenticatorRegistrationTransaction,
+                "createAuthenticatorRegistrationTransaction",
+            ),
+            (
+                Operation::UpdateSelfAuthenticator,
+                "updateSelfAuthenticator",
+            ),
+            (
+                Operation::RevokeSelfAuthenticator,
+                "revokeSelfAuthenticator",
+            ),
+            (Operation::RevokeSelfBinding, "revokeSelfBinding"),
+            (Operation::RevokeAllSelfSessions, "revokeAllSelfSessions"),
+            (Operation::RevokeSelfSession, "revokeSelfSession"),
+            (
+                Operation::RotateSelfRecoveryCodes,
+                "rotateSelfRecoveryCodes",
+            ),
         ];
-        for operation in operations {
-            assert!(!operation.as_str().is_empty());
-            assert!(operation.as_str().len() <= 128);
+        for (operation, expected) in operations {
+            assert_eq!(operation.as_str(), expected);
+            assert!((1..=128).contains(&operation.as_str().len()));
         }
         assert_eq!(
             Operation::UpdateSelf.content_type(),
@@ -989,6 +1041,14 @@ mod tests {
         assert_eq!(Operation::RevokeSelfSession.content_type(), None);
         assert_eq!(
             Operation::CreateRecoveryTransaction.content_type(),
+            Some("application/json")
+        );
+        assert_eq!(
+            Operation::CreateContactVerification.content_type(),
+            Some("application/json")
+        );
+        assert_eq!(
+            Operation::CompleteContactVerification.content_type(),
             Some("application/json")
         );
     }

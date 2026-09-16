@@ -237,7 +237,45 @@ struct VerificationCompletionRequest {
 #[derive(Debug, Deserialize)]
 struct VerificationRow {
     code_digest: Vec<u8>,
+    destination_digest: Vec<u8>,
+    normalized_value: String,
     state: String,
+    expires_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerificationContactRow {
+    kind: String,
+    value: String,
+    normalized_value: String,
+    verification_state: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ContactVerificationTransactionWire {
+    transaction_id: String,
+    expires_at: String,
+    delivery_hint: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EmailVerificationPolicy {
+    ttl_seconds: i64,
+    cooldown_seconds: i64,
+    hourly_limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmailOutboxIdRow {
+    outbox_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaimedEmailOutboxRow {
+    transaction_id: String,
+    payload_ciphertext: Vec<u8>,
+    payload_nonce: Vec<u8>,
+    attempt_count: i64,
     expires_at: i64,
 }
 
@@ -638,6 +676,10 @@ pub async fn update_contact(mut request: Request, context: RouteContext<()>) -> 
     ));
     db.batch(vec![
         db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND identifier_id<>?3 AND ?5=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&current.kind),JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_f64(i64::from(primary) as f64)])?,
+        // A challenge is meaningful only for the exact normalized destination it was issued to.
+        // 验证事务只对签发时的规范化目的地有效；改值时立即消费旧事务。
+        db.prepare("UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?3 WHERE identifier_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND normalized_value<>?4)")
+            .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64),JsValue::from_str(&normalized)])?,
         db.prepare("UPDATE identifiers SET value=?3,normalized_value=?4,country_calling_code=?5,national_number=?6,is_primary=?7,verification_state=CASE WHEN normalized_value<>?4 THEN 'unverified' ELSE verification_state END,verified_at=CASE WHEN normalized_value<>?4 THEN NULL ELSE verified_at END,updated_at=?8 WHERE identifier_id=?1 AND principal_id=?2").bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_str(&value),JsValue::from_str(&normalized),optional_js_text(calling_code.as_deref()),optional_js_text(national_number.as_deref()),JsValue::from_f64(i64::from(primary) as f64),JsValue::from_f64(now as f64)])?,
     ]).await?;
     let item = repository::identifiers(&db, &session.principal_id)
@@ -762,31 +804,128 @@ pub async fn update_preferences(
     preferences_json(row, &correlation, &context.env)
 }
 
-/// 请求联系方式验证码；未配置投递适配器时明确报告不可用。
-/// Requests contact verification; explicitly reports unavailable when no delivery adapter exists.
+/// 为归属当前账户的邮箱创建验证事务和加密投递任务。
+/// Creates a verification transaction and encrypted delivery job for an owned email.
 pub async fn start_contact_verification(
     request: Request,
     context: RouteContext<()>,
 ) -> Result<Response> {
     let correlation = correlation_id();
     let session =
-        match mutation_session(&request, &context.env, MutationBody::None, &correlation).await? {
+        match mutation_session(&request, &context.env, MutationBody::Json, &correlation).await? {
             Ok(session) => session,
             Err(response) => return Ok(response),
         };
     let Some(contact_id) = path_uuid_v7(&context, "contact_id") else {
         return not_found("Contact was not found", &correlation);
     };
-    let owned = context.d1("DB")?.prepare("SELECT identifier_id FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND kind IN ('email','mobile')")
-        .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<IdentifierIdRow>(None).await?.is_some();
-    if !owned {
+    let db = context.d1("DB")?;
+    let Some(contact) = db.prepare("SELECT kind,value,normalized_value,verification_state FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND kind IN ('email','mobile')")
+        .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<VerificationContactRow>(None).await? else {
         return not_found("Contact was not found", &correlation);
+    };
+    if contact.kind == "mobile" {
+        return problem::response(
+            "service_unavailable",
+            "Mobile verification delivery is not supported",
+            503,
+            &correlation,
+        );
     }
-    problem::response(
-        "delivery_unavailable",
-        "Contact verification delivery is not configured",
-        503,
+    if contact.verification_state == "verified" {
+        return problem::response(
+            "identifier_conflict",
+            "Contact is already verified",
+            409,
+            &correlation,
+        );
+    }
+
+    let policy = email_verification_policy(&context.env)?;
+    let pepper = secret(&context.env, "CONTACT_VERIFICATION_PEPPER")?;
+    let key = secret(&context.env, "EMAIL_OUTBOX_KEY_V1")?;
+    let now = now_seconds();
+    let transaction_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let outbox_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let code = crate::email_verification::generate_code(&mut rand::thread_rng());
+    let code_digest = crate::email_verification::code_digest(
+        pepper.as_bytes(),
+        &transaction_id,
+        &contact.normalized_value,
+        &code,
+    );
+    let destination_digest =
+        crate::email_verification::destination_digest(pepper.as_bytes(), &contact.normalized_value);
+    let sealed = crate::email_verification::seal_payload(
+        &crate::email_verification::OutboxPayload {
+            recipient: contact.normalized_value.clone(),
+            code,
+        },
+        &key,
+        &outbox_id,
+        &transaction_id,
+    )?;
+    let expires_at = now + policy.ttl_seconds;
+    let cooldown_cutoff = now - policy.cooldown_seconds;
+    let hourly_cutoff = now - 3_600;
+    let results = db.batch(vec![
+        db.prepare("UPDATE identifier_verification_transactions SET state='expired',consumed_at=?2 WHERE identifier_id=?1 AND state='pending' AND expires_at<=?2")
+            .bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?2 WHERE identifier_id=?1 AND state='pending' AND created_at<=?6 AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?1 AND principal_id=?3 AND kind='email' AND verification_state<>'verified' AND normalized_value=?4) AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE destination_digest=?5 AND created_at>?6) AND (SELECT count(*) FROM identifier_verification_transactions WHERE destination_digest=?5 AND created_at>?7)<?8")
+            .bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(&contact.normalized_value),worker::js_sys::Uint8Array::from(&destination_digest.0[..]).into(),JsValue::from_f64(cooldown_cutoff as f64),JsValue::from_f64(hourly_cutoff as f64),JsValue::from_f64(policy.hourly_limit as f64)])?,
+        db.prepare("INSERT INTO identifier_verification_transactions(transaction_id,identifier_id,code_digest,destination_digest,attempt_count,state,created_at,expires_at) SELECT ?1,?2,?3,?4,0,'pending',?5,?6 WHERE EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?2 AND principal_id=?7 AND kind='email' AND verification_state<>'verified' AND normalized_value=?8) AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=?2 AND state='pending') AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE destination_digest=?4 AND created_at>?9) AND (SELECT count(*) FROM identifier_verification_transactions WHERE destination_digest=?4 AND created_at>?10)<?11")
+            .bind(&[JsValue::from_str(&transaction_id),JsValue::from_str(contact_id),worker::js_sys::Uint8Array::from(&code_digest.0[..]).into(),worker::js_sys::Uint8Array::from(&destination_digest.0[..]).into(),JsValue::from_f64(now as f64),JsValue::from_f64(expires_at as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(&contact.normalized_value),JsValue::from_f64(cooldown_cutoff as f64),JsValue::from_f64(hourly_cutoff as f64),JsValue::from_f64(policy.hourly_limit as f64)])?,
+        db.prepare("INSERT INTO email_verification_outbox(outbox_id,transaction_id,payload_ciphertext,payload_nonce,key_revision,template_revision,state,attempt_count,next_attempt_at,created_at) SELECT ?1,?2,?3,?4,?5,?6,'pending',0,?7,?7 WHERE EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE transaction_id=?2 AND state='pending')")
+            .bind(&[JsValue::from_str(&outbox_id),JsValue::from_str(&transaction_id),worker::js_sys::Uint8Array::from(sealed.ciphertext.as_slice()).into(),worker::js_sys::Uint8Array::from(&sealed.nonce[..]).into(),JsValue::from_f64(crate::email_verification::KEY_REVISION as f64),JsValue::from_f64(crate::email_verification::TEMPLATE_REVISION as f64),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE identifiers SET verification_state=CASE WHEN EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=?1 AND state='pending') THEN 'pending' ELSE 'unverified' END,verified_at=NULL,updated_at=?3 WHERE identifier_id=?1 AND principal_id=?2 AND verification_state<>'verified' AND normalized_value=?4")
+            .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64),JsValue::from_str(&contact.normalized_value)])?,
+    ]).await?;
+    if !d1_changed(results.get(2))? {
+        let current = db.prepare("SELECT kind,value,normalized_value,verification_state FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND kind IN ('email','mobile')")
+            .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<VerificationContactRow>(None).await?;
+        let Some(current) = current else {
+            return not_found("Contact was not found", &correlation);
+        };
+        if current.kind != "email"
+            || current.verification_state == "verified"
+            || current.normalized_value != contact.normalized_value
+        {
+            return problem::response(
+                "identifier_conflict",
+                "Contact changed while verification was starting",
+                409,
+                &correlation,
+            );
+        }
+        let response = problem::response(
+            "rate_limited",
+            "Please wait before requesting another verification code",
+            429,
+            &correlation,
+        )?;
+        response
+            .headers()
+            .set("retry-after", &policy.cooldown_seconds.to_string())?;
+        return Ok(response);
+    }
+
+    // Delivery is deliberately best-effort here: D1 is the source of truth and the scheduled
+    // drainer retries provider outages. / 此处仅尽力投递；D1 是真值源，定时任务会重试供应商故障。
+    if let Err(error) = drain_email_outbox_id(&context.env, &outbox_id, now, &correlation).await {
+        console_error!(
+            "email_verification_delivery_attempt_failed correlation_id={correlation} outbox_id={outbox_id} error={error}"
+        );
+    }
+    json(
+        &ContactVerificationTransactionWire {
+            transaction_id,
+            expires_at: date_time(expires_at),
+            delivery_hint: crate::email_verification::mask_email(&contact.value),
+        },
+        201,
         &correlation,
+        &context.env,
+        None,
     )
 }
 
@@ -807,23 +946,30 @@ pub async fn complete_contact_verification(
     ) else {
         return not_found("Verification transaction was not found", &correlation);
     };
-    let input: VerificationCompletionRequest =
-        match request.json::<VerificationCompletionRequest>().await {
-            Ok(input)
-                if (4..=12).contains(&input.code.len())
-                    && input.code.bytes().all(|b| b.is_ascii_alphanumeric()) =>
-            {
-                input
-            }
-            _ => return invalid_request("Invalid verification code", &correlation),
-        };
+    let input: VerificationCompletionRequest = match request
+        .json::<VerificationCompletionRequest>()
+        .await
+    {
+        Ok(input) if input.code.len() == 8 && input.code.bytes().all(|b| b.is_ascii_digit()) => {
+            input
+        }
+        _ => return invalid_request("Invalid verification code", &correlation),
+    };
     let db = context.d1("DB")?;
-    let Some(row) = db.prepare("SELECT t.code_digest,t.state,t.expires_at FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?1 AND t.identifier_id=?2 AND i.principal_id=?3")
+    let Some(row) = db.prepare("SELECT t.code_digest,t.destination_digest,i.normalized_value,t.state,t.expires_at FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?1 AND t.identifier_id=?2 AND i.principal_id=?3")
         .bind(&[JsValue::from_str(transaction_id),JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id)])?.first::<VerificationRow>(None).await? else {
         return not_found("Verification transaction was not found", &correlation);
     };
     let now = now_seconds();
     if row.state != "pending" || row.expires_at <= now {
+        if row.state == "pending" {
+            db.batch(vec![
+                db.prepare("UPDATE identifier_verification_transactions SET state='expired',consumed_at=?2 WHERE transaction_id=?1 AND state='pending' AND expires_at<=?2")
+                    .bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
+                db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=?1 AND state='pending')")
+                    .bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id)])?,
+            ]).await?;
+        }
         return problem::response(
             "transaction_expired",
             "Verification transaction is no longer active",
@@ -831,14 +977,43 @@ pub async fn complete_contact_verification(
             &correlation,
         );
     }
-    let presented = SecretDigest::hmac(
-        secret(&context.env, "CONTACT_VERIFICATION_PEPPER")?.as_bytes(),
-        input.code.as_bytes(),
+    let pepper = secret(&context.env, "CONTACT_VERIFICATION_PEPPER")?;
+    let current_destination =
+        crate::email_verification::destination_digest(pepper.as_bytes(), &row.normalized_value);
+    let issued_destination = row
+        .destination_digest
+        .as_slice()
+        .try_into()
+        .ok()
+        .map(SecretDigest);
+    if !issued_destination.is_some_and(|value| value.ct_eq(&current_destination)) {
+        db.batch(vec![
+            db.prepare("UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?2 WHERE transaction_id=?1 AND state='pending'")
+                .bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
+            db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=?1 AND state='pending')")
+                .bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id)])?,
+        ]).await?;
+        return problem::response(
+            "transaction_expired",
+            "Verification transaction is no longer active",
+            410,
+            &correlation,
+        );
+    }
+    let presented = crate::email_verification::code_digest(
+        pepper.as_bytes(),
+        transaction_id,
+        &row.normalized_value,
+        &input.code,
     );
-    let expected = row.code_digest.as_slice().try_into().ok().map(SecretDigest);
-    if !expected.is_some_and(|value| value.ct_eq(&presented)) {
-        db.prepare("UPDATE identifier_verification_transactions SET attempt_count=attempt_count+1,state=CASE WHEN attempt_count>=9 THEN 'locked' ELSE state END,consumed_at=CASE WHEN attempt_count>=9 THEN ?2 ELSE NULL END WHERE transaction_id=?1 AND state='pending'")
-            .bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?.run().await?;
+    let expected_code = row.code_digest.as_slice().try_into().ok().map(SecretDigest);
+    if !expected_code.is_some_and(|value| value.ct_eq(&presented)) {
+        db.batch(vec![
+            db.prepare("UPDATE identifier_verification_transactions SET attempt_count=attempt_count+1,state=CASE WHEN attempt_count>=9 THEN 'locked' ELSE state END,consumed_at=CASE WHEN attempt_count>=9 THEN ?2 ELSE NULL END WHERE transaction_id=?1 AND state='pending'")
+                .bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
+            db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=?1 AND state='pending')")
+                .bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id)])?,
+        ]).await?;
         return problem::response(
             "invalid_verification_code",
             "Invalid verification code",
@@ -846,10 +1021,61 @@ pub async fn complete_contact_verification(
             &correlation,
         );
     }
-    db.batch(vec![
-        db.prepare("UPDATE identifier_verification_transactions SET state='verified',consumed_at=?2 WHERE transaction_id=?1 AND state='pending' AND expires_at>?2").bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
-        db.prepare("UPDATE identifiers SET verification_state='verified',verified_at=?2,updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE transaction_id=?4 AND identifier_id=?1 AND state='verified')").bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(transaction_id)])?,
-    ]).await?;
+    let event_id = audit_id();
+    let archive_key = format!("security-audit/unix-day-{}/{}.json", now / 86_400, event_id);
+    // The unconditional claim plus deliberate duplicate guard turns every losing race into
+    // a complete batch rollback. / 无条件 claim 与重复 guard 使所有竞态败者整批回滚。
+    let completed = db.batch(vec![
+        db.prepare("INSERT INTO identifier_verification_consumptions(transaction_id,consumed_at) VALUES(?1,?2)").bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE identifier_verification_transactions SET state='verified',consumed_at=?2 WHERE transaction_id=?1 AND identifier_id=?3 AND state='pending' AND expires_at>?2 AND code_digest=?4 AND destination_digest=?5 AND EXISTS(SELECT 1 FROM identifier_verification_consumptions WHERE transaction_id=?1)").bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64),JsValue::from_str(contact_id),worker::js_sys::Uint8Array::from(&presented.0[..]).into(),worker::js_sys::Uint8Array::from(&current_destination.0[..]).into()])?,
+        db.prepare("UPDATE identifiers SET verification_state='verified',verified_at=?2,updated_at=?2 WHERE identifier_id=?1 AND principal_id=?3 AND normalized_value=?5 AND EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE transaction_id=?4 AND identifier_id=?1 AND state='verified')").bind(&[JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(transaction_id),JsValue::from_str(&row.normalized_value)])?,
+        db.prepare("INSERT INTO identifier_verification_consumptions(transaction_id,consumed_at) SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?1 AND t.identifier_id=?3 AND t.state='verified' AND i.principal_id=?4 AND i.normalized_value=?5 AND i.verification_state='verified')").bind(&[JsValue::from_str(transaction_id),JsValue::from_f64(now as f64),JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_str(&row.normalized_value)])?,
+        db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) SELECT ?1,'identity.contact.verified',?2,?2,?3,?3,'success',?4,1,'{\"kind\":\"email\"}' WHERE EXISTS(SELECT 1 FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?5 AND t.identifier_id=?6 AND t.state='verified' AND i.principal_id=?3 AND i.verification_state='verified')").bind(&[JsValue::from_str(&event_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(&correlation),JsValue::from_str(transaction_id),JsValue::from_str(contact_id)])?,
+        db.prepare("INSERT INTO audit_archive_outbox(audit_event_id,r2_object_key,next_attempt_at) SELECT audit_event_id,?2,?3 FROM security_audit_events WHERE audit_event_id=?1").bind(&[JsValue::from_str(&event_id),JsValue::from_str(&archive_key),JsValue::from_f64(now as f64)])?,
+    ]).await;
+    let completed = match completed {
+        Ok(results) => results,
+        Err(error) if is_unique_error(&error) => {
+            let consumed = db.prepare("SELECT count(*) AS count FROM identifier_verification_consumptions WHERE transaction_id=?1")
+                .bind(&[JsValue::from_str(transaction_id)])?.first::<CountRow>(None).await?.is_some_and(|row| row.count > 0);
+            if consumed {
+                return problem::response(
+                    "transaction_consumed",
+                    "Verification transaction has already been consumed",
+                    409,
+                    &correlation,
+                );
+            }
+            let still_active = db.prepare("SELECT count(*) AS count FROM identifier_verification_transactions t JOIN identifiers i ON i.identifier_id=t.identifier_id WHERE t.transaction_id=?1 AND t.identifier_id=?2 AND t.state='pending' AND t.expires_at>?3 AND i.principal_id=?4 AND i.normalized_value=?5")
+                .bind(&[JsValue::from_str(transaction_id),JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_str(&session.principal_id),JsValue::from_str(&row.normalized_value)])?.first::<CountRow>(None).await?.is_some_and(|row| row.count > 0);
+            if still_active {
+                return problem::response(
+                    "identifier_conflict",
+                    "Contact cannot be verified",
+                    409,
+                    &correlation,
+                );
+            }
+            return problem::response(
+                "transaction_expired",
+                "Verification transaction is no longer active",
+                410,
+                &correlation,
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    if !d1_changed(completed.first())?
+        || !d1_changed(completed.get(1))?
+        || !d1_changed(completed.get(2))?
+    {
+        return problem::response(
+            "transaction_expired",
+            "Verification transaction is no longer active",
+            410,
+            &correlation,
+        );
+    }
     let item = repository::identifiers(&db, &session.principal_id)
         .await?
         .into_iter()
@@ -862,6 +1088,183 @@ pub async fn complete_contact_verification(
         &context.env,
         None,
     )
+}
+
+/// 投递有界数量的到期验证邮件；单条失败不会阻断其他条目。
+/// Delivers a bounded number of due verification emails without head-of-line blocking.
+pub(crate) async fn drain_email_verification_outbox(env: &Env, limit: usize) -> Result<()> {
+    let db = env.d1("DB")?;
+    let now = now_seconds();
+    retire_inactive_email_jobs(&db, now).await?;
+    let rows = db
+        .prepare("SELECT outbox_id FROM email_verification_outbox WHERE (state='pending' AND next_attempt_at<=?1) OR (state='sending' AND lease_expires_at<=?1) ORDER BY next_attempt_at,outbox_id LIMIT ?2")
+        .bind(&[JsValue::from_f64(now as f64),JsValue::from_f64(limit.min(50) as f64)])?
+        .all()
+        .await?
+        .results::<EmailOutboxIdRow>()?;
+    for row in rows {
+        let correlation = format!("scheduled:{}", row.outbox_id);
+        if let Err(error) =
+            drain_email_outbox_id(env, &row.outbox_id, now_seconds(), &correlation).await
+        {
+            console_error!(
+                "email_verification_outbox_item_failed correlation_id={correlation} outbox_id={} error={error}",
+                row.outbox_id
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn retire_inactive_email_jobs(db: &D1Database, now: i64) -> Result<()> {
+    db.batch(vec![
+        db.prepare("UPDATE identifier_verification_transactions SET state='expired',consumed_at=?1 WHERE state='pending' AND expires_at<=?1")
+            .bind(&[JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?1 WHERE verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=identifiers.identifier_id AND state='pending')")
+            .bind(&[JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE email_verification_outbox SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code='transaction_inactive' WHERE state IN ('pending','sending') AND (attempt_count>=10 OR NOT EXISTS(SELECT 1 FROM identifier_verification_transactions t WHERE t.transaction_id=email_verification_outbox.transaction_id AND t.state='pending' AND t.expires_at>?1))")
+            .bind(&[JsValue::from_f64(now as f64)])?,
+    ]).await?;
+    Ok(())
+}
+
+async fn drain_email_outbox_id(
+    env: &Env,
+    outbox_id: &str,
+    now: i64,
+    correlation: &str,
+) -> Result<()> {
+    let db = env.d1("DB")?;
+    retire_inactive_email_jobs(&db, now).await?;
+    let lease_expires_at = now + 60;
+    let claimed = db.prepare("UPDATE email_verification_outbox SET state='sending',attempt_count=attempt_count+1,lease_expires_at=?3 WHERE outbox_id=?1 AND attempt_count<10 AND ((state='pending' AND next_attempt_at<=?2) OR (state='sending' AND lease_expires_at<=?2)) AND EXISTS(SELECT 1 FROM identifier_verification_transactions t WHERE t.transaction_id=email_verification_outbox.transaction_id AND t.state='pending' AND t.expires_at>?2)")
+        .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(now as f64),JsValue::from_f64(lease_expires_at as f64)])?.run().await?;
+    if !d1_result_changed(&claimed)? {
+        return Ok(());
+    }
+    let Some(row) = db.prepare("SELECT o.transaction_id,o.payload_ciphertext,o.payload_nonce,o.attempt_count,t.expires_at FROM email_verification_outbox o JOIN identifier_verification_transactions t ON t.transaction_id=o.transaction_id WHERE o.outbox_id=?1 AND o.state='sending' AND o.lease_expires_at=?2")
+        .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64)])?.first::<ClaimedEmailOutboxRow>(None).await? else {
+        return Ok(());
+    };
+    let key = secret(env, "EMAIL_OUTBOX_KEY_V1");
+    let payload = key.and_then(|key| {
+        crate::email_verification::open_payload(
+            &row.payload_ciphertext,
+            &row.payload_nonce,
+            &key,
+            outbox_id,
+            &row.transaction_id,
+        )
+    });
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            reschedule_email_job(
+                &db,
+                outbox_id,
+                lease_expires_at,
+                row.attempt_count,
+                row.expires_at,
+                now,
+                "payload_unavailable",
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    let content = crate::email_verification::render_email(
+        &payload.recipient,
+        &payload.code,
+        ((row.expires_at - now + 59) / 60).max(1),
+    );
+    let (sender_name, sender_address) = match email_sender(env) {
+        Ok(sender) => sender,
+        Err(error) => {
+            reschedule_email_job(
+                &db,
+                outbox_id,
+                lease_expires_at,
+                row.attempt_count,
+                row.expires_at,
+                now,
+                "configuration_unavailable",
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    let sender = EmailAddress::new(&sender_name, &sender_address);
+    let message = SendEmailBuilder::builder_with_email_address_and_str(
+        &sender,
+        &payload.recipient,
+        "moeSegFault 邮箱验证 / Email verification",
+    )
+    .text(&content.text)
+    .html(&content.html)
+    .build();
+    let email = match env.send_email("EMAIL") {
+        Ok(email) => email,
+        Err(error) => {
+            reschedule_email_job(
+                &db,
+                outbox_id,
+                lease_expires_at,
+                row.attempt_count,
+                row.expires_at,
+                now,
+                "configuration_unavailable",
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    match email.send_with_builder(&message).await {
+        Ok(_) => {
+            db.prepare("UPDATE email_verification_outbox SET state='delivered',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,delivered_at=?3,last_error_code=NULL WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+                .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_f64(now_seconds() as f64)])?.run().await?;
+            console_log!(
+                "email_verification_delivery_succeeded correlation_id={correlation} outbox_id={outbox_id}"
+            );
+        }
+        Err(error) => {
+            reschedule_email_job(
+                &db,
+                outbox_id,
+                lease_expires_at,
+                row.attempt_count,
+                row.expires_at,
+                now,
+                "provider_unavailable",
+            )
+            .await?;
+            console_error!(
+                "email_verification_delivery_provider_failed correlation_id={correlation} outbox_id={outbox_id} error={error:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn reschedule_email_job(
+    db: &D1Database,
+    outbox_id: &str,
+    lease_expires_at: i64,
+    attempt_count: i64,
+    transaction_expires_at: i64,
+    now: i64,
+    error_code: &str,
+) -> Result<()> {
+    if attempt_count >= 10 || transaction_expires_at <= now {
+        db.prepare("UPDATE email_verification_outbox SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code=?3 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+            .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_str(error_code)])?.run().await?;
+        return Ok(());
+    }
+    let exponent = u32::try_from((attempt_count - 1).clamp(0, 5)).unwrap_or(0);
+    let delay = (15_i64 * 2_i64.pow(exponent)).min(300);
+    let next_attempt_at = (now + delay).min(transaction_expires_at);
+    db.prepare("UPDATE email_verification_outbox SET state='pending',next_attempt_at=?3,lease_expires_at=NULL,last_error_code=?4 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+        .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_f64(next_attempt_at as f64),JsValue::from_str(error_code)])?.run().await?;
+    Ok(())
 }
 
 /// 验证并把当前账户的头像作为不可变对象写入 R2。
@@ -2222,6 +2625,75 @@ fn secret(env: &Env, name: &str) -> Result<String> {
         .map_err(|_| Error::BindingError(format!("missing required secret binding {name}")))
 }
 
+/// 读取严格有界的邮箱验证策略；缺省值仅用于本地开发。
+/// Reads strictly bounded email-verification policy; defaults keep local development usable.
+fn email_verification_policy(env: &Env) -> Result<EmailVerificationPolicy> {
+    Ok(EmailVerificationPolicy {
+        ttl_seconds: bounded_env_i64(env, "EMAIL_VERIFICATION_TTL_SECONDS", 600, 60, 600)?,
+        cooldown_seconds: bounded_env_i64(env, "EMAIL_VERIFICATION_COOLDOWN_SECONDS", 60, 1, 600)?,
+        hourly_limit: bounded_env_i64(env, "EMAIL_VERIFICATION_HOURLY_LIMIT", 5, 1, 20)?,
+    })
+}
+
+fn bounded_env_i64(env: &Env, name: &str, default: i64, min: i64, max: i64) -> Result<i64> {
+    let value = env.var(name).ok().map(|value| value.to_string());
+    parse_bounded_i64(name, value.as_deref(), default, min, max)
+}
+
+fn parse_bounded_i64(
+    name: &str,
+    value: Option<&str>,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|value| (min..=max).contains(value))
+        .ok_or_else(|| {
+            Error::BindingError(format!("{name} must be an integer between {min} and {max}"))
+        })
+}
+
+fn email_sender(env: &Env) -> Result<(String, String)> {
+    let address = env
+        .var("EMAIL_FROM_ADDRESS")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "identity@moesegfault.dev".to_owned());
+    let name = env
+        .var("EMAIL_FROM_NAME")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "moeSegFault Identity".to_owned());
+    if address.is_empty()
+        || address.len() > 254
+        || !address.contains('@')
+        || address.contains(['\r', '\n'])
+        || name.is_empty()
+        || name.len() > 100
+        || name.contains(['\r', '\n'])
+    {
+        return Err(Error::BindingError(
+            "EMAIL_FROM_ADDRESS or EMAIL_FROM_NAME is invalid".into(),
+        ));
+    }
+    Ok((name, address))
+}
+
+fn d1_changed(result: Option<&D1Result>) -> Result<bool> {
+    result.map_or(Ok(false), d1_result_changed)
+}
+
+fn d1_result_changed(result: &D1Result) -> Result<bool> {
+    Ok(result
+        .meta()?
+        .and_then(|meta| meta.changes)
+        .is_some_and(|changes| changes > 0))
+}
+
 fn rp_id(env: &Env) -> String {
     env.var("WEBAUTHN_RP_ID")
         .map(|value| value.to_string())
@@ -2410,6 +2882,21 @@ mod tests {
         ];
         canonicalize_transports(&mut transports);
         assert_eq!(transports, ["hybrid", "internal"]);
+    }
+
+    #[test]
+    fn email_verification_ttl_cannot_exceed_database_contract() {
+        assert_eq!(
+            parse_bounded_i64("EMAIL_VERIFICATION_TTL_SECONDS", None, 600, 60, 600).unwrap(),
+            600
+        );
+        assert_eq!(
+            parse_bounded_i64("EMAIL_VERIFICATION_TTL_SECONDS", Some("60"), 600, 60, 600).unwrap(),
+            60
+        );
+        assert!(
+            parse_bounded_i64("EMAIL_VERIFICATION_TTL_SECONDS", Some("601"), 600, 60, 600).is_err()
+        );
     }
 
     #[test]

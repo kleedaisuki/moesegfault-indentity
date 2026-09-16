@@ -1059,7 +1059,12 @@ paths:
     post:
       tags: [account]
       operationId: createContactVerification
-      summary: Send a short-lived contact verification code
+      summary: Queue a short-lived email verification code
+      description: >-
+        Sends an 8-digit numeric code to an email contact. The transaction expires after
+        10 minutes. Requests for the same destination have a 60-second cooldown and a
+        rolling limit of 5 accepted deliveries per hour; either limit returns 429 with
+        Retry-After. Mobile delivery is not available and returns 503 service_unavailable.
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/ContactId'}
@@ -1068,10 +1073,33 @@ paths:
         - {$ref: '#/components/parameters/Origin'}
       responses:
         '201':
-          description: Delivery accepted. The response is identical whether the provider has already accepted delivery.
+          description: >-
+            The verification transaction and durable delivery job were accepted. Provider
+            acceptance may happen immediately or through a scheduled retry.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ContactVerificationTransaction'}
+        '429':
+          description: The 60-second resend cooldown or limit of 5 deliveries per rolling hour was reached.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Retry-After:
+              required: true
+              schema: {type: integer, minimum: 1}
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        '503':
+          description: The contact is a mobile number, for which delivery is not implemented.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Retry-After:
+              schema: {type: integer, minimum: 1}
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
         default: {$ref: '#/components/responses/Problem'}
 
   /v1/me/contacts/{contact_id}/verification-transactions/{transaction_id}/completion:
@@ -1473,17 +1501,18 @@ components:
     ContactVerificationTransaction:
       type: object
       additionalProperties: false
+      description: Email verification transaction with a maximum 10-minute lifetime.
       required: [transaction_id, expires_at, delivery_hint]
       properties:
         transaction_id: {$ref: '#/components/schemas/UuidV7'}
         expires_at: {$ref: '#/components/schemas/DateTime'}
-        delivery_hint: {type: string, minLength: 3, maxLength: 100, examples: ['k***@example.net', '+86 138****8000']}
+        delivery_hint: {type: string, minLength: 3, maxLength: 100, description: Masked email destination., examples: ['k***@example.net']}
     ContactVerificationCompletionRequest:
       type: object
       additionalProperties: false
       required: [code]
       properties:
-        code: {type: string, minLength: 4, maxLength: 12, pattern: '^[A-Za-z0-9]+$', writeOnly: true}
+        code: {type: string, minLength: 8, maxLength: 8, pattern: '^[0-9]{8}$', description: The 8-digit numeric code delivered by email., writeOnly: true}
     Avatar:
       type: object
       additionalProperties: false

@@ -9,6 +9,7 @@ mod api;
 mod binding_repository;
 mod bindings;
 mod ceremony_state;
+mod email_verification;
 mod guard;
 mod idempotency;
 mod oauth;
@@ -138,11 +139,21 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         .delete_async("/v1/me/avatar", account::delete_avatar)
         .post_async(
             "/v1/me/contacts/:contact_id/verification-transactions",
-            account::start_contact_verification,
+            idempotent!(
+                account::start_contact_verification,
+                CreateContactVerification,
+                Session,
+                Replayable
+            ),
         )
         .post_async(
             "/v1/me/contacts/:contact_id/verification-transactions/:transaction_id/completion",
-            account::complete_contact_verification,
+            idempotent!(
+                account::complete_contact_verification,
+                CompleteContactVerification,
+                Session,
+                Replayable
+            ),
         )
         .get_async("/v1/me/authorizations", account::list_authorizations)
         .delete_async(
@@ -324,6 +335,9 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
 /// Scheduled immutable audit archival; failures remain in the outbox and never block login.
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleContext) {
+    if let Err(error) = account::drain_email_verification_outbox(&env, 25).await {
+        console_error!("email_verification_outbox_drain_failed error={error}");
+    }
     if let Err(error) = repository::drain_audit_archive(&env, 50).await {
         console_error!("audit_archive_drain_failed error={error}");
     }

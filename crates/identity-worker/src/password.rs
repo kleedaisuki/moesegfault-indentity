@@ -285,7 +285,8 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
     )
 }
 
-/// 使用 username、email 或 mobile 进行密码认证。/ Authenticates a password using username, email, or mobile.
+/// 使用 username 或已验证的 email/mobile 进行密码认证。
+/// Authenticates a password using a username or a verified email/mobile.
 pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
     if let Some(response) = anonymous_mutation_problem(&request, &context.env, &correlation)? {
@@ -302,7 +303,7 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
     let identity = match normalized {
         Some((kind, value)) => context
             .d1("DB")?
-            .prepare("SELECT p.principal_id,p.lifecycle_state,c.password_hash FROM identifiers i JOIN principals p ON p.principal_id=i.principal_id JOIN password_credentials c ON c.principal_id=p.principal_id WHERE i.kind=?1 AND i.normalized_value=?2 LIMIT 1")
+            .prepare("SELECT p.principal_id,p.lifecycle_state,c.password_hash FROM identifiers i JOIN principals p ON p.principal_id=i.principal_id JOIN password_credentials c ON c.principal_id=p.principal_id WHERE i.kind=?1 AND i.normalized_value=?2 AND (i.kind='username' OR i.verification_state='verified') LIMIT 1")
             .bind(&[text(kind), text(&value)])?
             .first::<PasswordIdentity>(None)
             .await?,

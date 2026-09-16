@@ -11,6 +11,18 @@ OAUTH_ENABLED=false
 OIDC_ACTIVE_KID=disabled
 PUBLIC_JWKS={"keys":[]}
 WEBAUTHN_RP_ID=localhost
+# Cloudflare's EMAIL binding is configured in wrangler.identity.jsonc; these values
+# define message identity and verification policy. / Cloudflare EMAIL binding 配置在
+# wrangler.identity.jsonc；以下值定义邮件身份与验证策略。
+EMAIL_FROM_ADDRESS=identity@moesegfault.dev
+EMAIL_FROM_NAME=moeSegFault Identity
+EMAIL_VERIFICATION_TTL_SECONDS=600
+EMAIL_VERIFICATION_COOLDOWN_SECONDS=60
+EMAIL_VERIFICATION_HOURLY_LIMIT=5
+CONTACT_VERIFICATION_PEPPER=development-contact-verification-pepper
+# Base64url-encoded 32-byte XChaCha20-Poly1305 key; use a random secret outside development.
+# Base64url 编码的 32 字节 XChaCha20-Poly1305 密钥；非开发环境必须使用随机秘密。
+EMAIL_OUTBOX_KEY_V1=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 REGISTRATION_PEPPER=development-registration-pepper
 RECOVERY_CODE_PEPPER=development-recovery-code-pepper
 TRANSACTION_PEPPER=development-transaction-pepper
