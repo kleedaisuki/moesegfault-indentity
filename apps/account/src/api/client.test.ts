@@ -38,6 +38,27 @@ describe("AccountApiClient", () => {
     expect(String(fetch.mock.calls[0]![0])).toContain("/v1/me/contacts/a%2Fb"); expect(String(fetch.mock.calls[1]![0])).toContain("/v1/principals/self/sessions/s%2Fb");
   });
 
+  it("uses exact verification paths and JSON bodies", async () => {
+    const transaction = { transaction_id: "txn", expires_at: "2026-01-01T00:10:00Z", delivery_hint: "k***@example.com" };
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(json(transaction))
+      .mockResolvedValueOnce(json(account));
+    const api = new AccountApiClient("https://identity.example", fetch);
+
+    await api.startContactVerification("contact/a", { csrfToken: "csrf" });
+    await api.completeContactVerification("contact/a", "txn/b", "12345678", { csrfToken: "csrf" });
+
+    expect(String(fetch.mock.calls[0]![0])).toBe("https://identity.example/v1/me/contacts/contact%2Fa/verification-transactions");
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "POST", body: "{}" });
+    expect(String(fetch.mock.calls[1]![0])).toBe("https://identity.example/v1/me/contacts/contact%2Fa/verification-transactions/txn%2Fb/completion");
+    expect(fetch.mock.calls[1]![1]).toMatchObject({ method: "POST", body: '{"code":"12345678"}' });
+    for (const call of fetch.mock.calls) {
+      const headers = call[1]?.headers as Headers;
+      expect(headers.get("x-moesegfault-csrf")).toBe("csrf");
+      expect(headers.get("idempotency-key")).toBeTruthy();
+    }
+  });
+
   it("preserves RFC 9457 details and correlation IDs", async () => {
     const fetch = vi.fn<FetchLike>().mockResolvedValue(json({ type: "urn:test", title: "Nope", status: 409, detail: "Already exists" }, 409, { "x-moesegfault-correlation-id": "corr" }));
     const error = await new AccountApiClient("https://identity.example", fetch).listContacts().catch((value: unknown) => value);

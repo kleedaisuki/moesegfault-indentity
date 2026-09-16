@@ -223,17 +223,56 @@ function passkeyRow(credential: Credential, c: PageContext): HTMLElement {
   return el("article", { className: "entity-row" }, icon("key"), el("div", {}, el("strong", { attrs: { dir: "auto" } }, credential.label), el("p", { className: "muted" }, formatTime(credential.last_used_at, c.locale)), credential.is_current ? badge(c.t("current"), "accent") : null), actions);
 }
 
-/** 把发送与输入验证码保留在当前联系方式行内。Keeps code delivery and entry within the contact row. */
+/**
+ * 把发送、输入和重新发送验证码保留在当前联系方式行内。
+ * Keeps code delivery, entry, and resend within the contact row.
+ *
+ * 首次发送失败时保留原按钮；事务过期或提交失败后，用户可直接重新发送而不必刷新页面。
+ * The original button survives an initial delivery failure; after expiry or a failed
+ * completion, users can resend without refreshing the page.
+ */
 function verificationButton(contact: Contact, c: PageContext): HTMLButtonElement {
-  return actionButton(c.t("verify"), async (button) => {
-    const transaction = await c.api.startContactVerification(contact.contact_id, proof(c));
+  return actionButton(c.t("verify"), async (verifyButton) => {
+    let transaction = await c.api.startContactVerification(contact.contact_id, proof(c));
     const form = el("form", { className: "verification-form" },
-      inputField(`${c.t("verificationCode")} · ${transaction.delivery_hint}`, "code", "", { required: true, autocomplete: "one-time-code", inputmode: "numeric", maxlength: "12" }),
-      buttonElement(c.t("confirm")), el("span", { className: "inline-message" }),
+      inputField(`${c.t("verificationCode")} · ${transaction.delivery_hint}`, "code", "", { required: true, autocomplete: "one-time-code", inputmode: "numeric", minlength: "8", maxlength: "8", pattern: "[0-9]{8}" }),
+      el("div", { className: "verification-actions" }, buttonElement(c.t("confirm")), button(c.t("resendCode"), "quiet")),
+      el("span", { className: "inline-message success", attrs: { "aria-live": "polite", role: "status" } }, c.t("verificationSent")),
     );
-    form.addEventListener("submit", async (event) => { event.preventDefault(); const submit = form.querySelector<HTMLButtonElement>("button")!; busy(submit, true); try { await c.api.completeContactVerification(contact.contact_id, transaction.transaction_id, String(new FormData(form).get("code")), proof(c)); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error, c.t("unexpectedError")); busy(submit, false); } });
-    button.replaceWith(form);
+    const code = form.querySelector<HTMLInputElement>("[name=code]")!;
+    const [submit, resend] = Array.from(form.querySelectorAll<HTMLButtonElement>("button"));
+    const message = form.querySelector<HTMLElement>(".inline-message")!;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      busy(submit!, true);
+      try {
+        await c.api.completeContactVerification(contact.contact_id, transaction.transaction_id, code.value, proof(c));
+        setVerificationMessage(message, c.t("verificationComplete"), true);
+        await c.refresh();
+      } catch (error) {
+        setVerificationMessage(message, `${c.t("verificationFailed")} ${errorText(error, c.t("unexpectedError"))}`, false);
+      } finally { busy(submit!, false); }
+    });
+    resend!.addEventListener("click", async () => {
+      busy(resend!, true);
+      try {
+        transaction = await c.api.startContactVerification(contact.contact_id, proof(c));
+        code.value = "";
+        setVerificationMessage(message, c.t("verificationSent"), true);
+        code.focus();
+      } catch (error) {
+        setVerificationMessage(message, `${c.t("verificationSendFailed")} ${errorText(error, c.t("unexpectedError"))}`, false);
+      } finally { busy(resend!, false); }
+    });
+    verifyButton.replaceWith(form);
   }, "quiet", c);
+}
+
+/** 更新验证码反馈的语义与视觉状态。Updates verification feedback semantics and visual state. */
+function setVerificationMessage(message: HTMLElement, text: string, success: boolean): void {
+  message.textContent = text;
+  message.classList.toggle("success", success);
+  message.setAttribute("role", success ? "status" : "alert");
 }
 
 /** 验证表单提交按钮。Verification form submit button. */
