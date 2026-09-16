@@ -25,11 +25,12 @@ registration + sign-in    profile + contacts + security
 
 其他服务不“调用 Login 来验证 Token”。它们通过 `/.well-known/openid-configuration` 接入 Identity 的 OpenID Connect（OIDC），使用 Authorization Code + Proof Key for Code Exchange（PKCE）；浏览器应用优先采用前端专属后端（Backend for Frontend, BFF），令牌不进入浏览器存储。
 
-设计决策见 [`docs/adr/0003-account-platform-redesign.md`](docs/adr/0003-account-platform-redesign.md)，视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
+平台设计见 [`ADR-0003`](docs/adr/0003-account-platform-redesign.md)，Cloudflare 邮箱验证与持久投递边界见 [`ADR-0004`](docs/adr/0004-email-verification.md)；视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
 
 ## 账户能力 / Account capabilities
 
 - Username、必填 Email、可选国际手机号（独立国家区号并规范化为 E.164）。
+- 通过 Cloudflare Email Service 发送 8 位邮箱验证码；D1 加密投递箱在供应商暂时不可用时异步重试。
 - Unicode display name、avatar、bio、status、pronouns、favorite character、interest tags 与隐私可见性。
 - 密码与 Passkey 并存；认证方法参考（Authentication Method Reference, AMR）和多因素认证（Multi-Factor Authentication, MFA）模型可扩展至 TOTP 等方式。
 - 简体中文、English、日本語；`light`、`dark`、`system` 三态主题。
