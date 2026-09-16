@@ -10,6 +10,7 @@ import { icon, iconLabel } from "./ui/icons";
 import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
 import { resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
+import { avatarFilePicker } from "./ui/file-picker";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -79,7 +80,7 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
   const form = el("form", { className: "moe-glass auth-card register-form" },
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
     field(t("email"), "email", { required: true, autocomplete: "email", type: "email", placeholder: "klee@example.com", icon: "mail" }),
-    field(t("avatar"), "avatar", { type: "file", icon: "user", accept: "image/avif,image/png,image/jpeg,image/webp" }), el("p", { className: "hint" }, t("addAvatar")),
+    avatarFilePicker({ label: t("avatar"), choose: t("chooseAvatar"), empty: t("noAvatarSelected") }), el("p", { className: "hint" }, t("addAvatar")),
     el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: t("statusPlaceholder"), icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
     field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
     el("label", { className: "field" }, el("span", { className: "field__label" }, t("mobile")), el("span", { className: "phone-field" }, callingCode, el("input", { attrs: { name: "mobile", type: "tel", autocomplete: "tel-national", inputmode: "tel", placeholder: "138 0000 0000" } }))), el("p", { className: "hint" }, t("phoneHint")),

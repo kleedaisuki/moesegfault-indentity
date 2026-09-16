@@ -1,5 +1,11 @@
-/** 登录站支持的界面语言。Locales supported by the login surface. */
-export type Locale = "zh-CN" | "en" | "ja";
+import { normalizeLocale } from "@moesegfault/frontend-shared";
+import type { Locale } from "@moesegfault/frontend-shared";
+
+/** 共享区域设置类型，避免各前端产生不同的语言契约。Shared locale type, preventing divergent language contracts across frontends. */
+export type { Locale } from "@moesegfault/frontend-shared";
+
+/** 共享的区域设置规整函数。Shared locale normalizer. */
+export { normalizeLocale };
 
 const messages = {
   "zh-CN": {
@@ -8,6 +14,7 @@ const messages = {
     newTitle: "创建你的同好身份", newIntro: "昵称是你在社区里的第一句自我介绍，认真一点，也可以可爱一点。",
     identity: "邮箱或用户名", password: "密码", passwordAgain: "确认密码", displayName: "显示昵称", username: "用户名",
     email: "邮箱", avatar: "头像（可选）", mobile: "手机号（可选）", countryCode: "区号",
+    chooseAvatar: "选择头像", noAvatarSelected: "未选择文件",
     signInPassword: "使用密码登录", usePasskey: "使用 Passkey",
     divider: "或者", create: "创建账号", haveAccount: "已经有账号？", noAccount: "第一次来？",
     passkeyOptional: "Passkey 是更快捷的可选登录方式，不是使用本站的前提。你可以稍后在账号中心添加。",
@@ -35,6 +42,7 @@ const messages = {
     newTitle: "Create your fandom identity", newIntro: "Your nickname is your first hello to the community. Make it sincere—or delightfully cute.",
     identity: "Email or username", password: "Password", passwordAgain: "Confirm password", displayName: "Display name", username: "Username",
     email: "Email", avatar: "Avatar (optional)", mobile: "Mobile (optional)", countryCode: "Country code",
+    chooseAvatar: "Choose avatar", noAvatarSelected: "No file selected",
     signInPassword: "Sign in with password", usePasskey: "Use a passkey",
     divider: "or", create: "Create account", haveAccount: "Already a member?", noAccount: "New here?",
     passkeyOptional: "A passkey is a quicker optional sign-in method, not a requirement. Add one later in Account Center.",
@@ -62,6 +70,7 @@ const messages = {
     newTitle: "同好のための自分を作ろう", newIntro: "ニックネームはコミュニティへの最初の挨拶。真面目でも、かわいくても大丈夫。",
     identity: "メールまたはユーザー名", password: "パスワード", passwordAgain: "パスワード（確認）", displayName: "表示名", username: "ユーザー名",
     email: "メール", avatar: "アバター（任意）", mobile: "携帯番号（任意）", countryCode: "国番号",
+    chooseAvatar: "アバターを選択", noAvatarSelected: "ファイルが選択されていません",
     signInPassword: "パスワードでログイン", usePasskey: "Passkey を使う",
     divider: "または", create: "アカウント作成", haveAccount: "アカウントをお持ちですか？", noAccount: "はじめてですか？",
     passkeyOptional: "Passkey は便利な選択肢で、必須ではありません。後からアカウントセンターで追加できます。",
@@ -87,14 +96,6 @@ const messages = {
 
 /** 翻译键集合。Translation key set. */
 export type MessageKey = keyof typeof messages["zh-CN"];
-
-/** 将浏览器语言规整到支持集合。Normalizes a browser language to the supported set. */
-export function normalizeLocale(value: string | null | undefined): Locale {
-  const language = value?.toLowerCase() ?? "";
-  if (language.startsWith("ja")) return "ja";
-  if (language.startsWith("en")) return "en";
-  return "zh-CN";
-}
 
 /** 返回指定语言的本地化文本。Returns localized copy for a locale. */
 export function translate(locale: Locale, key: MessageKey): string {

@@ -23,6 +23,10 @@ Passkey enrollment keeps Passkey step-up as the primary recent-authentication pa
 
 The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
 
+注册页的头像选择器保留了原生 `input[type=file]` 和 `avatar` 表单字段，但只在视觉上隐藏原生控件。可见的选择按钮会映射键盘焦点，状态区以礼貌播报（polite live region）呈现本地化空状态或安全的纯文本文件名。支持格式同时声明 MIME 类型和 `.avif`、`.png`、`.jpg`、`.jpeg`、`.webp` 扩展名。语言选择器直接消费 `@moesegfault/frontend-shared` 的完整自称与语言标签。
+
+The registration avatar picker retains the native `input[type=file]` and `avatar` form field while hiding the control visually only. Its visible trigger projects keyboard focus, and a polite live region shows either localized empty copy or a safely rendered plain-text filename. Accepted formats declare both MIME types and `.avif`, `.png`, `.jpg`, `.jpeg`, and `.webp` extensions. The locale selector consumes full autonyms and language tags directly from `@moesegfault/frontend-shared`.
+
 ## 内联 Passkey 再认证
 
 增加/撤销 Passkey、建立/解除 Identity Binding 和轮换恢复码等高风险操作以服务端的近期认证策略为准。首次请求如果返回结构化错误 `reauthentication_required`，前端会在当前页面中：
