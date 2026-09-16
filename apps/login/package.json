@@ -12,6 +12,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty false"
   },
+  "dependencies": {
+    "@moesegfault/frontend-shared": "0.1.0"
+  },
   "devDependencies": {
     "@types/node": "24.5.2",
     "typescript": "5.9.2",
