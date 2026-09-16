@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Environment whose secrets are verified / 要验证密钥的环境
+        description: Environment to reconcile and verify / 要调和与验证的环境
         required: true
         default: staging
         type: choice
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   bootstrap:
-    name: Verify or provision data resources
+    name: Reconcile Cloudflare infrastructure
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: cloudflare-${{ inputs.target }}
@@ -40,5 +40,5 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked tooling / 安装锁定工具
         run: npm ci --ignore-scripts
-      - name: Bootstrap idempotently / 幂等执行引导
+      - name: Reconcile data, domains, and email / 调和数据、域名与邮件
         run: scripts/bootstrap-cloudflare.sh "${{ inputs.target }}"

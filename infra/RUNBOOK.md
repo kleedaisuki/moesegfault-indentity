@@ -10,17 +10,18 @@
 | Identity Worker | `identity-staging.moesegfault.dev` | `identity.moesegfault.dev` | D1 + private audit R2 |
 | Login assets | `login-staging.moesegfault.dev` | `login.moesegfault.dev` | 无 / none |
 | Account assets | `account-staging.moesegfault.dev` | `account.moesegfault.dev` | 无 / none |
+| Verification email | `identity@moesegfault.dev` | `identity@moesegfault.dev` | Cloudflare Email Service |
 
-Cron、bindings 与非敏感变量的唯一事实源（single source of truth）是三个 `wrangler.*.jsonc`；Custom Domains 则由 `scripts/bootstrap-cloudflare.sh` 通过 Cloudflare account API 幂等调和。密钥只用 `wrangler secret put` 管理。域名生命周期与应用发布分开，日常 CI 无需 zone-level Workers Routes 权限。
+Cron、bindings 与非敏感变量的唯一事实源（single source of truth）是三个 `wrangler.*.jsonc`；Custom Domains 与 Email Sending 域名则由 `scripts/bootstrap-cloudflare.sh` 幂等调和。密钥只用 `wrangler secret put` 管理。域名生命周期与应用发布分开，日常 CI 无需 zone-level Workers Routes 权限。
 
 ## 首次引导 / Bootstrap
 
 1. 建立 GitHub Environments `cloudflare-staging` 与 `cloudflare-production`；production 限制为 `main` 并要求人工审批，两个环境分别保存 Cloudflare 凭据。
-2. 为 staging 与 production 各手动运行一次 **Cloudflare bootstrap**。它验证固定的 D1 UUID、幂等创建私有 audit/avatar R2、调和 Worker/R2 Custom Domains，并检查所选环境的密钥名称。
-3. 对两个 Identity 环境设置 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER`、`CSRF_PEPPER`。`TRANSACTION_STATE_KEY` 是 32-byte 随机值的无填充 Base64URL。
+2. 为 staging 与 production 各手动运行一次 **Cloudflare bootstrap**。它验证固定的 D1 UUID、幂等创建私有 audit/avatar R2、调和 Worker/R2 Custom Domains、接入 `moesegfault.dev` 到 Cloudflare Email Sending、关闭邮件 Activity Log 的完整正文预览，并检查所选环境的密钥名称。邮件域名是两个环境共享的 zone 资源，重复运行安全。
+3. 对两个 Identity 环境设置 `REGISTRATION_PEPPER`、`RECOVERY_CODE_PEPPER`、`CONTACT_VERIFICATION_PEPPER`、`EMAIL_OUTBOX_KEY_V1`、`TRANSACTION_PEPPER`、`TRANSACTION_STATE_KEY`、`SESSION_PEPPER`、`CSRF_PEPPER`。`EMAIL_OUTBOX_KEY_V1` 与 `TRANSACTION_STATE_KEY` 均为独立生成的 32-byte 随机值，使用无填充 Base64URL；前者用于持久邮件 outbox 的静态加密（encryption at rest），不可与 pepper 或其他环境复用。
 4. OAuth/OIDC 启用时还需 `AUTHORIZATION_CODE_PEPPER`、`REFRESH_TOKEN_PEPPER`、`PAIRWISE_SUBJECT_KEY`、`OIDC_PRIVATE_KEY_PKCS8`，并确认 `PUBLIC_JWKS` 的 `kid` 与 `OIDC_ACTIVE_KID` 一致。
 
-日常发布 token 需要 Workers Scripts Write 与 D1 Edit；不需要 zone-level Workers Routes。bootstrap 额外需要 R2 Storage Write，并使用相同的 Workers Scripts Write 权限调用 account-level Custom Domains API。GitHub Environment 在审批通过前不会向 job 暴露 secrets，这是生产提升边界，而不是把正常边界情况推回用户。[GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments)
+日常发布 token 需要 Workers Scripts Write 与 D1 Edit；不需要 zone-level Workers Routes。bootstrap 额外需要 R2 Storage Write、Email Sending Edit 与 Zone Read，并使用相同的 Workers Scripts Write 权限调用 account-level Custom Domains API。Email Sending 接入由固定版本 Wrangler 调用 Email Service API，Cloudflare 自动管理 bounce MX、SPF、DKIM 与 DMARC DNS 记录；不要在脚本中复制这些易漂移的记录。新 sending domain 默认启用 Email Preview，会在 Activity Log 暂存完整邮件；验证码属于认证秘密，所以 bootstrap 使用官方 update/get API 将 `preview_enabled` 持续调和为 `false` 并回读验证。GitHub Environment 在审批通过前不会向 job 暴露 secrets，这是生产提升边界，而不是把正常边界情况推回用户。[GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments) [Cloudflare Email Sending domain configuration](https://developers.cloudflare.com/email-service/configuration/domains/) [Cloudflare Email Sending API](https://developers.cloudflare.com/api/resources/email_sending/)
 
 ## 发布流水线 / Release pipeline
 

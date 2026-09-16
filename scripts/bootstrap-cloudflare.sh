@@ -13,6 +13,8 @@ readonly PRODUCTION_AVATAR_BUCKET="moesegfault-avatars-production"
 readonly STAGING_AVATAR_DOMAIN="avatars-staging.moesegfault.dev"
 readonly PRODUCTION_AVATAR_DOMAIN="avatars.moesegfault.dev"
 readonly ZONE_NAME="moesegfault.dev"
+readonly EMAIL_SENDING_DOMAIN="moesegfault.dev"
+readonly EMAIL_SENDER="identity@moesegfault.dev"
 readonly TARGET="${1:-}"
 
 if [[ "$TARGET" != "staging" && "$TARGET" != "production" ]]; then
@@ -98,6 +100,81 @@ ensure_worker_domain() {
   printf 'verified Worker custom domain / Worker 自定义域名已验证: %s -> %s\n' "$hostname" "$service"
 }
 
+ensure_email_sending() {
+  local attempt settings
+
+  # Email Sending is zone infrastructure shared by staging and production. Wrangler's pinned
+  # open-beta commands call the supported Email Service API and let Cloudflare own the SPF,
+  # DKIM, DMARC, and bounce MX records. / Email Sending 是 staging 与 production 共享的
+  # zone 基础设施。固定版本 Wrangler 的 open-beta 命令调用受支持的 Email Service API，
+  # SPF、DKIM、DMARC 与退信 MX 记录均由 Cloudflare 管理。
+  if ! settings="$(npx --no-install wrangler email sending settings "$EMAIL_SENDING_DOMAIN" \
+    --zone-id "$CLOUDFLARE_ZONE_ID" 2>&1)"; then
+    if ! grep -Fq 'No sending subdomain found' <<<"$settings"; then
+      printf '%s\n' "$settings" >&2
+      return 1
+    fi
+    npx --no-install wrangler email sending enable "$EMAIL_SENDING_DOMAIN" \
+      --zone-id "$CLOUDFLARE_ZONE_ID"
+  fi
+
+  # Onboarding may be asynchronous. Poll an existing pending domain rather than POSTing the same
+  # domain again; Wrangler's enable command creates, rather than updates, a sending domain.
+  # 接入可能异步完成。对于已有的 pending 域名只轮询，不重复 POST；Wrangler 的 enable
+  # 命令创建邮件域名，而不是更新已有域名。
+  for attempt in {1..12}; do
+    settings="$(npx --no-install wrangler email sending settings "$EMAIL_SENDING_DOMAIN" \
+      --zone-id "$CLOUDFLARE_ZONE_ID")"
+    if grep -Eq 'Enabled:[[:space:]]+true' <<<"$settings"; then
+      npx --no-install wrangler email sending dns get "$EMAIL_SENDING_DOMAIN" \
+        --zone-id "$CLOUDFLARE_ZONE_ID" >/dev/null
+      printf 'verified Email Sending / Email Sending 已验证: %s (%s)\n' "$EMAIL_SENDING_DOMAIN" "$EMAIL_SENDER"
+      return
+    fi
+    if ((attempt < 12)); then
+      sleep 5
+    fi
+  done
+
+  printf 'Email Sending onboarding is still pending after %s attempts / Email Sending 接入在 %s 次检查后仍未完成: %s\n' \
+    "$attempt" "$attempt" "$EMAIL_SENDING_DOMAIN" >&2
+  return 1
+}
+
+disable_email_preview() {
+  local response settings tag verification
+
+  settings="$(npx --no-install wrangler email sending settings "$EMAIL_SENDING_DOMAIN" \
+    --zone-id "$CLOUDFLARE_ZONE_ID")"
+  tag="$(sed -n 's/^[[:space:]]*Tag:[[:space:]]*//p' <<<"$settings")"
+  if [[ -z "$tag" ]]; then
+    printf 'could not resolve Email Sending tag / 无法解析 Email Sending tag: %s\n' "$EMAIL_SENDING_DOMAIN" >&2
+    return 1
+  fi
+
+  # New sending domains retain full message previews by default. Verification codes and message
+  # bodies must not be copied into the activity log, so bootstrap continuously enforces the
+  # privacy-preserving setting. / 新邮件域名默认保留完整邮件预览。验证码与正文不得复制到
+  # activity log，因此 bootstrap 持续调和这个隐私设置。
+  response="$(curl --fail-with-body --silent --show-error \
+    "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/email/sending/subdomains/${tag}" \
+    --request PATCH \
+    --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    --header 'Content-Type: application/json' \
+    --data '{"preview_enabled":false}')"
+  jq -e --arg tag "$tag" \
+    '.success == true and .result.tag == $tag and .result.preview_enabled == false' \
+    <<<"$response" >/dev/null
+
+  verification="$(curl --fail-with-body --silent --show-error \
+    "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/email/sending/subdomains/${tag}" \
+    --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")"
+  jq -e --arg tag "$tag" \
+    '.success == true and .result.tag == $tag and .result.preview_enabled == false' \
+    <<<"$verification" >/dev/null
+  printf 'disabled Email Sending preview / Email Sending 预览已禁用: %s\n' "$EMAIL_SENDING_DOMAIN"
+}
+
 verify_runtime_secrets() {
   local target="$1"
   local secrets_json secret
@@ -105,6 +182,8 @@ verify_runtime_secrets() {
   local -a required=(
     REGISTRATION_PEPPER
     RECOVERY_CODE_PEPPER
+    CONTACT_VERIFICATION_PEPPER
+    EMAIL_OUTBOX_KEY_V1
     TRANSACTION_PEPPER
     TRANSACTION_STATE_KEY
     SESSION_PEPPER
@@ -158,6 +237,8 @@ ensure_worker_domain "moesegfault-account-staging" "account-staging.moesegfault.
 ensure_worker_domain "moesegfault-identity" "identity.moesegfault.dev"
 ensure_worker_domain "moesegfault-login" "login.moesegfault.dev"
 ensure_worker_domain "moesegfault-account" "account.moesegfault.dev"
+ensure_email_sending
+disable_email_preview
 verify_runtime_secrets "$TARGET"
 
 # Avatar object names are immutable UUIDs. Replaced/deleted objects are removed best-effort by
@@ -166,4 +247,4 @@ verify_runtime_secrets "$TARGET"
 # avatars. / 头像对象名为不可变 UUID；Worker 会尽力清除被替换/删除对象，保留的 deleted 行是
 # 运维 reaper 的重试清单。不要配置全桶过期规则，否则当前头像也会被删除。
 
-printf 'bootstrap complete; data resources and custom domains are reconciled / 引导完成：数据资源与自定义域名均已调和\n'
+printf 'bootstrap complete; data, domains, and Email Sending are reconciled / 引导完成：数据、域名与 Email Sending 均已调和\n'
