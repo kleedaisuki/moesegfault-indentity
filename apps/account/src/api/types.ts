@@ -1,3 +1,5 @@
+import type { Locale } from "@moesegfault/frontend-shared";
+
 /** RFC 9457 问题详情。RFC 9457 Problem Details. */
 export interface ProblemDetails {
   type: string; title: string; status: number; detail?: string; correlation_id?: string;
@@ -63,7 +65,7 @@ export interface SecuritySummary {
 }
 
 /** 界面、时区与通知偏好。Presentation, timezone and notification preferences. */
-export interface AccountPreferences { locale: string; theme: "system" | "light" | "dark"; timezone: string; reduced_motion: boolean; compact_mode: boolean; notifications: { security_email: boolean; product_email?: boolean }; }
+export interface AccountPreferences { locale: Locale; theme: "system" | "light" | "dark"; timezone: string; reduced_motion: boolean; compact_mode: boolean; notifications: { security_email: boolean; product_email?: boolean }; }
 
 /** Passkey 管理投影。Passkey management projection. */
 export interface Credential {

@@ -19,3 +19,13 @@ export function resolveAccountOrigin(location: Pick<Location, "hostname">): stri
   if (location.hostname === "localhost" || location.hostname === "127.0.0.1") return "http://localhost:5174";
   return "https://account.moesegfault.dev";
 }
+
+/**
+ * 生成同环境登录地址，并保留规范化后的 Account 深链接。
+ * Builds a paired Login URL that preserves a normalized Account deep link.
+ */
+export function accountLoginUrl(location: Pick<Location, "hostname">, route: string): string {
+  const url = new URL("/login", resolveLoginOrigin(location));
+  url.searchParams.set("return_uri", `${resolveAccountOrigin(location)}${route}`);
+  return url.href;
+}

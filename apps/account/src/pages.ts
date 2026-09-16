@@ -1,10 +1,11 @@
 import { ApiError, AccountApiClient } from "./api/client";
 import type { Account, AccountPreferences, Contact, Credential, MutationProof, SecuritySummary } from "./api/types";
-import type { Locale, MessageKey } from "./i18n";
+import { normalizeLocale, type Locale, type MessageKey } from "./i18n";
 import type { Route } from "./router";
 import { resolveRoute } from "./router";
 import { busy, el, formatTime, icon, replace } from "./ui/dom";
 import { resolveAccountOrigin, resolveLoginOrigin } from "./environment";
+import { localeOptions } from "./ui/locale-select";
 
 /** 页面渲染所需的会话态；CSRF 只驻留内存。In-memory page session; CSRF never leaves memory. */
 export interface PageContext { api: AccountApiClient; account: Account; preferences: AccountPreferences; csrfToken: string; locale: Locale; t: (key: MessageKey) => string; signal: AbortSignal; refresh(): Promise<void>; }
@@ -57,7 +58,7 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
     inputField(c.t("interests"), "interests", c.account.profile.interests?.join(", ") ?? "", { placeholder: "Touhou, Vocaloid, Rust" }),
     inputField(c.t("links"), "links", c.account.profile.links?.join("\n") ?? "", { placeholder: "https://example.com" }),
     selectField(c.t("visibility"), "profile_visibility", [["private", c.t("private")], ["members", c.t("members")], ["public", c.t("public")]], c.account.profile.profile_visibility ?? "members"),
-    selectField(c.t("locale"), "locale", [["zh-CN", "简体中文"], ["en", "English"], ["ja", "日本語"]], c.preferences.locale),
+    localeSelectField(c.t("locale"), c.preferences.locale),
     inputField(c.t("timezone"), "timezone", c.preferences.timezone, { required: true, placeholder: "Asia/Shanghai" }),
     el("div", { className: "form-actions" }, button(c.t("save"), "primary", "submit"), el("span", { className: "inline-message", attrs: { "aria-live": "polite" } })),
   );
@@ -67,7 +68,7 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
     try {
       await Promise.all([
         c.api.updateMe({ display_name: String(data.get("display_name")), bio: nullable(data.get("bio")), status_message: nullable(data.get("status_message")), pronouns: nullable(data.get("pronouns")), favorite_character: nullable(data.get("favorite_character")), interests: commaList(data.get("interests")), links: lineList(data.get("links")), profile_visibility: String(data.get("profile_visibility")) as "private" | "members" | "public" }, proof(c)),
-        c.api.updatePreferences({ locale: String(data.get("locale")), timezone: String(data.get("timezone")) }, proof(c)),
+        c.api.updatePreferences({ locale: normalizeLocale(String(data.get("locale"))), timezone: String(data.get("timezone")) }, proof(c)),
       ]);
       message.textContent = c.t("saved"); await c.refresh();
     } catch (error) { message.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(submit, false); }
@@ -161,6 +162,8 @@ function inputField(label: string, name: string, value: string, attrs: Record<st
 function textAreaField(label: string, name: string, value: string, maxLength: number): HTMLLabelElement { const area = el("textarea", { attrs: { name, maxlength: String(maxLength), rows: "4" } }, value); return el("label", { className: "field" }, el("span", {}, label), area); }
 /** 选择字段。Select field. */
 function selectField(label: string, name: string, options: ReadonlyArray<readonly [string, string]>, selected: string): HTMLLabelElement { return el("label", { className: "field" }, el("span", {}, label), el("select", { attrs: { name } }, ...options.map(([value, text]) => el("option", { attrs: { value, selected: value === selected } }, text)))); }
+/** 使用共享自称元数据的语言字段。Locale field backed by shared autonym metadata. */
+function localeSelectField(label: string, selected: Locale): HTMLLabelElement { return el("label", { className: "field" }, el("span", {}, label), el("select", { attrs: { name: "locale" } }, ...localeOptions(selected))); }
 /** 一致按钮。Consistent button. */
 function button(text: string, tone: "primary" | "quiet" | "danger", type: "button" | "submit" = "button"): HTMLButtonElement { return el("button", { className: `button ${tone}`, attrs: { type } }, text); }
 /** 异步 mutation 按钮；近期认证不足时统一展示 Login 动作。Async mutation button with shared recent-auth recovery UX. */

@@ -13,6 +13,7 @@
   --shadow: 0 18px 50px rgb(0 0 0 / 28%);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { min-width: 20rem; min-height: 100%; background: var(--bg); text-size-adjust: 100%; }
 body { min-height: 100vh; margin: 0; color: var(--text); background: radial-gradient(circle at 12% 8%, color-mix(in srgb, var(--gold) 27%, transparent), transparent 30rem), radial-gradient(circle at 88% 20%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 38rem), linear-gradient(180deg, var(--bg), var(--bg-end)); line-height: 1.65; }
 button, input, select, textarea { font: inherit; }
