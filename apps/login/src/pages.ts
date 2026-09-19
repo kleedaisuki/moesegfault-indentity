@@ -208,6 +208,22 @@ export function registrationEmailIdentifier(account: Account): Identifier | unde
   return emails.find((identifier) => identifier.is_primary) ?? emails[0];
 }
 
+/** 邮箱验证完成的逻辑操作标识。Logical operation identity for an email-verification completion. */
+export interface ContactVerificationCompletionAttempt {
+  transactionId: string;
+  code: string;
+  idempotencyKey: string;
+}
+
+/**
+ * 为相同事务和验证码复用幂等键，使响应丢失后可安全回放。
+ * Reuses an idempotency key for the same transaction and code so a lost response can be replayed safely.
+ */
+export function contactVerificationCompletionAttempt(previous: ContactVerificationCompletionAttempt | undefined, transactionId: string, code: string, createKey: () => string = createIdempotencyKey): ContactVerificationCompletionAttempt {
+  if (previous?.transactionId === transactionId && previous.code === code) return previous;
+  return { transactionId, code, idempotencyKey: createKey() };
+}
+
 /** 把注册后邮箱验证呈现为必经状态，重发失败时仍保留上一个有效事务和恢复代码。Renders post-registration email verification as a required state, retaining the prior transaction and recovery codes when resend fails. */
 async function renderRegistrationEmailVerification(main: HTMLElement, api: IdentityApiClient, account: Account, csrfToken: string, signal: AbortSignal, t: (key: MessageKey) => string, onVerified: () => void, recoveryCodes?: string[], nextUri?: string): Promise<void> {
   let email: Pick<Identifier, "identifier_id" | "value" | "verification_state"> | Pick<Contact, "contact_id" | "value" | "verification_state"> | undefined = registrationEmailIdentifier(account);
@@ -227,6 +243,7 @@ async function renderRegistrationEmailVerification(main: HTMLElement, api: Ident
   if (email.verification_state === "verified") { onVerified(); return; }
   const contactId = "identifier_id" in email ? email.identifier_id : email.contact_id;
   let transaction: ContactVerificationTransaction | undefined;
+  let completionAttempt: ContactVerificationCompletionAttempt | undefined;
   const status = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
   const confirm = el("button", { className: "button button--primary", attrs: { type: "submit", disabled: true } }, iconLabel("mail", t("confirmEmail")));
   const resend = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("resendCode"));
@@ -243,6 +260,7 @@ async function renderRegistrationEmailVerification(main: HTMLElement, api: Ident
     setButtonBusy(resend, true, t("sendingCode"));
     try {
       const next = await api.startContactVerification(contactId, { csrfToken, idempotencyKey: createIdempotencyKey(), signal });
+      if (transaction?.transaction_id !== next.transaction_id) completionAttempt = undefined;
       transaction = next; confirm.disabled = false;
       replace(status, statePanel("success", t("codeSent"), next.delivery_hint));
     } catch (error) {
@@ -256,7 +274,8 @@ async function renderRegistrationEmailVerification(main: HTMLElement, api: Ident
     setButtonBusy(confirm, true, t("verifyingCode"));
     try {
       const code = String(new FormData(form).get("code") ?? "").trim();
-      await api.completeContactVerification(contactId, transaction.transaction_id, code, { csrfToken, idempotencyKey: createIdempotencyKey(), signal });
+      completionAttempt = contactVerificationCompletionAttempt(completionAttempt, transaction.transaction_id, code);
+      await api.completeContactVerification(contactId, transaction.transaction_id, code, { csrfToken, idempotencyKey: completionAttempt.idempotencyKey, signal });
       if (!recoveryCodes?.length) { onVerified(); return; }
       replace(main, pageHeading("EMAIL_VERIFIED", t("emailVerified"), t("codesIntro")), statePanel("success", t("emailVerified"), t("signedIn")), recoveryCodePanel(recoveryCodes, t, nextUri));
     } catch (error) {

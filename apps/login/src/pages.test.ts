@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { IdentityApiClient } from "./api/client";
-import { postAuthenticationDestination, reauthenticateAndStartEnrollment, registrationEmailIdentifier, uploadOptionalAvatar } from "./pages";
+import { contactVerificationCompletionAttempt, postAuthenticationDestination, reauthenticateAndStartEnrollment, registrationEmailIdentifier, uploadOptionalAvatar } from "./pages";
 import type { Account } from "./api/types";
 
 describe("ordinary login return navigation", () => {
@@ -21,6 +21,37 @@ describe("registration email selection", () => {
       { ...base, identifier_id: "phone", kind: "mobile", value: "+8613800000000", is_primary: true },
     ] } as Account;
     expect(registrationEmailIdentifier(account)).toMatchObject({ identifier_id: "new", value: "klee@example.com" });
+  });
+});
+
+describe("registration email completion replay", () => {
+  it("reuses the operation key after a lost response and rotates it only when the code or transaction changes", async () => {
+    const generated = ["key-original", "key-code-change", "key-new-transaction"];
+    const createKey = vi.fn(() => generated.shift() ?? "unexpected-key");
+    const committed = new Map<string, { verification_state: string }>();
+    let loseFirstResponse = true;
+    const complete = vi.fn(async (_transactionId: string, _code: string, idempotencyKey: string) => {
+      const replay = committed.get(idempotencyKey);
+      if (replay) return replay;
+      const result = { verification_state: "verified" };
+      committed.set(idempotencyKey, result);
+      if (loseFirstResponse) { loseFirstResponse = false; throw new TypeError("response lost after commit"); }
+      return result;
+    });
+    let attempt: ReturnType<typeof contactVerificationCompletionAttempt> | undefined;
+    const confirm = async (transactionId: string, code: string) => {
+      attempt = contactVerificationCompletionAttempt(attempt, transactionId, code, createKey);
+      return await complete(transactionId, code, attempt.idempotencyKey);
+    };
+
+    await expect(confirm("tx-1", "01234567")).rejects.toThrow("response lost");
+    await expect(confirm("tx-1", "01234567")).resolves.toMatchObject({ verification_state: "verified" });
+    await confirm("tx-1", "76543210");
+    await confirm("tx-2", "76543210");
+
+    expect(complete.mock.calls.map((call) => call[2])).toEqual(["key-original", "key-original", "key-code-change", "key-new-transaction"]);
+    expect(createKey).toHaveBeenCalledTimes(3);
+    expect(committed.size).toBe(3);
   });
 });
 
