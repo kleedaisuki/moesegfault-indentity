@@ -53,3 +53,5 @@ export function normalizeLocale(value: string | null | undefined): Locale {
       return "zh-CN";
   }
 }
+
+export * from "./avatar";
