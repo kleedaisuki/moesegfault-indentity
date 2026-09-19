@@ -218,6 +218,32 @@ struct AccountRow {
     identifier_updated_at: Option<i64>,
 }
 
+/// D1 标识符行；SQLite 布尔列通过 JavaScript number 传输，而不是 JavaScript boolean。
+/// D1 identifier row; SQLite boolean columns cross the boundary as JavaScript numbers, not booleans.
+#[derive(Debug, Deserialize)]
+struct IdentifierRow {
+    /// 稳定 identifier ID。/ Stable identifier ID.
+    identifier_id: String,
+    /// 标识符类别。/ Identifier kind.
+    kind: String,
+    /// 用户可见值。/ User-visible value.
+    value: String,
+    /// 移动号码国际区号。/ Mobile country calling code.
+    country_calling_code: Option<String>,
+    /// 移动号码本地部分。/ Mobile national number.
+    national_number: Option<String>,
+    /// SQLite 整数布尔值。/ SQLite integer boolean.
+    is_primary: i64,
+    /// 带外验证状态。/ Out-of-band verification state.
+    verification_state: String,
+    /// 验证时间（Unix 秒）。/ Verification time in Unix seconds.
+    verified_at: Option<i64>,
+    /// 创建时间（Unix 秒）。/ Creation time in Unix seconds.
+    created_at: i64,
+    /// 最近更新时间（Unix 秒）。/ Last-update time in Unix seconds.
+    updated_at: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct AdditionIdentityRow {
     principal_id: String,
@@ -447,7 +473,7 @@ pub async fn schedule_self_deletion(
 
 /// 按创建顺序列出当前账户的标识符。/ Lists the account's identifiers in creation order.
 pub async fn identifiers(db: &D1Database, principal_id: &str) -> Result<Vec<IdentifierView>> {
-    primary(db)?
+    let rows = primary(db)?
         .prepare(
             "SELECT identifier_id,kind,value,country_calling_code,national_number,is_primary,verification_state,verified_at,created_at,updated_at FROM identifiers \
              WHERE principal_id=?1 ORDER BY created_at,identifier_id",
@@ -455,7 +481,8 @@ pub async fn identifiers(db: &D1Database, principal_id: &str) -> Result<Vec<Iden
         .bind(&[text(principal_id)])?
         .all()
         .await?
-        .results()
+        .results::<IdentifierRow>()?;
+    Ok(rows.into_iter().map(identifier_from_row).collect())
 }
 
 /// 为活动账户添加未验证联系渠道。/ Adds an unverified contact channel to an active account.
@@ -1399,14 +1426,15 @@ async fn identifier(
     principal_id: &str,
     identifier_id: &str,
 ) -> Result<Option<IdentifierView>> {
-    primary(db)?
+    let row = primary(db)?
         .prepare(
             "SELECT identifier_id,kind,value,country_calling_code,national_number,is_primary,verification_state,verified_at,created_at,updated_at FROM identifiers \
              WHERE principal_id=?1 AND identifier_id=?2",
         )
         .bind(&[text(principal_id), text(identifier_id)])?
-        .first(None)
-        .await
+        .first::<IdentifierRow>(None)
+        .await?;
+    Ok(row.map(identifier_from_row))
 }
 
 async fn authenticator(
@@ -1470,6 +1498,23 @@ fn account_from_row(row: AccountRow) -> Result<AccountView> {
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
+}
+
+/// 将 D1 的数值布尔表示转换为公开领域模型。
+/// Converts D1's numeric boolean representation to the public domain model.
+fn identifier_from_row(row: IdentifierRow) -> IdentifierView {
+    IdentifierView {
+        identifier_id: row.identifier_id,
+        kind: row.kind,
+        value: row.value,
+        country_calling_code: row.country_calling_code,
+        national_number: row.national_number,
+        is_primary: row.is_primary != 0,
+        verification_state: row.verification_state,
+        verified_at: row.verified_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
 }
 
 fn authenticator_from_row(row: AuthenticatorRow) -> Result<AuthenticatorView> {
@@ -1636,6 +1681,37 @@ mod tests {
             identifier_updated_at: None,
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn numeric_identifier_flags_map_to_domain_booleans() {
+        let primary = identifier_from_row(IdentifierRow {
+            identifier_id: "primary".into(),
+            kind: "email".into(),
+            value: "klee@example.com".into(),
+            country_calling_code: None,
+            national_number: None,
+            is_primary: 1,
+            verification_state: "verified".into(),
+            verified_at: Some(10),
+            created_at: 10,
+            updated_at: 20,
+        });
+        assert!(primary.is_primary);
+
+        let secondary = identifier_from_row(IdentifierRow {
+            identifier_id: "secondary".into(),
+            kind: "mobile".into(),
+            value: "+8613800138000".into(),
+            country_calling_code: Some("86".into()),
+            national_number: Some("13800138000".into()),
+            is_primary: 0,
+            verification_state: "unverified".into(),
+            verified_at: None,
+            created_at: 30,
+            updated_at: 30,
+        });
+        assert!(!secondary.is_primary);
     }
 
     #[test]

@@ -25,6 +25,30 @@ pub struct BindingView {
     pub last_authenticated_at: Option<i64>,
 }
 
+/// 与 D1/SQLite 原生整数表示一致的 Binding 查询行。
+/// Binding query row matching D1/SQLite's native integer representation.
+///
+/// SQLite 没有独立的布尔存储类型；在适配器边界保留 `i64`，避免 worker-rs 将数值
+/// 直接反序列化为 Rust `bool` 时触发 panic。
+/// SQLite has no distinct Boolean storage class. Keeping `i64` at the adapter boundary avoids a
+/// worker-rs panic when a numeric value is deserialized directly into a Rust `bool`.
+#[derive(Debug, Deserialize)]
+struct BindingViewRow {
+    binding_id: String,
+    provider_id: String,
+    metadata_json: String,
+    authentication_enabled: i64,
+    created_at: i64,
+    last_authenticated_at: Option<i64>,
+}
+
+/// 与 `revoked_at IS NULL` 数值结果匹配的 D1 查询行。
+/// D1 query row matching the numeric result of `revoked_at IS NULL`.
+#[derive(Debug, Deserialize)]
+struct BindingActiveRow {
+    active: i64,
+}
+
 /// Callback 完成所需的最小事务材料。/ Minimal transaction material needed by the callback.
 #[derive(Debug, Deserialize)]
 pub struct BindingTransactionRow {
@@ -296,14 +320,17 @@ pub async fn transaction_by_state(
 
 /// 列出账号的有效外部身份 Binding。/ Lists active external identity bindings for an account.
 pub async fn bindings(db: &D1Database, principal_id: &str) -> Result<Vec<BindingView>> {
-    db.with_session_constraint(D1SessionConstraint::FirstPrimary)?.prepare(
-        "SELECT binding_id,provider_id,metadata_json,authentication_enabled,created_at,last_authenticated_at \
-         FROM identity_bindings WHERE principal_id=?1 AND revoked_at IS NULL ORDER BY binding_id",
-    )
-    .bind(&[text(principal_id)])?
-    .all()
-    .await?
-    .results()
+    let rows = db
+        .with_session_constraint(D1SessionConstraint::FirstPrimary)?
+        .prepare(
+            "SELECT binding_id,provider_id,metadata_json,authentication_enabled,created_at,last_authenticated_at \
+             FROM identity_bindings WHERE principal_id=?1 AND revoked_at IS NULL ORDER BY binding_id",
+        )
+        .bind(&[text(principal_id)])?
+        .all()
+        .await?
+        .results::<BindingViewRow>()?;
+    Ok(rows.into_iter().map(binding_from_row).collect())
 }
 
 /// 判断指定 Binding 是否属于该账号（含已撤销记录），以保持 DELETE 重放为 204。
@@ -314,15 +341,34 @@ pub async fn binding_active(
     principal_id: &str,
     binding_id: &str,
 ) -> Result<Option<bool>> {
-    let value = db
+    let row = db
         .with_session_constraint(D1SessionConstraint::FirstPrimary)?
         .prepare(
             "SELECT revoked_at IS NULL AS active FROM identity_bindings WHERE principal_id=?1 AND binding_id=?2",
         )
         .bind(&[text(principal_id), text(binding_id)])?
-        .first::<bool>(Some("active"))
+        .first::<BindingActiveRow>(None)
         .await?;
-    Ok(value)
+    Ok(row.map(binding_active_from_row))
+}
+
+/// 将数据库整数投影转换为对外 Binding 领域模型。
+/// Converts the database's integer projection into the public Binding domain model.
+fn binding_from_row(row: BindingViewRow) -> BindingView {
+    BindingView {
+        binding_id: row.binding_id,
+        provider_id: row.provider_id,
+        metadata_json: row.metadata_json,
+        authentication_enabled: row.authentication_enabled != 0,
+        created_at: row.created_at,
+        last_authenticated_at: row.last_authenticated_at,
+    }
+}
+
+/// 按 SQLite 语义将零映射为 `false`、任意非零值映射为 `true`。
+/// Maps zero to `false` and every non-zero value to `true`, following SQLite semantics.
+fn binding_active_from_row(row: BindingActiveRow) -> bool {
+    row.active != 0
 }
 
 /// 原子创建唯一 `(issuer, subject)` Binding 并消费 callback 事务。
@@ -438,6 +484,37 @@ fn blob(value: &[u8]) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_projection_maps_sqlite_integer_booleans() {
+        for (stored, expected) in [(0, false), (1, true), (-1, true), (2, true)] {
+            let view = binding_from_row(BindingViewRow {
+                binding_id: "binding".into(),
+                provider_id: "provider".into(),
+                metadata_json: "{}".into(),
+                authentication_enabled: stored,
+                created_at: 10,
+                last_authenticated_at: Some(20),
+            });
+
+            assert_eq!(view.authentication_enabled, expected);
+            assert_eq!(view.binding_id, "binding");
+            assert_eq!(view.provider_id, "provider");
+            assert_eq!(view.metadata_json, "{}");
+            assert_eq!(view.created_at, 10);
+            assert_eq!(view.last_authenticated_at, Some(20));
+        }
+    }
+
+    #[test]
+    fn binding_active_maps_sqlite_integer_booleans() {
+        for (stored, expected) in [(0, false), (1, true), (-1, true), (2, true)] {
+            assert_eq!(
+                binding_active_from_row(BindingActiveRow { active: stored }),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn archive_keys_are_stable_and_partitioned() {

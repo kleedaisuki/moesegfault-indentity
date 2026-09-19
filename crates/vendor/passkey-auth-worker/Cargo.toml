@@ -109,7 +109,7 @@ version = "0.2"
 features = ["std"]
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies.js-sys]
-version = "=0.3.102"
+version = "=0.3.105"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies.getrandom]
 version = "0.2"
