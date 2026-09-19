@@ -17,6 +17,15 @@ pub enum GuardError {
     BrowserBinding,
 }
 
+/// 浏览器端点可接受的第一方 Origin 集合。/ First-party Origin set accepted by a browser endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginScope {
+    /// 仅 Login 可发起匿名 ceremony。/ Only Login may initiate anonymous ceremonies.
+    LoginOnly,
+    /// Login 与 Account 均可管理已认证会话。/ Both Login and Account may manage a session.
+    PairedFrontends,
+}
+
 /// 校验浏览器 JSON mutation 的 Origin、内容类型与 Fetch Metadata。
 /// Validates Origin, content type, and Fetch Metadata for browser JSON mutations.
 pub fn validate_browser_mutation(request: &Request, env: &Env) -> Result<(), GuardError> {
@@ -142,10 +151,38 @@ pub fn account_origin(env: &Env) -> String {
 /// Maps a request Origin to its canonical value in the deployment allowlist.
 #[must_use]
 pub fn allowed_origin(env: &Env, presented: Option<&str>) -> Option<String> {
+    allowed_origin_for(env, presented, OriginScope::PairedFrontends)
+}
+
+/// 按端点能力范围映射可信 Origin。/ Maps a trusted Origin under an endpoint capability scope.
+#[must_use]
+pub fn allowed_origin_for(
+    env: &Env,
+    presented: Option<&str>,
+    scope: OriginScope,
+) -> Option<String> {
+    configured_origin(presented, &login_origin(env), &account_origin(env), scope)
+}
+
+/// 按能力范围在环境配对的前端 Origin 中精确匹配。
+/// Exactly matches an Origin against the environment-paired frontends permitted by the scope.
+///
+/// Keeping the capability matrix in one helper prevents middleware and handlers from drifting.
+fn configured_origin(
+    presented: Option<&str>,
+    login: &str,
+    account: &str,
+    scope: OriginScope,
+) -> Option<String> {
     let presented = presented?;
-    [login_origin(env), account_origin(env)]
-        .into_iter()
-        .find(|allowed| allowed == presented)
+    [
+        Some(login),
+        (scope == OriginScope::PairedFrontends).then_some(account),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|allowed| *allowed == presented)
+    .map(str::to_owned)
 }
 
 pub fn header(headers: &Headers, name: &str) -> Option<String> {
@@ -176,6 +213,71 @@ mod tests {
         assert_ne!(
             "https://login.moesegfault.dev",
             "https://account.moesegfault.dev"
+        );
+    }
+
+    #[test]
+    fn configured_origin_accepts_both_exact_first_party_origins() {
+        let login = "https://login.moesegfault.dev";
+        let account = "https://account.moesegfault.dev";
+
+        assert_eq!(
+            configured_origin(Some(login), login, account, OriginScope::PairedFrontends).as_deref(),
+            Some(login)
+        );
+        assert_eq!(
+            configured_origin(Some(account), login, account, OriginScope::PairedFrontends)
+                .as_deref(),
+            Some(account)
+        );
+    }
+
+    #[test]
+    fn configured_origin_rejects_missing_or_deceptive_origins() {
+        let login = "https://login.moesegfault.dev";
+        let account = "https://account.moesegfault.dev";
+
+        assert_eq!(
+            configured_origin(None, login, account, OriginScope::PairedFrontends),
+            None
+        );
+        assert_eq!(
+            configured_origin(
+                Some("https://account.moesegfault.dev.evil.example"),
+                login,
+                account,
+                OriginScope::PairedFrontends
+            ),
+            None
+        );
+        assert_eq!(
+            configured_origin(
+                Some("https://moesegfault.dev"),
+                login,
+                account,
+                OriginScope::PairedFrontends
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_origin_scope_encodes_the_endpoint_capability_matrix() {
+        let login = "https://login.moesegfault.dev";
+        let account = "https://account.moesegfault.dev";
+
+        assert_eq!(
+            configured_origin(Some(login), login, account, OriginScope::LoginOnly).as_deref(),
+            Some(login)
+        );
+        assert_eq!(
+            configured_origin(Some(account), login, account, OriginScope::LoginOnly),
+            None
+        );
+        assert_eq!(
+            configured_origin(Some(account), login, account, OriginScope::PairedFrontends)
+                .as_deref(),
+            Some(account)
         );
     }
 }

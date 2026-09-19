@@ -71,11 +71,56 @@ grep -Eiq '^vary:.*(^|[[:space:],])Origin([[:space:],]|$)' "$tmp_dir/me.headers"
 
 preflight_status="$(request_status "$tmp_dir/preflight.body" \
   --dump-header "$tmp_dir/preflight.headers" --request OPTIONS \
-  --header "Origin: $ACCOUNT_URL" --header 'Access-Control-Request-Method: GET' \
-  "$IDENTITY_URL/v1/me")"
+  --header "Origin: $ACCOUNT_URL" --header 'Access-Control-Request-Method: PUT' \
+  --header 'Access-Control-Request-Headers: content-type, x-moesegfault-csrf, idempotency-key' \
+  "$IDENTITY_URL/v1/me/password")"
 test "$preflight_status" = "204"
 header_has_line "$tmp_dir/preflight.headers" "access-control-allow-origin: $ACCOUNT_URL"
 grep -Eiq '^access-control-allow-credentials:[[:space:]]*true' "$tmp_dir/preflight.headers"
-grep -Eiq '^access-control-allow-methods:.*(^|[[:space:],])GET([[:space:],]|$)' "$tmp_dir/preflight.headers"
+grep -Eiq '^access-control-allow-methods:.*(^|[[:space:],])PUT([[:space:],]|$)' "$tmp_dir/preflight.headers"
+for allowed_header in content-type x-moesegfault-csrf idempotency-key; do
+  grep -Eiq "^access-control-allow-headers:.*(^|[[:space:],])${allowed_header}([[:space:],]|$)" "$tmp_dir/preflight.headers"
+done
+
+# The idempotency pre-claim boundary must use the same paired-origin policy as CORS and handlers.
+# With a valid Account-origin browser envelope but no session cookie, this command must reach
+# authentication (401), never be rejected as an origin error (403). / 幂等预声明边界必须与 CORS
+# 和 handler 共用成对 Origin 策略；合法 Account Origin 缺少会话时应到达认证层，而不是被 403。
+mutation_status="$(request_status "$tmp_dir/account-mutation.json" \
+  --dump-header "$tmp_dir/account-mutation.headers" --request POST \
+  --header "Origin: $ACCOUNT_URL" --header 'Sec-Fetch-Site: same-site' \
+  --header 'Sec-Fetch-Mode: cors' --header 'Content-Type: application/json' \
+  --header 'X-moeSegFault-CSRF: smoke-test' \
+  --header 'Idempotency-Key: account-origin-smoke-test' --data '{}' \
+  "$IDENTITY_URL/v1/me/contacts/018f0000-0000-7000-8000-000000000000/verification-transactions")"
+test "$mutation_status" = "401"
+jq -e '.status == 401 and .error_code == "authentication_failed"' "$tmp_dir/account-mutation.json" >/dev/null
+header_has_line "$tmp_dir/account-mutation.headers" "access-control-allow-origin: $ACCOUNT_URL"
+
+# Binding revocation has its own bodyless-mutation guard behind the generic idempotency boundary.
+# Exercise that second boundary independently so it cannot drift back to a Login-only policy.
+# Binding 撤销在通用幂等边界之后还有独立的无请求体检查；单独探测该边界，防止再次退化为仅允许 Login。
+binding_status="$(request_status "$tmp_dir/account-binding-delete.json" \
+  --dump-header "$tmp_dir/account-binding-delete.headers" --request DELETE \
+  --header "Origin: $ACCOUNT_URL" --header 'Sec-Fetch-Site: same-site' \
+  --header 'Sec-Fetch-Mode: cors' --header 'X-moeSegFault-CSRF: smoke-test' \
+  --header 'Idempotency-Key: account-binding-origin-smoke' \
+  "$IDENTITY_URL/v1/principals/self/bindings/018f0000-0000-7000-8000-000000000000")"
+test "$binding_status" = "401"
+jq -e '.status == 401 and .error_code == "reauthentication_required"' "$tmp_dir/account-binding-delete.json" >/dev/null
+header_has_line "$tmp_dir/account-binding-delete.headers" "access-control-allow-origin: $ACCOUNT_URL"
+
+# Rejected origins must not receive a fallback Login ACAO from inner idempotency responses.
+# 被拒绝的 Origin 不得从幂等内层错误响应获得兜底的 Login ACAO。
+rejected_origin_status="$(request_status "$tmp_dir/rejected-origin.json" \
+  --dump-header "$tmp_dir/rejected-origin.headers" --request POST \
+  --header 'Origin: https://account.moesegfault.dev.evil.example' \
+  --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: cors' \
+  --header 'Content-Type: application/json' --header 'X-moeSegFault-CSRF: smoke-test' \
+  --header 'Idempotency-Key: rejected-origin-smoke-test' --data '{}' \
+  "$IDENTITY_URL/v1/me/contacts/018f0000-0000-7000-8000-000000000000/verification-transactions")"
+test "$rejected_origin_status" = "403"
+jq -e '.status == 403 and .error_code == "invalid_request"' "$tmp_dir/rejected-origin.json" >/dev/null
+! grep -Eiq '^access-control-allow-origin:' "$tmp_dir/rejected-origin.headers"
 
 printf 'smoke checks passed / 冒烟检查通过: %s, %s, %s\n' "$IDENTITY_URL" "$LOGIN_URL" "$ACCOUNT_URL"

@@ -9,7 +9,8 @@ This document defines first-release runtime configuration names, ownership, and 
 | 变量 / Variable | 生产值 / Production value | 契约 / Contract |
 | --- | --- | --- |
 | `ISSUER` | `https://identity.moesegfault.dev` | 必须与 discovery、JWT `iss` 完全一致。 |
-| `LOGIN_ORIGIN` | `https://login.moesegfault.dev` | CORS、Origin 与 WebAuthn expected origin 的唯一生产值。 |
+| `LOGIN_ORIGIN` | `https://login.moesegfault.dev` | Login SPA 的精确 Origin，也是 WebAuthn expected origin；不得扩大为父域。 |
+| `ACCOUNT_ORIGIN` | `https://account.moesegfault.dev` | Account SPA 的精确 Origin；与 `LOGIN_ORIGIN` 共同构成 Identity 浏览器 CORS 与 mutation Origin 允许列表。 |
 | `WEBAUTHN_RP_ID` | `login.moesegfault.dev` | 不得扩大到 `moesegfault.dev`。 |
 | `ENVIRONMENT` | `production` | 有限枚举；进入日志/Diagnostic 的低基数字段。 |
 | `SESSION_IDLE_SECONDS` | `43200` | 新 Identity Session 12 小时 idle TTL。 |
@@ -30,6 +31,14 @@ This document defines first-release runtime configuration names, ownership, and 
 这些值是“新签发对象”的策略。收紧配置不得回写已有对象的 `expires_at`；紧急处置使用显式撤销。
 
 These values govern newly issued objects. Tightening policy must not rewrite an existing object's original expiry; emergency handling uses explicit revocation.
+
+`LOGIN_ORIGIN` 与 `ACCOUNT_ORIGIN` 必须按环境成对配置。所有通用浏览器边界、中间件、幂等预声明和最终 CORS 响应都必须复用同一精确允许列表；禁止在下游模块再次硬编码“仅 Login”。WebAuthn 的 RP 与 expected origin 仍只使用 `LOGIN_ORIGIN`，不能因为 Account 被允许调用 Identity API 而扩大。
+
+`LOGIN_ORIGIN` and `ACCOUNT_ORIGIN` must be configured as an environment-matched pair. Every
+general browser boundary, middleware, idempotency preclaim, and final CORS response must reuse the
+same exact allowlist; downstream modules must not reintroduce a Login-only check. WebAuthn's RP and
+expected origin remain restricted to `LOGIN_ORIGIN` and must not be broadened merely because
+Account is allowed to call the Identity API.
 
 ## Cloudflare Bindings
 

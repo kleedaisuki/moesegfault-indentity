@@ -178,8 +178,7 @@ where
     let key = match IdempotencyKey::from_request(&request) {
         Ok(key) => key,
         Err(KeyError::Missing) => {
-            return cors_problem(
-                &context.env,
+            return boundary_problem(
                 "invalid_request",
                 "Idempotency-Key is required",
                 400,
@@ -187,8 +186,7 @@ where
             );
         }
         Err(KeyError::Invalid) => {
-            return cors_problem(
-                &context.env,
+            return boundary_problem(
                 "invalid_request",
                 "Invalid Idempotency-Key",
                 400,
@@ -206,8 +204,7 @@ where
     let digest = match digest_request(&request).await {
         Ok(digest) => digest,
         Err(DigestError::TooLarge) => {
-            return cors_problem(
-                &context.env,
+            return boundary_problem(
                 "invalid_request",
                 "Request body is too large",
                 413,
@@ -240,10 +237,9 @@ where
 
     let lease = match gate {
         Gate::Execute(lease) => lease,
-        Gate::Replay(snapshot) => return snapshot.into_response(&env),
+        Gate::Replay(snapshot) => return snapshot.into_response(),
         Gate::Conflict => {
-            return cors_problem(
-                &env,
+            return boundary_problem(
                 "idempotency_conflict",
                 "Idempotency key was used for a different request",
                 409,
@@ -251,8 +247,7 @@ where
             );
         }
         Gate::InProgress => {
-            let response = cors_problem(
-                &env,
+            let response = boundary_problem(
                 "idempotency_in_progress",
                 "The original request is still processing",
                 409,
@@ -262,8 +257,7 @@ where
             return Ok(response);
         }
         Gate::ResultUnavailable => {
-            return cors_problem(
-                &env,
+            return boundary_problem(
                 "idempotency_result_unavailable",
                 "The one-time result cannot be replayed",
                 409,
@@ -313,23 +307,26 @@ async fn validate_preclaim_boundary(
     caller: Caller,
     correlation: &str,
 ) -> worker::Result<Boundary> {
-    if guard::header(request.headers(), "origin").as_deref()
-        != Some(guard::login_origin(&context.env).as_str())
+    // Anonymous ceremonies remain Login-owned; authenticated session commands are available from
+    // both paired first-party frontends. / 匿名 ceremony 仍归 Login；会话命令允许成对前端调用。
+    let origin_scope = match caller {
+        Caller::Browser => guard::OriginScope::LoginOnly,
+        Caller::Session => guard::OriginScope::PairedFrontends,
+    };
+    if guard::allowed_origin_for(
+        &context.env,
+        guard::header(request.headers(), "origin").as_deref(),
+        origin_scope,
+    )
+    .is_none()
     {
-        return cors_problem(
-            &context.env,
-            "invalid_request",
-            "Origin is not allowed",
-            403,
-            correlation,
-        )
-        .map(Boundary::Response);
+        return boundary_problem("invalid_request", "Origin is not allowed", 403, correlation)
+            .map(Boundary::Response);
     }
     if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
         || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
     {
-        return cors_problem(
-            &context.env,
+        return boundary_problem(
             "invalid_request",
             "Invalid browser request context",
             403,
@@ -344,8 +341,7 @@ async fn validate_preclaim_boundary(
             .next()
             .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
         {
-            return cors_problem(
-                &context.env,
+            return boundary_problem(
                 "invalid_request",
                 "JSON content type is required",
                 415,
@@ -355,8 +351,7 @@ async fn validate_preclaim_boundary(
         }
     }
     let Some(_) = guard::header(request.headers(), "x-moesegfault-csrf") else {
-        return cors_problem(
-            &context.env,
+        return boundary_problem(
             "invalid_request",
             "CSRF validation failed",
             403,
@@ -385,8 +380,7 @@ fn validate_session_preclaim(
     if guard::validate_session_csrf(request, &wire, pepper.as_bytes()) {
         return Ok(Boundary::Ready);
     }
-    cors_problem(
-        env,
+    boundary_problem(
         "invalid_request",
         "CSRF validation failed",
         403,
@@ -453,8 +447,7 @@ async fn validate_browser_preclaim(
     if valid {
         return Ok(Boundary::Ready);
     }
-    cors_problem(
-        &context.env,
+    boundary_problem(
         "invalid_request",
         "CSRF validation failed",
         403,
@@ -831,7 +824,7 @@ impl ReplaySnapshot {
         self.retry_after.is_none_or(|seconds| seconds <= 86_400)
     }
 
-    fn into_response(self, env: &Env) -> worker::Result<Response> {
+    fn into_response(self) -> worker::Result<Response> {
         if !self.is_safe() {
             return Err(Error::RustError(
                 "unsafe stored idempotency response metadata".into(),
@@ -854,11 +847,9 @@ impl ReplaySnapshot {
         if let Some(seconds) = self.retry_after {
             headers.set("retry-after", &seconds.to_string())?;
         }
-        if self.cors {
-            headers.set("access-control-allow-origin", &guard::login_origin(env))?;
-            headers.set("access-control-allow-credentials", "true")?;
-            headers.set("vary", "Origin")?;
-        }
+        // `cors` remains deserializable for records created by earlier deployments, but replay
+        // never authors CORS headers. The fetch finalizer owns that policy for the actual request.
+        // 为兼容旧记录继续读取 `cors`，但重放绝不写 CORS；实际请求由 fetch 收尾层统一处理。
         if self.clear_session_cookie {
             headers.set("set-cookie", guard::clear_session_cookie())?;
         }
@@ -911,22 +902,16 @@ fn required_secret(env: &Env, name: &str) -> worker::Result<String> {
         .map_err(|_| Error::BindingError(format!("missing required secret binding {name}")))
 }
 
-fn cors_problem(
-    env: &Env,
+/// 构造无 CORS 策略的幂等边界错误；fetch 收尾层根据实际请求 Origin 添加响应头。
+/// Builds an idempotency-boundary problem without CORS policy; the fetch finalizer adds headers
+/// from the actual request Origin.
+fn boundary_problem(
     code: &'static str,
     title: &'static str,
     status: u16,
     correlation: &str,
 ) -> worker::Result<Response> {
-    let response = problem::response(code, title, status, correlation)?;
-    response
-        .headers()
-        .set("access-control-allow-origin", &guard::login_origin(env))?;
-    response
-        .headers()
-        .set("access-control-allow-credentials", "true")?;
-    response.headers().set("vary", "Origin")?;
-    Ok(response)
+    problem::response(code, title, status, correlation)
 }
 
 fn text(value: &str) -> JsValue {
@@ -1181,6 +1166,42 @@ mod tests {
         let stored = serde_json::to_string(&snapshot).unwrap();
         assert!(stored.contains("\"clear_session_cookie\":true"));
         assert!(!stored.contains("__Host-identity_session"));
+    }
+
+    // Response headers use web-sys and therefore this contract executes in the Workers test build.
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn inner_idempotency_responses_never_author_cors_headers() {
+        let replay = ReplaySnapshot {
+            status: 204,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            cors: true,
+            retry_after: None,
+            clear_session_cookie: false,
+        }
+        .into_response()
+        .unwrap();
+        let problem = boundary_problem(
+            "invalid_request",
+            "Origin is not allowed",
+            403,
+            "018f0000-0000-7000-8000-000000000000",
+        )
+        .unwrap();
+
+        for response in [&replay, &problem] {
+            assert_eq!(
+                guard::header(response.headers(), "access-control-allow-origin"),
+                None
+            );
+            assert_eq!(
+                guard::header(response.headers(), "access-control-allow-credentials"),
+                None
+            );
+            assert_eq!(guard::header(response.headers(), "vary"), None);
+        }
     }
 
     #[test]

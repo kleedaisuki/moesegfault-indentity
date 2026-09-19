@@ -18,6 +18,7 @@ use crate::{ceremony_state, guard, oauth_repository, problem, repository};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
+const CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
 #[derive(Serialize)]
 struct Health<'a> {
@@ -141,10 +142,7 @@ pub async fn preflight(request: Request, context: RouteContext<()>) -> Result<Re
     let headers = Headers::new();
     headers.set("access-control-allow-origin", &expected)?;
     headers.set("access-control-allow-credentials", "true")?;
-    headers.set(
-        "access-control-allow-methods",
-        "GET, POST, PATCH, DELETE, OPTIONS",
-    )?;
+    headers.set("access-control-allow-methods", CORS_ALLOW_METHODS)?;
     headers.set(
         "access-control-allow-headers",
         "content-type, x-moesegfault-csrf, idempotency-key",
@@ -1906,6 +1904,15 @@ mod tests {
     #[test]
     fn discovery_lifetimes_are_server_owned() {
         assert_eq!(MAX_JSON_BYTES, 65_536);
+    }
+
+    #[test]
+    fn cors_preflight_covers_every_routed_http_mutation_method() {
+        let methods: Vec<_> = CORS_ALLOW_METHODS.split(", ").collect();
+        assert!(methods.contains(&"POST"));
+        assert!(methods.contains(&"PUT"));
+        assert!(methods.contains(&"PATCH"));
+        assert!(methods.contains(&"DELETE"));
     }
 
     #[test]

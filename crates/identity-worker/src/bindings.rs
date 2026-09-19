@@ -1317,9 +1317,7 @@ fn validate_bodyless_mutation(
     request: &Request,
     env: &Env,
 ) -> std::result::Result<(), guard::GuardError> {
-    if guard::header(request.headers(), "origin").as_deref()
-        != Some(guard::login_origin(env).as_str())
-    {
+    if guard::allowed_origin(env, guard::header(request.headers(), "origin").as_deref()).is_none() {
         return Err(guard::GuardError::Origin);
     }
     if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
