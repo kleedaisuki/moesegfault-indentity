@@ -21,6 +21,15 @@ describe("display localization", () => {
     }
   });
 
+  it("localizes avatar processing, preview, and failure states", () => {
+    for (const locale of ["zh-CN", "en", "ja"] as const) {
+      expect(translate(locale, "avatarProcessing")).toBeTruthy();
+      expect(translate(locale, "avatarReady")).toBeTruthy();
+      expect(translate(locale, "avatarProcessingFailed")).toBeTruthy();
+      expect(translate(locale, "avatarPreviewAlt")).toBeTruthy();
+    }
+  });
+
   it("accepts only supported persisted preferences", () => {
     const storage = { getItem: (key: string) => key.endsWith("locale") ? "xx" : "neon" };
     expect(readPreferences(storage, "ja-JP")).toEqual({ locale: "ja", theme: "system" });

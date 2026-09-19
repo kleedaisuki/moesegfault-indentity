@@ -114,9 +114,10 @@ describe("IdentityApiClient", () => {
   });
 
   it("uploads an optional avatar as multipart after registration", async () => {
-    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ principal_id: "p1" }), { headers: { "content-type": "application/json" } }));
+    const uploadedAvatar = { avatar_id: "a1", url: "https://media.example/avatar.webp", media_type: "image/webp", width: 900, height: 900, updated_at: "2026-09-19T00:00:00Z" } as const;
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify(uploadedAvatar), { headers: { "content-type": "application/json" } }));
     const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
-    await client.uploadAvatar(new File(["image"], "klee.png", { type: "image/png" }), "session-csrf");
+    const result = await client.uploadAvatar(new File(["image"], "klee.webp", { type: "image/webp" }), "session-csrf");
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(String(url)).toBe("https://identity.moesegfault.dev/v1/me/avatar");
     expect(init?.body).toBeInstanceOf(FormData);
@@ -124,6 +125,7 @@ describe("IdentityApiClient", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("content-type")).toBeNull();
     expect(headers.get("x-moesegfault-csrf")).toBe("session-csrf");
+    expect(result).toEqual(uploadedAvatar);
   });
 
   it("starts and completes registration email verification with explicit mutation controls", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { IdentityApiClient } from "./api/client";
-import { postAuthenticationDestination, reauthenticateAndStartEnrollment, registrationEmailIdentifier } from "./pages";
+import { postAuthenticationDestination, reauthenticateAndStartEnrollment, registrationEmailIdentifier, uploadOptionalAvatar } from "./pages";
 import type { Account } from "./api/types";
 
 describe("ordinary login return navigation", () => {
@@ -21,6 +21,25 @@ describe("registration email selection", () => {
       { ...base, identifier_id: "phone", kind: "mobile", value: "+8613800000000", is_primary: true },
     ] } as Account;
     expect(registrationEmailIdentifier(account)).toMatchObject({ identifier_id: "new", value: "klee@example.com" });
+  });
+});
+
+describe("optional registration avatar", () => {
+  it("uploads the processed WebP and contains a secondary upload failure", async () => {
+    const avatar = new File(["webp"], "klee.webp", { type: "image/webp" });
+    const signal = new AbortController().signal;
+    const uploadAvatar = vi.fn(async () => { throw new Error("media unavailable"); });
+    const api = { uploadAvatar } as unknown as IdentityApiClient;
+
+    await expect(uploadOptionalAvatar(api, avatar, "session-csrf", signal)).resolves.toBe(false);
+    expect(uploadAvatar).toHaveBeenCalledWith(avatar, "session-csrf", signal);
+  });
+
+  it("preserves optional-avatar semantics when none was selected", async () => {
+    const uploadAvatar = vi.fn();
+    const api = { uploadAvatar } as unknown as IdentityApiClient;
+    await expect(uploadOptionalAvatar(api, undefined, "session-csrf", new AbortController().signal)).resolves.toBe(true);
+    expect(uploadAvatar).not.toHaveBeenCalled();
   });
 });
 

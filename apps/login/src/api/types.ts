@@ -222,6 +222,16 @@ export interface Account {
   updated_at: string;
 }
 
+/** 上传后的头像媒体投影，与 OpenAPI Avatar schema 一致。Uploaded avatar media projection matching the OpenAPI Avatar schema. */
+export interface Avatar {
+  avatar_id: string;
+  url: string;
+  media_type: "image/avif" | "image/jpeg" | "image/png" | "image/webp";
+  width: number;
+  height: number;
+  updated_at: string;
+}
+
 /** 账号中单个 Passkey 的管理投影。Management projection for one account passkey. */
 export interface Authenticator {
   authenticator_id: string;

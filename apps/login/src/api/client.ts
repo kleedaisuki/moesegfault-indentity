@@ -13,6 +13,7 @@ import type {
   IdentityBinding,
   IdentitySession,
   Account,
+  Avatar,
   ProblemDetails,
   PasswordAuthenticationInput,
   PasswordRegistrationInput,
@@ -110,14 +111,14 @@ export class IdentityApiClient {
   }
 
   /** 注册后把可选头像上传到独立媒体边界。Uploads an optional avatar to the dedicated media boundary after registration. */
-  public async uploadAvatar(file: File, csrfToken: string, signal?: AbortSignal): Promise<Account> {
+  public async uploadAvatar(file: File, csrfToken: string, signal?: AbortSignal): Promise<Avatar> {
     const body = new FormData(); body.set("avatar", file);
     const response = await this.#fetch(new URL("/v1/me/avatar", this.#origin), {
       method: "POST", headers: { Accept: "application/json", "x-moesegfault-csrf": csrfToken, "Idempotency-Key": createIdempotencyKey() },
       body, credentials: "include", cache: "no-store", redirect: "error", signal,
     });
     if (!response.ok) throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
-    return await response.json() as Account;
+    return await response.json() as Avatar;
   }
 
   /** 列出当前账号联系方式，用于恢复缺失的注册响应投影。Lists current contacts to recover from a missing registration projection. */

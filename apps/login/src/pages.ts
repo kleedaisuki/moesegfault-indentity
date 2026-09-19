@@ -75,12 +75,17 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
   const message = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
   const passwordButton = el("button", { className: "button button--primary", attrs: { type: "submit", value: "password", name: "method" } }, iconLabel("lock", t("registerPassword")));
   const passkeyButton = el("button", { className: "button button--secondary", attrs: { type: "submit", value: "passkey", name: "method", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("registerPasskey")));
+  const avatarPicker = avatarFilePicker({
+    label: t("avatar"), choose: t("chooseAvatar"), empty: t("noAvatarSelected"),
+    processing: t("avatarProcessing"), ready: t("avatarReady"), failed: t("avatarProcessingFailed"),
+    previewAlt: t("avatarPreviewAlt"),
+  }, { signal });
   const callingCode = el("select", { attrs: { name: "calling_code", "aria-label": t("countryCode") } },
     ...[["+86", "🇨🇳 +86"], ["+81", "🇯🇵 +81"], ["+1", "🇺🇸/🇨🇦 +1"], ["+44", "🇬🇧 +44"], ["+65", "🇸🇬 +65"], ["+852", "🇭🇰 +852"]].map(([value, label]) => el("option", { attrs: { value } }, label)));
   const form = el("form", { className: "moe-glass auth-card register-form" },
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
     field(t("email"), "email", { required: true, autocomplete: "email", type: "email", placeholder: "klee@example.com", icon: "mail" }),
-    avatarFilePicker({ label: t("avatar"), choose: t("chooseAvatar"), empty: t("noAvatarSelected") }), el("p", { className: "hint" }, t("addAvatar")),
+    avatarPicker, el("p", { className: "hint" }, t("addAvatar")),
     el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: t("statusPlaceholder"), icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
     field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
     el("label", { className: "field" }, el("span", { className: "field__label" }, t("mobile")), el("span", { className: "phone-field" }, callingCode, el("input", { attrs: { name: "mobile", type: "tel", autocomplete: "tel-national", inputmode: "tel", placeholder: "138 0000 0000" } }))), el("p", { className: "hint" }, t("phoneHint")),
@@ -92,11 +97,14 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     if (method === "password" && [...password].length < 15) { replace(message, statePanel("error", t("registerFailed"), t("passwordHint"))); return; }
     if (method === "password" && password !== String(data.get("password_confirm") ?? "")) { replace(message, statePanel("error", t("registerFailed"), t("mismatch"))); return; }
     setButtonBusy(submitter ?? passwordButton, true, method === "passkey" ? t("waitingPasskey") : t("registering"));
-    const mobile = mobileFromForm(data); const avatar = data.get("avatar") instanceof File && (data.get("avatar") as File).size > 0 ? data.get("avatar") as File : undefined;
+    passwordButton.disabled = true; passkeyButton.disabled = true;
+    avatarPicker.setDisabled(true);
+    const avatar = await avatarPicker.processedFile();
+    const mobile = mobileFromForm(data);
     const profile = { ...(optionalString(data, "status_message") ? { status_message: optionalString(data, "status_message") } : {}), ...(optionalString(data, "favorite_character") ? { favorite_character: optionalString(data, "favorite_character") } : {}), ...(optionalString(data, "interests") ? { interests: optionalString(data, "interests")?.split(",").map((value) => value.trim()).filter(Boolean) } : {}) };
     const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: String(data.get("email") ?? "").trim(), locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
     try {
-      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishAuthentication(main, result, t)); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
+      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishAuthentication(main, result, t)); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); avatarPicker.dispose(); if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
       const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel(t) };
       const transaction = await api.startRegistration(input, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(transaction.public_key, signal);
       const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
@@ -104,8 +112,9 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
       rememberCsrf(result.csrf_token);
       await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishRegistration(main, result, t), result.recovery_codes, result.next_uri);
       const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
-      if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
-    } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); }
+      avatarPicker.dispose();
+      if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
+    } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); passwordButton.disabled = false; passkeyButton.disabled = !isWebAuthnAvailable(); avatarPicker.setDisabled(false); }
   });
   replace(main, pageHeading("CREATE_PRINCIPAL", t("newTitle"), t("newIntro")), form, el("p", { className: "switcher" }, t("haveAccount"), " ", el("a", { attrs: { href: "/login" } }, t("login"))));
 }
@@ -290,7 +299,8 @@ function divider(label: string): HTMLElement { return el("div", { className: "di
 function optionalString(data: FormData, name: string): string | undefined { const value = String(data.get(name) ?? "").trim(); return value || undefined; }
 function mobileFromForm(data: FormData): MobileNumberInput | undefined { const national = optionalString(data, "mobile")?.replace(/[\s()-]/g, ""); return national ? { country_calling_code: String(data.get("calling_code") ?? "+86"), national_number: national } : undefined; }
 function browserPasskeyLabel(t: (key: MessageKey) => string): string { return /Android|iPhone|iPad/i.test(navigator.userAgent) ? t("mobileDevice") : t("desktopDevice"); }
-async function uploadOptionalAvatar(api: IdentityApiClient, avatar: File | undefined, csrfToken: string, signal: AbortSignal): Promise<boolean> { if (!avatar) return true; try { await api.uploadAvatar(avatar, csrfToken, signal); return true; } catch { return false; } }
+/** 次要头像上传绝不把已创建账号降格成注册失败。Secondary avatar upload never turns a created account into a failed registration. */
+export async function uploadOptionalAvatar(api: IdentityApiClient, avatar: File | undefined, csrfToken: string, signal: AbortSignal): Promise<boolean> { if (!avatar) return true; try { await api.uploadAvatar(avatar, csrfToken, signal); return true; } catch { return false; } }
 function rememberCsrf(token: string): void { sessionCsrfToken = token; }
 async function requireBrowserCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> { if (!sessionCsrfToken) rememberCsrf((await api.getBrowserContext(signal)).csrf_token); return sessionCsrfToken as string; }
 function navigateToHttpUrl(value: string): void { const url = new URL(value, location.href); if (url.protocol !== "https:" && url.protocol !== "http:") throw new ApiError(0, { type: "urn:moesegfault:problem:invalid_navigation", title: "Invalid navigation", status: 0 }); location.assign(url.href); }
