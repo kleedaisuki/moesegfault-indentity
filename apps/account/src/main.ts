@@ -1,6 +1,6 @@
 import "./styles.css";
 import { AccountApiClient, ApiError } from "./api/client";
-import { accountLoginUrl, resolveIdentityOrigin, resolveLoginOrigin } from "./environment";
+import { accountLoginUrl, accountRegistrationUrl, resolveIdentityOrigin, resolveLoginOrigin } from "./environment";
 import { normalizeLocale, translator } from "./i18n";
 import { applyTheme, isInAppBrowser, readPreferences, safeStorage, writePreference, type Theme } from "./preferences";
 import { renderPage } from "./pages";
@@ -70,7 +70,7 @@ function becomeAnonymous(): void {
 function renderAnonymous(): void {
   const route = resolveRoute(location.pathname);
   document.title = `${t("landingPageTitle")} · moeSegFault`;
-  replace(shell.main, createAnonymousLanding(t, loginUrl(route)));
+  replace(shell.main, createAnonymousLanding(t, { signInHref: loginUrl(route), registerHref: accountRegistrationUrl(location) }));
   shell.main.focus({ preventScroll: true });
 }
 

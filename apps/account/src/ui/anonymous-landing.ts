@@ -3,6 +3,9 @@ import { el, icon } from "./dom";
 
 type Translate = (key: MessageKey) => string;
 
+/** 匿名页的已验证导航目标。Validated navigation targets for the anonymous landing page. */
+export interface AnonymousLandingLinks { signInHref: string; registerHref: string; }
+
 const features: ReadonlyArray<[MessageKey, MessageKey, string]> = [
   ["landingProfileTitle", "landingProfileBody", "user"],
   ["landingSecurityTitle", "landingSecurityBody", "shield"],
@@ -15,10 +18,13 @@ const features: ReadonlyArray<[MessageKey, MessageKey, string]> = [
  *
  * @example
  * ```ts
- * main.replaceChildren(createAnonymousLanding(t, "https://login.example/login?return_uri=..."));
+ * main.replaceChildren(createAnonymousLanding(t, {
+ *   signInHref: "https://login.example/login?return_uri=...",
+ *   registerHref: "https://login.example/register",
+ * }));
  * ```
  */
-export function createAnonymousLanding(t: Translate, signInHref: string): HTMLElement {
+export function createAnonymousLanding(t: Translate, links: AnonymousLandingLinks): HTMLElement {
   const featureList = el("ul", { className: "landing-features" }, ...features.map(([title, body, iconName]) =>
     el("li", { className: "landing-feature moe-glass" },
       el("span", { className: "landing-feature-icon" }, icon(iconName)),
@@ -33,9 +39,10 @@ export function createAnonymousLanding(t: Translate, signInHref: string): HTMLEl
         el("h1", { attrs: { id: "landing-title" } }, t("landingTitle")),
         el("p", { className: "landing-lede" }, t("landingBody")),
         el("div", { className: "landing-actions" },
-          el("a", { className: "button primary landing-login", attrs: { href: signInHref } }, icon("key"), t("landingSignIn")),
-          el("span", { className: "landing-reassurance" }, icon("shield"), t("landingReassurance")),
+          el("a", { className: "button primary landing-login", attrs: { href: links.signInHref } }, icon("key"), t("landingSignIn")),
+          el("a", { className: "button quiet landing-register", attrs: { href: links.registerHref } }, t("landingCreateAccount")),
         ),
+        el("span", { className: "landing-reassurance" }, icon("shield"), t("landingReassurance")),
       ),
       el("div", { className: "landing-orbit moe-glass", attrs: { "aria-hidden": "true" } },
         el("span", { className: "landing-orbit-logo" }, el("img", { attrs: { src: "/icons/logo.svg", alt: "" } })),

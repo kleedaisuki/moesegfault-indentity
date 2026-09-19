@@ -29,3 +29,8 @@ export function accountLoginUrl(location: Pick<Location, "hostname">, route: str
   url.searchParams.set("return_uri", `${resolveAccountOrigin(location)}${route}`);
   return url.href;
 }
+
+/** 生成同环境 Login 注册页地址。Builds the registration URL on the paired Login origin. */
+export function accountRegistrationUrl(location: Pick<Location, "hostname">): string {
+  return new URL("/register", resolveLoginOrigin(location)).href;
+}
