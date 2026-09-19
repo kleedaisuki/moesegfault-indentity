@@ -9,6 +9,8 @@ The login origin only authenticates and creates accounts. Password and Passkey a
 - `POST /v1/password/registrations` 创建密码账号与初始会话；
 - `POST /v1/password/authentications` 以邮箱或用户名登录；
 - existing WebAuthn transaction endpoints remain the optional Passkey flow;
+- both registration methods continue in the same wizard with primary-email verification before
+  showing the final Account/OAuth destination;
 - OAuth authorization transaction handles are held in memory and forwarded to every login method;
 - UI language (`zh-CN`, `en`, `ja`) and theme are the only values persisted locally. Credentials and CSRF material are never persisted.
 
@@ -23,9 +25,9 @@ Passkey enrollment keeps Passkey step-up as the primary recent-authentication pa
 
 The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
 
-注册页的头像选择器保留了原生 `input[type=file]` 和 `avatar` 表单字段，但只在视觉上隐藏原生控件。可见的选择按钮会映射键盘焦点，状态区以礼貌播报（polite live region）呈现本地化空状态或安全的纯文本文件名。支持格式同时声明 MIME 类型和 `.avif`、`.png`、`.jpg`、`.jpeg`、`.webp` 扩展名。语言选择器直接消费 `@moesegfault/frontend-shared` 的完整自称与语言标签。
+密码与 Passkey 注册都会在同一向导内自动发送并确认 8 位邮箱验证码，完成前不展示最终 Account/OAuth 跳转。Passkey 的一次性恢复码会在发码、重发和错误状态中持续可见；同一验证码的网络重试复用幂等键。注册页头像选择器保留原生文件控件语义，并预览实际待上传产物：应用 EXIF 方向、中心方裁、不放大、最长边 1024 px，优先以质量 `0.86` 编码 WebP；浏览器不支持 WebP Canvas 编码时保留规范要求的 PNG 回退。替换、离页和上传完成都会释放对象 URL。
 
-The registration avatar picker retains the native `input[type=file]` and `avatar` form field while hiding the control visually only. Its visible trigger projects keyboard focus, and a polite live region shows either localized empty copy or a safely rendered plain-text filename. Accepted formats declare both MIME types and `.avif`, `.png`, `.jpg`, `.jpeg`, and `.webp` extensions. The locale selector consumes full autonyms and language tags directly from `@moesegfault/frontend-shared`.
+Password and Passkey registrations both send and confirm an eight-digit email code inside the same wizard before exposing the final Account/OAuth destination. Passkey recovery codes remain visible while delivery is retried or errors are shown, and network retries for the same code reuse one idempotency key. The avatar picker preserves native file-control semantics and previews the exact prepared upload: EXIF-oriented, center-cropped, never upscaled, at most 1024 px, and preferably WebP at quality `0.86`, with the standards-defined PNG fallback when Canvas cannot encode WebP. Replacement, navigation, and completed upload release every object URL.
 
 ## 内联 Passkey 再认证
 

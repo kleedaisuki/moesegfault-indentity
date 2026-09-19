@@ -174,9 +174,9 @@ File selected
   -> validate decoded dimensions
   -> center-crop the oriented bitmap to a square
   -> draw once to min(squareSide, 1024) x min(squareSide, 1024)
-  -> encode WebP quality 0.88
+  -> request WebP quality 0.88; retain the verified PNG fallback when unsupported
   -> verify output MIME and <=10 MiB
-  -> wrap Blob as a File with a .webp name
+  -> wrap Blob as a File whose extension and type match the actual encoder result
   -> preview exactly that File via object URL
   -> submit exactly that File
 ```
@@ -187,7 +187,7 @@ File selected
 | --- | --- | --- |
 | Geometry | center crop, square | Matches the current server invariant and all current `object-fit: cover` displays. Add an interactive crop only if real feedback shows subject truncation; it is not needed to deliver a correct preview. |
 | Maximum side | 1024 px, never upscale | Far above today's 96 px Account rendering (including high-density screens), leaves room for future profile use, yet sharply bounds decode output and upload bytes. Reduce to 512 only after viewing the real avatar corpus; increase only for a concrete larger display. |
-| Format | WebP | Good browser decoding/encoding and alpha support; accepted by the current API. Verify the actual returned MIME because unsupported encoders fall back to PNG. |
+| Format | WebP preferred; PNG fallback | Good browser decoding and alpha support; both are accepted by the current API. Verify the actual returned MIME because unsupported encoders fall back to PNG. |
 | Quality | 0.88 | Conservative starting point for faces, anime art, and gradients. Browser encoder quality is not standardized as a perceptual target. Compare thumbnails and bytes before changing it. |
 | Metadata / orientation | apply EXIF orientation while decoding; Canvas output carries the rendered pixels rather than the original EXIF orientation | Prevents sideways previews and makes preview bytes agree with uploaded bytes. Server-side normalization remains the long-term authoritative place for deterministic metadata/color policy. |
 | Failure fallback | keep the selected file and show a localized, actionable processing error; do not silently upload a differently cropped original | A silent fallback recreates the preview/upload mismatch and, for non-square files, merely defers failure to the Worker. |
@@ -210,7 +210,8 @@ and square dimensions.
 preview-consistency feature, not a replacement for server validation. ADR-0003's longer-term
 server decode/re-encode/metadata-strip/variant pipeline remains the correct production endpoint if
 multiple clients or deterministic output become important. Do not add heavyweight client codecs
-until native WebP output is shown to fail the supported-browser matrix.
+solely to avoid the standards-defined PNG fallback unless real-avatar measurements show its size
+or visual behavior is unacceptable.
 
 ## 4. Focused acceptance checks
 
@@ -233,7 +234,7 @@ until native WebP output is shown to fail the supported-browser matrix.
 - Selecting a rotated camera JPEG produces an upright square preview and uploads the same pixels.
 - Portrait and landscape images use the documented centered crop; small squares are not upscaled.
 - Transparent PNG remains visually correct after WebP encoding.
-- The resulting file is WebP, square, at most 1024 px per side, and below the API's 10 MiB limit.
+- The resulting file is WebP or the verified PNG fallback, square, at most 1024 px per side, and below the API's 10 MiB limit.
 - Selecting a second file revokes the first preview URL; teardown revokes the last URL and decoded
   `ImageBitmap` resources are closed.
 - Decode/encode failure retains the prior valid selection/preview and produces localized status

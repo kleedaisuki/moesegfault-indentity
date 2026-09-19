@@ -951,8 +951,9 @@ paths:
       description: |
         Accepts a cropped square image. The service validates the encoded media type, byte size,
         dimensions, and square shape before publishing the immutable bytes. First-party browser
-        clients center-crop, resize, and encode WebP before upload; callers must not treat this
-        endpoint as a server-side image transcoder.
+        clients center-crop and resize, prefer WebP, and retain the standards-defined PNG fallback
+        when WebP canvas encoding is unavailable. Callers must not treat this endpoint as a
+        server-side image transcoder.
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
