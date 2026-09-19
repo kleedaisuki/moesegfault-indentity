@@ -853,8 +853,10 @@ paths:
         Creates the principal, verified username, unverified contacts, password credential,
         and browser session atomically. In invite-only mode `registration_capability`
         is consumed only when the entire operation succeeds. Email is required for account
-        recovery; mobile is optional. Avatar upload and Passkey enrollment remain optional
-        next steps in account settings.
+        recovery; mobile is optional. The first-party registration client immediately continues
+        with the primary-email verification endpoints before presenting the final account
+        destination. Account creation and email delivery remain separate recoverable operations.
+        Avatar upload and Passkey enrollment remain optional next steps in account settings.
       security: [{browser_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
@@ -946,7 +948,11 @@ paths:
       tags: [account]
       operationId: uploadMyAvatar
       summary: Replace the current avatar
-      description: Accepts a cropped square image. The service validates and re-encodes it before publication; clients must not assume the uploaded encoding is retained.
+      description: |
+        Accepts a cropped square image. The service validates the encoded media type, byte size,
+        dimensions, and square shape before publishing the immutable bytes. First-party browser
+        clients center-crop, resize, and encode WebP before upload; callers must not treat this
+        endpoint as a server-side image transcoder.
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
@@ -964,7 +970,7 @@ paths:
                 avatar: {type: string, format: binary, description: 'AVIF, JPEG, PNG, or WebP; at most 10 MiB.'}
       responses:
         '201':
-          description: Processed current avatar.
+          description: Stored current avatar metadata.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Avatar'}
