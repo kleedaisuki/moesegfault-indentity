@@ -21,13 +21,31 @@ mod webcrypto;
 
 use worker::*;
 
+const INTERNAL_ERROR_CODE: &str = "internal_error";
+const INTERNAL_ERROR_TITLE: &str = "Internal server error";
+
 /// Worker fetch 入口；每个请求只从绑定解析状态，不保存全局可变数据。
 /// Worker fetch entry point; request state comes from bindings, never mutable globals.
 #[event(fetch)]
 pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Response> {
-    let request_origin = request.headers().get("origin")?;
-    let credentialed_cors = guard::allowed_origin(&env, request_origin.as_deref()).is_some();
+    let request_origin = guard::header(request.headers(), "origin");
+    let cors_origin = guard::allowed_origin(&env, request_origin.as_deref());
+    let method = request.method().to_string();
+    let path = request
+        .url()
+        .map_or_else(|_| "<invalid-url>".to_owned(), |url| url.path().to_owned());
 
+    let response = match route_request(request, env).await {
+        Ok(response) => response,
+        Err(error) => route_error_response(&error, &method, &path)?,
+    };
+
+    finalize_response(response, cors_origin.as_deref())
+}
+
+/// 将请求交给应用路由；所有路由错误由外层 fetch 边界统一恢复。
+/// Dispatches into application routes; the outer fetch boundary recovers every route error.
+async fn route_request(request: Request, env: Env) -> Result<Response> {
     macro_rules! idempotent {
         ($handler:path, $operation:ident, $caller:ident, $policy:ident) => {
             |request, context| async move {
@@ -44,7 +62,7 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         };
     }
 
-    let response = Router::new()
+    Router::new()
         .get_async("/healthz", api::health)
         .get_async("/.well-known/openid-configuration", oauth::discovery)
         .get_async("/.well-known/jwks.json", oauth::jwks)
@@ -310,25 +328,58 @@ pub async fn fetch(request: Request, env: Env, _context: Context) -> Result<Resp
         .get_async("/v1/oidc/logout-requests", oauth::logout_get)
         .post_async("/v1/oidc/logout-requests", oauth::logout_post)
         .run(request, env)
-        .await?;
+        .await
+}
 
-    // CORS belongs at the response boundary, not in success-only helpers. This guarantees
-    // that the trusted Login SPA can read Problem Details and correlation IDs as well.
-    // CORS 属于统一响应边界而不是仅成功 helper；这样可信 Login SPA 也能读取错误详情与关联 ID。
-    if credentialed_cors {
+/// 将内部错误映射为可关联、但不泄漏诊断信息的 RFC 9457 响应。
+/// Maps an internal error to a correlatable RFC 9457 response without exposing diagnostics.
+fn route_error_response(error: &Error, method: &str, path: &str) -> Result<Response> {
+    let correlation =
+        identity_domain::TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let diagnostic = serde_json::json!({
+        "event": "identity_route_failed",
+        "correlation_id": &correlation,
+        "method": method,
+        "path": path,
+        "error": format!("{error:?}"),
+    });
+    console_error!("{diagnostic}");
+    problem::response(INTERNAL_ERROR_CODE, INTERNAL_ERROR_TITLE, 500, &correlation)
+}
+
+/// 在唯一响应边界添加可信 Origin 的 credentialed CORS，并保留已有 Vary 维度。
+/// Adds credentialed CORS for a trusted Origin at the sole response boundary while preserving Vary.
+fn finalize_response(response: Response, cors_origin: Option<&str>) -> Result<Response> {
+    if let Some(cors_origin) = cors_origin {
         let headers = response.headers();
-        headers.set(
-            "access-control-allow-origin",
-            request_origin.as_deref().unwrap_or_default(),
-        )?;
+        headers.set("access-control-allow-origin", cors_origin)?;
         headers.set("access-control-allow-credentials", "true")?;
         headers.set(
             "access-control-expose-headers",
             "x-moesegfault-correlation-id",
         )?;
-        headers.set("vary", "Origin")?;
+        let vary = vary_with_origin(guard::header(headers, "vary").as_deref());
+        headers.set("vary", &vary)?;
     }
     Ok(response)
+}
+
+/// 合并 Vary: Origin，避免覆盖缓存层已声明的其他变体键。
+/// Merges Vary: Origin without overwriting other cache-variant keys.
+fn vary_with_origin(existing: Option<&str>) -> String {
+    let mut fields = existing
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .collect::<Vec<_>>();
+    if !fields
+        .iter()
+        .any(|field| *field == "*" || field.eq_ignore_ascii_case("origin"))
+    {
+        fields.push("Origin");
+    }
+    fields.join(", ")
 }
 
 /// 定时归档不可变安全审计；失败留在 outbox，绝不阻塞登录。
@@ -349,5 +400,43 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleConte
             }
         }
         Err(error) => console_error!("idempotency_expiry_purge_failed error={error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vary_origin_preserves_existing_cache_dimensions_without_duplicates() {
+        assert_eq!(vary_with_origin(None), "Origin");
+        assert_eq!(
+            vary_with_origin(Some("Accept-Encoding")),
+            "Accept-Encoding, Origin"
+        );
+        assert_eq!(
+            vary_with_origin(Some("Accept-Encoding, origin")),
+            "Accept-Encoding, origin"
+        );
+        assert_eq!(vary_with_origin(Some("*")), "*");
+    }
+
+    #[test]
+    fn internal_error_contract_is_generic_and_rfc_9457_shaped() {
+        let correlation = "018f0000-0000-7000-8000-000000000000";
+        let body = problem::Problem {
+            type_uri: format!("https://identity.moesegfault.dev/problems/{INTERNAL_ERROR_CODE}"),
+            title: INTERNAL_ERROR_TITLE,
+            status: 500,
+            error_code: INTERNAL_ERROR_CODE,
+            correlation_id: correlation,
+        };
+        let encoded = serde_json::to_value(body).expect("problem details must serialize");
+
+        assert_eq!(encoded["status"], 500);
+        assert_eq!(encoded["error_code"], INTERNAL_ERROR_CODE);
+        assert_eq!(encoded["correlation_id"], correlation);
+        assert!(encoded.get("detail").is_none());
+        assert!(encoded.get("error").is_none());
     }
 }
