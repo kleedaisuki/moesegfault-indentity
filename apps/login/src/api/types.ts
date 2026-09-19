@@ -177,11 +177,33 @@ export interface RecoveryResult {
   csrf_expires_at: string;
 }
 
-/** Username identifier 的稳定管理投影。Stable management projection of a username identifier. */
+/** 账号标识符的稳定投影；联系方式保留带外验证状态。Stable identifier projection, including out-of-band contact verification state. */
 export interface Identifier {
   identifier_id: string;
-  kind: "username";
+  kind: "username" | "email" | "mobile";
   value: string;
+  is_primary: boolean;
+  verification_state: "unverified" | "pending" | "verified";
+  verified_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 一次短期邮箱验证事务。One short-lived email verification transaction. */
+export interface ContactVerificationTransaction {
+  transaction_id: string;
+  expires_at: string;
+  delivery_hint: string;
+}
+
+/** 私有账号 API 中的可验证联系方式。Verifiable contact returned by the private account API. */
+export interface Contact {
+  contact_id: string;
+  kind: "email" | "mobile";
+  value: string;
+  is_primary: boolean;
+  verification_state: "unverified" | "pending" | "verified";
+  verified_at?: string | null;
   created_at: string;
   updated_at: string;
 }

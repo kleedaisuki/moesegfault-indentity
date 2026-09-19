@@ -1,5 +1,5 @@
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
-import type { MobileNumberInput, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
+import type { Account, Contact, ContactVerificationTransaction, Identifier, MobileNumberInput, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
 import { currentTransaction } from "./transaction";
 import type { AppRoute } from "./router";
 import { createPasskey, getPasskey, isWebAuthnAvailable } from "./webauthn/ceremony";
@@ -96,14 +96,14 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     const profile = { ...(optionalString(data, "status_message") ? { status_message: optionalString(data, "status_message") } : {}), ...(optionalString(data, "favorite_character") ? { favorite_character: optionalString(data, "favorite_character") } : {}), ...(optionalString(data, "interests") ? { interests: optionalString(data, "interests")?.split(",").map((value) => value.trim()).filter(Boolean) } : {}) };
     const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: String(data.get("email") ?? "").trim(), locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
     try {
-      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); finishAuthentication(main, result, t); if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
+      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishAuthentication(main, result, t)); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
       const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel(t) };
       const transaction = await api.startRegistration(input, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(transaction.public_key, signal);
       const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
-      // 恢复代码必须先于任何次要上传或导航呈现。Recovery codes must render before secondary uploads or navigation.
-      if (result.recovery_codes?.length) finishRegistration(main, result, t);
+      // 验证步骤与恢复代码必须先于次要上传或导航呈现。Verification and recovery codes render before secondary uploads or navigation.
+      rememberCsrf(result.csrf_token);
+      await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishRegistration(main, result, t), result.recovery_codes, result.next_uri);
       const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
-      if (!result.recovery_codes?.length) finishRegistration(main, result, t);
       if (!avatarOk) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
     } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); }
   });
@@ -181,7 +181,7 @@ function renderRecoveryCodeRotation(main: HTMLElement, api: IdentityApiClient, s
 }
 
 /** 创建一次性恢复代码的复制和下载界面。Creates copy and download controls for one-time recovery codes. */
-function recoveryCodePanel(codes: string[], t: (key: MessageKey) => string, nextUri?: string): HTMLElement {
+function recoveryCodePanel(codes: string[], t: (key: MessageKey) => string, nextUri?: string, showProceed = true): HTMLElement {
   const text = codes.join("\n");
   const copy = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("copyCodes"));
   copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(text); copy.textContent = t("copied"); } catch { window.prompt(t("copyCodes"), text); } });
@@ -190,7 +190,72 @@ function recoveryCodePanel(codes: string[], t: (key: MessageKey) => string, next
   const proceed = nextUri
     ? el("button", { className: "button button--primary", attrs: { type: "button" }, on: { click: () => navigateToHttpUrl(nextUri) } }, t("continueAccount"))
     : accountLink(t);
-  return el("section", { className: "moe-glass auth-card recovery-codes", attrs: { "aria-labelledby": "recovery-code-title" } }, el("h2", { attrs: { id: "recovery-code-title" } }, t("codesTitle")), el("p", { className: "hint" }, t("codesIntro")), el("ul", {}, ...codes.map((code) => el("li", {}, el("code", {}, code)))), el("div", { className: "button-pair" }, copy, download), proceed);
+  return el("section", { className: "moe-glass auth-card recovery-codes", attrs: { "aria-labelledby": "recovery-code-title" } }, el("h2", { attrs: { id: "recovery-code-title" } }, t("codesTitle")), el("p", { className: "hint" }, t("codesIntro")), el("ul", {}, ...codes.map((code) => el("li", {}, el("code", {}, code)))), el("div", { className: "button-pair" }, copy, download), showProceed && proceed);
+}
+
+/** 选择注册创建的主邮箱，不将手机或 username 误作验证目标。Selects the primary registration email without mistaking mobile or username identifiers. */
+export function registrationEmailIdentifier(account: Account): Identifier | undefined {
+  const emails = account.identifiers.filter((identifier) => identifier.kind === "email");
+  return emails.find((identifier) => identifier.is_primary) ?? emails[0];
+}
+
+/** 把注册后邮箱验证呈现为必经状态，重发失败时仍保留上一个有效事务和恢复代码。Renders post-registration email verification as a required state, retaining the prior transaction and recovery codes when resend fails. */
+async function renderRegistrationEmailVerification(main: HTMLElement, api: IdentityApiClient, account: Account, csrfToken: string, signal: AbortSignal, t: (key: MessageKey) => string, onVerified: () => void, recoveryCodes?: string[], nextUri?: string): Promise<void> {
+  let email: Pick<Identifier, "identifier_id" | "value" | "verification_state"> | Pick<Contact, "contact_id" | "value" | "verification_state"> | undefined = registrationEmailIdentifier(account);
+  if (!email) {
+    try {
+      const contacts = await api.listContacts(signal);
+      email = contacts.find((contact) => contact.kind === "email" && contact.is_primary) ?? contacts.find((contact) => contact.kind === "email");
+    } catch (error) {
+      replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), statePanel("error", t("codeSendFailed"), errorMessage(error), accountLink(t)), ...(recoveryCodes?.length ? [recoveryCodePanel(recoveryCodes, t, nextUri, false)] : []));
+      return;
+    }
+  }
+  if (!email) {
+    replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), statePanel("error", t("codeSendFailed"), t("codeInvalid"), accountLink(t)), ...(recoveryCodes?.length ? [recoveryCodePanel(recoveryCodes, t, nextUri, false)] : []));
+    return;
+  }
+  if (email.verification_state === "verified") { onVerified(); return; }
+  const contactId = "identifier_id" in email ? email.identifier_id : email.contact_id;
+  let transaction: ContactVerificationTransaction | undefined;
+  const status = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
+  const confirm = el("button", { className: "button button--primary", attrs: { type: "submit", disabled: true } }, iconLabel("mail", t("confirmEmail")));
+  const resend = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("resendCode"));
+  const codeField = field(t("verificationCode"), "code", { required: true, autocomplete: "one-time-code", pattern: "[0-9]{8}", minlength: "8", placeholder: "12345678", icon: "lock" });
+  const codeInput = codeField.querySelector<HTMLInputElement>("input");
+  if (codeInput) { codeInput.inputMode = "numeric"; codeInput.maxLength = 8; }
+  const form = el("form", { className: "moe-glass auth-card verification-card" },
+    codeField,
+    el("div", { className: "button-pair" }, confirm, resend), status);
+  const recovery = recoveryCodes?.length ? recoveryCodePanel(recoveryCodes, t, nextUri, false) : undefined;
+  replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), el("div", { className: "verification-layout" }, form, recovery));
+
+  const send = async () => {
+    setButtonBusy(resend, true, t("sendingCode"));
+    try {
+      const next = await api.startContactVerification(contactId, { csrfToken, idempotencyKey: createIdempotencyKey(), signal });
+      transaction = next; confirm.disabled = false;
+      replace(status, statePanel("success", t("codeSent"), next.delivery_hint));
+    } catch (error) {
+      replace(status, statePanel("error", t("codeSendFailed"), errorMessage(error)));
+    } finally { setButtonBusy(resend, false); }
+  };
+  resend.addEventListener("click", () => { void send(); });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!transaction) { await send(); return; }
+    setButtonBusy(confirm, true, t("verifyingCode"));
+    try {
+      const code = String(new FormData(form).get("code") ?? "").trim();
+      await api.completeContactVerification(contactId, transaction.transaction_id, code, { csrfToken, idempotencyKey: createIdempotencyKey(), signal });
+      if (!recoveryCodes?.length) { onVerified(); return; }
+      replace(main, pageHeading("EMAIL_VERIFIED", t("emailVerified"), t("codesIntro")), statePanel("success", t("emailVerified"), t("signedIn")), recoveryCodePanel(recoveryCodes, t, nextUri));
+    } catch (error) {
+      replace(status, statePanel("error", t("codeInvalid"), errorMessage(error)));
+      setButtonBusy(confirm, false);
+    }
+  });
+  await send();
 }
 
 /** 每个 API 客户端共享一个页面内再认证协调器。One in-page step-up coordinator is shared per API client. */

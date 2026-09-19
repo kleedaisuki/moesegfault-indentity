@@ -8,6 +8,8 @@ import type {
   BindingTransactionResult,
   BrowserContext,
   CeremonyTransaction,
+  ContactVerificationTransaction,
+  Contact,
   IdentityBinding,
   IdentitySession,
   Account,
@@ -116,6 +118,27 @@ export class IdentityApiClient {
     });
     if (!response.ok) throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
     return await response.json() as Account;
+  }
+
+  /** 列出当前账号联系方式，用于恢复缺失的注册响应投影。Lists current contacts to recover from a missing registration projection. */
+  public listContacts(signal?: AbortSignal) {
+    return this.#request<Contact[]>("/v1/me/contacts", { method: "GET", signal });
+  }
+
+  /** 向注册产生的邮箱发送短期验证码。Sends a short-lived verification code to a registration-created email. */
+  public startContactVerification(contactId: string, controls: MutationControls) {
+    return this.#request<ContactVerificationTransaction>(
+      `/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions`,
+      { method: "POST", body: {}, ...controls },
+    );
+  }
+
+  /** 使用 8 位邮箱验证码完成联系方式验证。Completes contact verification with an eight-digit email code. */
+  public completeContactVerification(contactId: string, transactionId: string, code: string, controls: MutationControls) {
+    return this.#request<Contact>(
+      `/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions/${encodeURIComponent(transactionId)}/completion`,
+      { method: "POST", body: { code }, ...controls },
+    );
   }
 
   /** 创建 Passkey 注册事务。Starts a passkey registration transaction. */

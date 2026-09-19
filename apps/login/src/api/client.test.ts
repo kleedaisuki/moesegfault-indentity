@@ -125,4 +125,19 @@ describe("IdentityApiClient", () => {
     expect(headers.get("content-type")).toBeNull();
     expect(headers.get("x-moesegfault-csrf")).toBe("session-csrf");
   });
+
+  it("starts and completes registration email verification with explicit mutation controls", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ transaction_id: "verify-1", expires_at: "later", delivery_hint: "k***@example.com" }), { status: 201, headers: { "content-type": "application/json" } }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+
+    await client.startContactVerification("email/contact", { csrfToken: "session-csrf", idempotencyKey: "send-1" });
+    await client.completeContactVerification("email/contact", "verify/1", "01234567", { csrfToken: "session-csrf", idempotencyKey: "complete-1" });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://identity.moesegfault.dev/v1/me/contacts/email%2Fcontact/verification-transactions");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({});
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("idempotency-key")).toBe("send-1");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://identity.moesegfault.dev/v1/me/contacts/email%2Fcontact/verification-transactions/verify%2F1/completion");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ code: "01234567" });
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("idempotency-key")).toBe("complete-1");
+  });
 });

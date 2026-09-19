@@ -35,6 +35,7 @@ const messages = {
     enrollTitle: "添加一枚 Passkey", enrollIntro: "这是账号中心发起的短暂认证仪式。完成后请返回账号中心继续管理。", passkeyName: "Passkey 名称", enroll: "添加 Passkey", enrolled: "Passkey 已添加",
     passwordReauthTitle: "还没有可用的 Passkey？", passwordReauthIntro: "先用现有账号密码确认身份，然后就能添加第一枚 Passkey。", reauthIdentity: "邮箱或用户名", reauthPassword: "当前密码", reauthWithPassword: "使用密码确认并继续",
     rotateTitle: "生成新的恢复代码", rotateIntro: "此操作会让旧恢复代码失效；代码只展示这一次。", rotate: "轮换恢复代码", codesTitle: "立即保存恢复代码", codesIntro: "每枚代码只能使用一次。请下载或复制后存放在安全的位置。", copyCodes: "复制全部", downloadCodes: "下载 .txt", continueAccount: "返回账号中心", stepUp: "请先用 Passkey 再确认一次身份。",
+    verifyEmailTitle: "验证你的邮箱", verifyEmailIntro: "账号已创建。请输入邮件中的 8 位验证码，然后再继续。", verificationCode: "8 位验证码", confirmEmail: "确认邮箱", resendCode: "重新发送", sendingCode: "正在发送验证码…", verifyingCode: "正在验证…", codeSent: "验证码已发送至", codeSendFailed: "验证码暂未发出，可以重试。", codeInvalid: "验证没有完成，请检查验证码或重新发送。", emailVerified: "邮箱已验证！",
   },
   en: {
     brand: "moeSegFault Passport", login: "Sign in", register: "Create account", recovery: "Recover account",
@@ -63,6 +64,7 @@ const messages = {
     enrollTitle: "Add a passkey", enrollIntro: "This is a brief ceremony started by Account Center. Return there to continue managing your account.", passkeyName: "Passkey name", enroll: "Add passkey", enrolled: "Passkey added",
     passwordReauthTitle: "No passkey available yet?", passwordReauthIntro: "Confirm with your existing account password, then add your first passkey.", reauthIdentity: "Email or username", reauthPassword: "Current password", reauthWithPassword: "Confirm with password and continue",
     rotateTitle: "Generate new recovery codes", rotateIntro: "This invalidates your old recovery codes. The new codes are shown only once.", rotate: "Rotate recovery codes", codesTitle: "Save recovery codes now", codesIntro: "Each code works once. Copy or download them and keep them somewhere safe.", copyCodes: "Copy all", downloadCodes: "Download .txt", continueAccount: "Return to Account Center", stepUp: "Confirm your identity once more with a passkey.",
+    verifyEmailTitle: "Verify your email", verifyEmailIntro: "Your account is ready. Enter the eight-digit code from the email before continuing.", verificationCode: "8-digit verification code", confirmEmail: "Verify email", resendCode: "Resend code", sendingCode: "Sending verification code…", verifyingCode: "Verifying…", codeSent: "Verification code sent to", codeSendFailed: "The code could not be sent yet. You can retry.", codeInvalid: "Verification wasn't completed. Check the code or send a new one.", emailVerified: "Email verified!",
   },
   ja: {
     brand: "moeSegFault パスポート", login: "ログイン", register: "アカウント作成", recovery: "アカウント復旧",
@@ -91,6 +93,7 @@ const messages = {
     enrollTitle: "Passkeyを追加", enrollIntro: "アカウントセンターから開始された短い認証手続きです。完了後はアカウントセンターへ戻ります。", passkeyName: "Passkeyの名前", enroll: "Passkeyを追加", enrolled: "Passkeyを追加しました",
     passwordReauthTitle: "利用できるPasskeyがまだありませんか？", passwordReauthIntro: "現在のパスワードで本人確認してから、最初のPasskeyを追加できます。", reauthIdentity: "メールまたはユーザー名", reauthPassword: "現在のパスワード", reauthWithPassword: "パスワードで確認して続ける",
     rotateTitle: "新しい復旧コードを生成", rotateIntro: "古い復旧コードは無効になります。新しいコードの表示は一度だけです。", rotate: "復旧コードを更新", codesTitle: "今すぐ復旧コードを保存", codesIntro: "各コードは一度だけ使えます。コピーまたはダウンロードして安全に保管してください。", copyCodes: "すべてコピー", downloadCodes: ".txtをダウンロード", continueAccount: "アカウントセンターへ戻る", stepUp: "Passkeyでもう一度本人確認してください。",
+    verifyEmailTitle: "メールを確認", verifyEmailIntro: "アカウントを作成しました。続行前にメールの8桁の確認コードを入力してください。", verificationCode: "8桁の確認コード", confirmEmail: "メールを確認", resendCode: "コードを再送", sendingCode: "確認コードを送信中…", verifyingCode: "確認中…", codeSent: "確認コードの送信先", codeSendFailed: "コードを送信できませんでした。再試行できます。", codeInvalid: "確認できませんでした。コードを確認するか再送してください。", emailVerified: "メールを確認しました！",
   },
 } as const;
 

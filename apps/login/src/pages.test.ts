@@ -1,12 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { IdentityApiClient } from "./api/client";
-import { postAuthenticationDestination, reauthenticateAndStartEnrollment } from "./pages";
+import { postAuthenticationDestination, reauthenticateAndStartEnrollment, registrationEmailIdentifier } from "./pages";
+import type { Account } from "./api/types";
 
 describe("ordinary login return navigation", () => {
   it("returns to Account but never overrides OAuth transaction resume", () => {
     expect(postAuthenticationDestination({}, "https://account.moesegfault.dev/security")).toBe("https://account.moesegfault.dev/security");
     expect(postAuthenticationDestination({ authorization_resume_uri: "https://client.example/callback" }, "https://account.moesegfault.dev/security")).toBe("https://client.example/callback");
     expect(postAuthenticationDestination({})).toBeUndefined();
+  });
+});
+
+describe("registration email selection", () => {
+  it("selects the primary email instead of username or mobile", () => {
+    const base = { is_primary: false, verification_state: "unverified" as const, created_at: "now", updated_at: "now" };
+    const account = { identifiers: [
+      { ...base, identifier_id: "user", kind: "username", value: "klee" },
+      { ...base, identifier_id: "old", kind: "email", value: "old@example.com" },
+      { ...base, identifier_id: "new", kind: "email", value: "klee@example.com", is_primary: true },
+      { ...base, identifier_id: "phone", kind: "mobile", value: "+8613800000000", is_primary: true },
+    ] } as Account;
+    expect(registrationEmailIdentifier(account)).toMatchObject({ identifier_id: "new", value: "klee@example.com" });
   });
 });
 
