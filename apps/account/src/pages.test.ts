@@ -100,7 +100,8 @@ describe("avatar preparation UX", () => {
   });
 
   it("formats output sizes and localizes stable processing failures", () => {
-    expect(formatAvatarOutput({ edge: 512, outputBytes: 1536 }, "en")).toBe("512 × 512 px · 1.5 KiB · WebP");
+    expect(formatAvatarOutput({ edge: 512, outputBytes: 1536, mediaType: "image/webp" }, "en")).toBe("512 × 512 px · 1.5 KiB · WebP");
+    expect(formatAvatarOutput({ edge: 512, outputBytes: 2048, mediaType: "image/png" }, "en")).toBe("512 × 512 px · 2 KiB · PNG");
     const t = translator("en");
     expect(avatarPreparationError(new AvatarImageError("INPUT_TOO_LARGE", "large"), t)).toBe(t("avatarTooLarge"));
     expect(avatarPreparationError(new AvatarImageError("UNSUPPORTED_TYPE", "type"), t)).toBe(t("avatarInvalidType"));

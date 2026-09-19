@@ -96,7 +96,7 @@ describe("processAvatarImage resource ownership", () => {
     const result = await processAvatarImage(input, { platform });
 
     expect(platform.decode).toHaveBeenCalledWith(input);
-    expect(platform.renderWebp).toHaveBeenCalledWith(
+    expect(platform.render).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1600, height: 900 }),
       { sourceX: 350, sourceY: 0, sourceEdge: 900, outputEdge: 900 },
       0.86,
@@ -125,7 +125,7 @@ describe("processAvatarImage resource ownership", () => {
   it("closes decoded pixels when encoding fails", async () => {
     const close = vi.fn();
     const platform = fakePlatform({ close });
-    vi.mocked(platform.renderWebp).mockRejectedValueOnce(new Error("encoder broke"));
+    vi.mocked(platform.render).mockRejectedValueOnce(new Error("encoder broke"));
 
     await expect(
       processAvatarImage(new Blob(["x"], { type: "image/jpeg" }), { platform }),
@@ -134,22 +134,41 @@ describe("processAvatarImage resource ownership", () => {
     expect(platform.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it("closes decoded pixels and rejects a silent non-WebP fallback", async () => {
+  it("accepts a standards-defined PNG fallback and keeps file, metadata, and preview bytes identical", async () => {
     const close = vi.fn();
     const platform = fakePlatform({ close });
-    vi.mocked(platform.renderWebp).mockResolvedValueOnce(new Blob(["png"], { type: "image/png" }));
+    vi.mocked(platform.render).mockResolvedValueOnce(new Blob(["png-fallback"], { type: "image/png" }));
+
+    const result = await processAvatarImage(
+      new File(["x"], "portrait.avif", { type: "image/avif" }),
+      { platform, fileName: "klee.webp" },
+    );
+
+    expect(result.file.name).toBe("klee.png");
+    expect(result.file.type).toBe("image/png");
+    expect(result.blob).toBe(result.file);
+    expect(result.metadata.mediaType).toBe("image/png");
+    expect(result.metadata.outputBytes).toBe(result.file.size);
+    expect(await result.file.text()).toBe("png-fallback");
+    expect(platform.createObjectURL).toHaveBeenCalledWith(result.file);
+    expect(close).toHaveBeenCalledOnce();
+    result.dispose();
+  });
+
+  it("rejects an encoder result outside the safe WebP-or-PNG output set", async () => {
+    const platform = fakePlatform();
+    vi.mocked(platform.render).mockResolvedValueOnce(new Blob(["jpeg"], { type: "image/jpeg" }));
 
     await expect(
-      processAvatarImage(new Blob(["x"], { type: "image/avif" }), { platform }),
+      processAvatarImage(new Blob(["x"], { type: "image/png" }), { platform }),
     ).rejects.toMatchObject({ code: "ENCODE_FAILED" });
-    expect(close).toHaveBeenCalledOnce();
     expect(platform.createObjectURL).not.toHaveBeenCalled();
   });
 
   it("preserves typed platform failures while still closing decoded pixels", async () => {
     const close = vi.fn();
     const platform = fakePlatform({ close });
-    vi.mocked(platform.renderWebp).mockRejectedValueOnce(
+    vi.mocked(platform.render).mockRejectedValueOnce(
       new AvatarImageError("UNSUPPORTED_BROWSER", "canvas unavailable"),
     );
 
@@ -175,7 +194,7 @@ function fakePlatform(
   overrides: Partial<Pick<AvatarDecodedImage, "width" | "height" | "close">> = {},
 ): AvatarImagePlatform & {
   decode: ReturnType<typeof vi.fn<(blob: Blob) => Promise<AvatarDecodedImage>>>;
-  renderWebp: ReturnType<
+  render: ReturnType<
     typeof vi.fn<(image: AvatarDecodedImage, plan: AvatarTransformPlan, quality: number) => Promise<Blob>>
   >;
   createObjectURL: ReturnType<typeof vi.fn<(blob: Blob) => string>>;
@@ -189,7 +208,7 @@ function fakePlatform(
   };
   return {
     decode: vi.fn(async () => decoded),
-    renderWebp: vi.fn(async () => new Blob(["webp"], { type: "image/webp" })),
+    render: vi.fn(async () => new Blob(["webp"], { type: "image/webp" })),
     createObjectURL: vi.fn(() => "blob:avatar-preview"),
     revokeObjectURL: vi.fn(),
   };

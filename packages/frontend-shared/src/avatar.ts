@@ -13,6 +13,9 @@ export const AVATAR_INPUT_TYPES = ["image/avif", "image/jpeg", "image/png", "ima
 /** 头像输入 MIME 类型。Accepted avatar input MIME type. */
 export type AvatarInputType = (typeof AVATAR_INPUT_TYPES)[number];
 
+/** 浏览器头像管线可能产生的安全输出类型。Safe output types produced by the browser avatar pipeline. */
+export type AvatarOutputType = "image/webp" | "image/png";
+
 /** 可供界面稳定映射的头像处理错误码。Stable avatar-processing error codes for UI mapping. */
 export type AvatarImageErrorCode =
   | "INVALID_INPUT"
@@ -105,8 +108,8 @@ export interface AvatarDecodedImage {
 export interface AvatarImagePlatform {
   /** 解码并应用图片方向元数据。Decodes and applies image-orientation metadata. */
   decode(blob: Blob): Promise<AvatarDecodedImage>;
-  /** 按计划高质量渲染并编码 WebP。Renders the plan at high quality and encodes WebP. */
-  renderWebp(image: AvatarDecodedImage, plan: AvatarTransformPlan, quality: number): Promise<Blob>;
+  /** 高质量渲染并优先编码 WebP；平台可按标准回退 PNG。Renders at high quality, preferring WebP with the standards-defined PNG fallback. */
+  render(image: AvatarDecodedImage, plan: AvatarTransformPlan, webpQuality: number): Promise<Blob>;
   /** 为预览创建调用方拥有的对象 URL。Creates a caller-owned object URL for preview. */
   createObjectURL(blob: Blob): string;
   /** 释放此前创建的对象 URL。Releases a previously created object URL. */
@@ -119,7 +122,7 @@ export interface ProcessAvatarImageOptions {
   readonly fileName?: string;
   /** 最大输出边长，范围 1–1024，默认 1024。Maximum output edge from 1–1024, 1024 by default. */
   readonly maxEdge?: number;
-  /** WebP 编码质量（0 到 1），默认 0.86。WebP quality from 0 to 1, 0.86 by default. */
+  /** WebP 编码质量（0 到 1），默认 0.86；PNG 回退忽略此值。WebP quality from 0 to 1, 0.86 by default; ignored by PNG fallback. */
   readonly quality?: number;
   /** 可替换的平台适配器，主要用于确定性测试。Replaceable platform adapter, primarily for deterministic tests. */
   readonly platform?: AvatarImagePlatform;
@@ -137,8 +140,8 @@ export interface ProcessedAvatarMetadata {
   readonly sourceHeight: number;
   /** 正方形输出宽高。Square output width and height. */
   readonly edge: number;
-  /** 固定的输出媒体类型。Fixed output media type. */
-  readonly mediaType: "image/webp";
+  /** 实际输出媒体类型；与 `file.type` 一致。Actual output media type, identical to `file.type`. */
+  readonly mediaType: AvatarOutputType;
 }
 
 /**
@@ -149,7 +152,7 @@ export interface ProcessedAvatarMetadata {
  * `dispose()` is idempotent and must be called when the UI replaces or unmounts the preview.
  */
 export interface ProcessedAvatar {
-  /** 可直接加入 FormData 的 WebP 文件。WebP file ready to append to FormData. */
+  /** 可直接加入 FormData 的 WebP 或 PNG 文件。WebP or PNG file ready to append to FormData. */
   readonly file: File;
   /** 与 `file` 相同的 Blob 视图，便于非表单消费者。Blob view identical to `file` for non-form consumers. */
   readonly blob: Blob;
@@ -192,17 +195,18 @@ export async function processAvatarImage(
     const plan = planAvatarTransform(decoded.width, decoded.height, maxEdge);
     let encoded: Blob;
     try {
-      encoded = await platform.renderWebp(decoded, plan, quality);
+      encoded = await platform.render(decoded, plan, quality);
     } catch (error) {
       if (error instanceof AvatarImageError) throw error;
       throw new AvatarImageError("ENCODE_FAILED", "The avatar image could not be encoded", { cause: error });
     }
-    if (encoded.type.toLowerCase() !== "image/webp") {
-      throw new AvatarImageError("ENCODE_FAILED", "This browser did not produce a WebP image");
+    const mediaType = encoded.type.toLowerCase();
+    if (!isAvatarOutputType(mediaType)) {
+      throw new AvatarImageError("ENCODE_FAILED", "This browser produced neither WebP nor PNG image data");
     }
 
-    const file = new File([encoded], outputFileName(input, options.fileName), {
-      type: "image/webp",
+    const file = new File([encoded], outputFileName(input, options.fileName, mediaType), {
+      type: mediaType,
       lastModified: Date.now(),
     });
     const previewUrl = platform.createObjectURL(file);
@@ -218,7 +222,7 @@ export async function processAvatarImage(
         sourceWidth: decoded.width,
         sourceHeight: decoded.height,
         edge: plan.outputEdge,
-        mediaType: "image/webp",
+        mediaType,
       },
       dispose(): void {
         if (disposed) return;
@@ -250,7 +254,7 @@ export const browserAvatarImagePlatform: AvatarImagePlatform = {
     return { width: bitmap.width, height: bitmap.height, source: bitmap, close: () => bitmap.close() };
   },
 
-  async renderWebp(image: AvatarDecodedImage, plan: AvatarTransformPlan, quality: number): Promise<Blob> {
+  async render(image: AvatarDecodedImage, plan: AvatarTransformPlan, quality: number): Promise<Blob> {
     const canvas = createSquareCanvas(plan.outputEdge);
     const context = canvas.getContext("2d") as
       | CanvasRenderingContext2D
@@ -318,16 +322,21 @@ function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob>
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
-      else reject(new AvatarImageError("ENCODE_FAILED", "Canvas returned no WebP data"));
+      else reject(new AvatarImageError("ENCODE_FAILED", "Canvas returned no processed image data"));
     }, "image/webp", quality);
   });
 }
 
-/** 输出稳定、无重复扩展名的 WebP 文件名。Produces a stable WebP filename without duplicate extensions. */
-function outputFileName(input: Blob, requested: string | undefined): string {
+/** 输出与实际编码一致、无重复扩展名的文件名。Produces a filename matching the actual encoding without duplicate extensions. */
+function outputFileName(input: Blob, requested: string | undefined, mediaType: AvatarOutputType): string {
   const inputName = input instanceof File ? input.name : "avatar";
   const base = (requested ?? inputName).trim().replace(/\.[^.]*$/, "").trim();
-  return `${base || "avatar"}.webp`;
+  return `${base || "avatar"}.${mediaType === "image/webp" ? "webp" : "png"}`;
+}
+
+/** 将浏览器返回的 MIME 缩窄为受支持输出。Narrows a browser-returned MIME type to a supported output. */
+function isAvatarOutputType(value: string): value is AvatarOutputType {
+  return value === "image/webp" || value === "image/png";
 }
 
 /** 判断有限正整数。Checks for a finite positive integer. */

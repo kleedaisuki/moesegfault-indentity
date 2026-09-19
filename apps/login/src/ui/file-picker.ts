@@ -23,7 +23,7 @@ export type AvatarProcessor = (file: File) => Promise<ProcessedAvatar>;
 
 /** 拥有处理结果及其对象 URL 生命周期的头像选择器。Avatar picker that owns the processed result and its object-URL lifecycle. */
 export interface AvatarFilePicker extends HTMLElement {
-  /** 等待当前选择完成处理，并返回可上传的 WebP；失败或未选择时返回 undefined。Waits for the current selection and returns its uploadable WebP, or undefined. */
+  /** 等待当前选择完成处理，并返回可上传图片；失败或未选择时返回 undefined。Waits for the current selection and returns its uploadable processed image, or undefined. */
   processedFile(): Promise<File | undefined>;
   /** 锁定或解锁选择，确保预览与即将上传的文件一致。Locks or unlocks selection so preview and upload stay identical. */
   setDisabled(disabled: boolean): void;
@@ -40,8 +40,10 @@ export interface AvatarFilePickerOptions {
 }
 
 /**
- * 创建会在上传前生成并预览实际 WebP 的头像选择器。
- * Creates an avatar picker that generates and previews the exact WebP before upload.
+ * 创建会在上传前生成并预览实际输出图片的头像选择器。
+ * Creates an avatar picker that generates and previews the exact output image before upload.
+ * 输出优先使用 WebP，不支持 WebP 编码的平台按 Canvas 标准使用 PNG。
+ * Output prefers WebP and uses the Canvas-standard PNG fallback when WebP encoding is unavailable.
  *
  * 原生 input 仍可聚焦且保留文件选择语义，但调用者必须上传 `processedFile()`，
  * 而不是 FormData 中未经处理的原文件。The native input remains focusable and keeps

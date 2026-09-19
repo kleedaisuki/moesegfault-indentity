@@ -266,7 +266,7 @@ function status(text: string): HTMLElement { return el("div", { className: "load
 /** 生成 mutation proof。Constructs a mutation proof. */
 function proof(c: PageContext): MutationProof { return { csrfToken: c.csrfToken, signal: c.signal }; }
 /** 用本地数字格式展示最终上传尺寸与体积。Formats final upload dimensions and bytes with locale-aware digits. */
-export function formatAvatarOutput(metadata: Pick<ProcessedAvatarMetadata, "edge" | "outputBytes">, locale: Locale): string {
+export function formatAvatarOutput(metadata: Pick<ProcessedAvatarMetadata, "edge" | "outputBytes" | "mediaType">, locale: Locale): string {
   const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
   const bytes = metadata.outputBytes;
   const [value, unit] = bytes >= 1024 * 1024
@@ -274,7 +274,8 @@ export function formatAvatarOutput(metadata: Pick<ProcessedAvatarMetadata, "edge
     : bytes >= 1024
       ? [bytes / 1024, "KiB"]
       : [bytes, "B"];
-  return `${number.format(metadata.edge)} × ${number.format(metadata.edge)} px · ${number.format(value)} ${unit} · WebP`;
+  const encoding = metadata.mediaType === "image/webp" ? "WebP" : "PNG";
+  return `${number.format(metadata.edge)} × ${number.format(metadata.edge)} px · ${number.format(value)} ${unit} · ${encoding}`;
 }
 /** 将共享处理错误映射为本地化界面文案。Maps shared processing failures to localized UI copy. */
 export function avatarPreparationError(error: unknown, t: (key: MessageKey) => string): string {

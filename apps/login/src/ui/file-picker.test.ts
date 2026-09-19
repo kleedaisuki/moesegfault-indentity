@@ -52,7 +52,7 @@ describe.each(locales)("avatar file picker in %s", (locale) => {
 });
 
 describe("processed avatar preview", () => {
-  it("previews and returns the exact processed WebP with dimensions and output size", async () => {
+  it("previews and returns the exact processed image with dimensions and output size", async () => {
     const output = processed("klee.webp", "blob:exact-webp");
     const process = vi.fn(async () => output);
     const picker = avatarFilePicker(copy("en"), { process });
