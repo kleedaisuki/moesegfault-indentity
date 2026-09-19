@@ -34,6 +34,22 @@ export interface Account {
   updated_at: string;
 }
 
+/** 已发布的头像资源。Published avatar resource. */
+export interface Avatar {
+  /** 不可变头像版本标识。Immutable avatar version identifier. */
+  avatar_id: string;
+  /** 可公开读取的 HTTPS 地址。Publicly readable HTTPS URL. */
+  url: string;
+  /** 服务端发布的媒体类型。Media type published by the service. */
+  media_type: "image/avif" | "image/jpeg" | "image/png" | "image/webp";
+  /** 发布像素宽度。Published pixel width. */
+  width: number;
+  /** 发布像素高度。Published pixel height. */
+  height: number;
+  /** 发布版本更新时间。Published version update time. */
+  updated_at: string;
+}
+
 /** 当前账号与内存态 CSRF 证明。Current account with an in-memory CSRF proof. */
 export interface MeEnvelope { account: Account; csrf_token: string; csrf_expires_at: string; }
 

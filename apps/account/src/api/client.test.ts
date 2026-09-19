@@ -32,6 +32,21 @@ describe("AccountApiClient", () => {
     expect(headers.get("content-type")).toBe("application/merge-patch+json"); expect(headers.get("x-moesegfault-csrf")).toBe("csrf"); expect(headers.get("idempotency-key")).toBeTruthy();
   });
 
+  it("uploads the exact prepared avatar file and returns the OpenAPI Avatar shape", async () => {
+    const avatar = { avatar_id: "0199f", url: "https://avatars.example/klee.webp", media_type: "image/webp" as const, width: 1024, height: 1024, updated_at: "2026-01-01T00:00:00Z" };
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(json(avatar, 201));
+    const file = new File(["prepared-webp"], "klee.webp", { type: "image/webp" });
+
+    const result = await new AccountApiClient("https://identity.example", fetch).uploadAvatar(file, { csrfToken: "csrf" });
+
+    expect(result).toEqual(avatar);
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(String(url)).toBe("https://identity.example/v1/me/avatar");
+    expect(init?.method).toBe("POST");
+    expect((init?.body as FormData).get("avatar")).toBe(file);
+    expect((init?.headers as Headers).has("content-type")).toBe(false);
+  });
+
   it("uses exact contact and session paths and escapes IDs", async () => {
     const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(null, { status: 204 })); const api = new AccountApiClient("https://identity.example", fetch);
     await api.deleteContact("a/b", { csrfToken: "csrf" }); await api.revokeSession("s/b", { csrfToken: "csrf" });

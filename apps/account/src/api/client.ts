@@ -1,4 +1,4 @@
-import type { Account, AccountPreferences, ConnectedApp, Contact, ContactCreate, ContactVerificationTransaction, Credential, MeEnvelope, MutationProof, ProblemDetails, ProfilePatch, ResourceList, SecuritySummary, Session } from "./types";
+import type { Account, AccountPreferences, Avatar, ConnectedApp, Contact, ContactCreate, ContactVerificationTransaction, Credential, MeEnvelope, MutationProof, ProblemDetails, ProfilePatch, ResourceList, SecuritySummary, Session } from "./types";
 
 /** 可注入的 Fetch 接口。Injectable Fetch interface. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -39,8 +39,8 @@ export class AccountApiClient {
   public getMe(signal?: AbortSignal) { return this.#request<MeEnvelope>("/v1/me", { method: "GET", signal }); }
   /** 修改资料。Updates the profile. */
   public updateMe(patch: ProfilePatch, proof: MutationProof) { return this.#request<Account>("/v1/me", { method: "PATCH", body: patch, contentType: "application/merge-patch+json", ...proof }); }
-  /** 上传头像；浏览器不自行编码图片。Uploads an avatar without client-side transcoding. */
-  public uploadAvatar(file: File, proof: MutationProof) { const body = new FormData(); body.set("avatar", file); return this.#request<{url: string}>("/v1/me/avatar", { method: "POST", body, ...proof }); }
+  /** 上传浏览器已准备的头像文件。Uploads the browser-prepared avatar file. */
+  public uploadAvatar(file: File, proof: MutationProof) { const body = new FormData(); body.set("avatar", file); return this.#request<Avatar>("/v1/me/avatar", { method: "POST", body, ...proof }); }
   /** 删除头像。Deletes the avatar. */
   public deleteAvatar(proof: MutationProof) { return this.#request<void>("/v1/me/avatar", { method: "DELETE", ...proof }); }
   /** 列出联系方式。Lists private contacts. */

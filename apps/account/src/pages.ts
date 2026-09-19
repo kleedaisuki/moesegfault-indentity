@@ -1,3 +1,9 @@
+import {
+  AvatarImageError,
+  processAvatarImage,
+  type ProcessedAvatar,
+  type ProcessedAvatarMetadata,
+} from "@moesegfault/frontend-shared";
 import { ApiError, AccountApiClient } from "./api/client";
 import type { Account, AccountPreferences, Contact, Credential, MutationProof, SecuritySummary } from "./api/types";
 import { normalizeLocale, type Locale, type MessageKey } from "./i18n";
@@ -7,8 +13,11 @@ import { busy, el, formatTime, icon, replace } from "./ui/dom";
 import { resolveAccountOrigin, resolveLoginOrigin } from "./environment";
 import { localeOptions } from "./ui/locale-select";
 
+/** 头像准备函数，允许 UI 测试替换浏览器 Canvas。Avatar preparer replaceable by UI tests without browser Canvas. */
+export type AvatarPreparer = (input: Blob) => Promise<ProcessedAvatar>;
+
 /** 页面渲染所需的会话态；CSRF 只驻留内存。In-memory page session; CSRF never leaves memory. */
-export interface PageContext { api: AccountApiClient; account: Account; preferences: AccountPreferences; csrfToken: string; locale: Locale; t: (key: MessageKey) => string; signal: AbortSignal; refresh(): Promise<void>; }
+export interface PageContext { api: AccountApiClient; account: Account; preferences: AccountPreferences; csrfToken: string; locale: Locale; t: (key: MessageKey) => string; signal: AbortSignal; refresh(): Promise<void>; prepareAvatar?: AvatarPreparer; }
 
 /** 渲染一级账号页面。Renders one top-level Account page. */
 export async function renderPage(route: Route, main: HTMLElement, context: PageContext): Promise<void> {
@@ -40,15 +49,82 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
   const contacts = await c.api.listContacts(c.signal);
   if (c.signal.aborted) return;
   const avatarInput = el("input", { attrs: { type: "file", accept: "image/avif,image/png,image/jpeg,image/webp", hidden: true } });
-  const avatarMessage = el("span", { className: "inline-message", attrs: { "aria-live": "polite" } });
+  const avatarPreview = avatar(c.account);
+  const avatarMessage = el("span", { className: "inline-message avatar-message", attrs: { "aria-live": "polite" } });
+  const avatarDetails = el("p", { className: "avatar-details muted", attrs: { hidden: true } });
   const avatarButton = button(c.t("upload"), "quiet");
+  const confirmAvatar = button(c.t("avatarConfirm"), "primary");
+  const cancelAvatar = button(c.t("avatarCancel"), "quiet");
+  const preparedActions = el("div", { className: "button-row avatar-prepared-actions", attrs: { hidden: true } }, confirmAvatar, cancelAvatar);
+  const currentAvatarUrl = c.account.profile.avatar_url || "/icons/logo.svg";
+  const prepare = c.prepareAvatar ?? processAvatarImage;
+  let prepared: ProcessedAvatar | undefined;
+  let selectionRevision = 0;
+
+  /** 释放本地预览并恢复服务端头像。Releases the local preview and restores the server avatar. */
+  const discardPrepared = (clearMessage = true): void => {
+    prepared?.dispose();
+    prepared = undefined;
+    avatarPreview.src = currentAvatarUrl;
+    avatarDetails.hidden = true;
+    avatarDetails.textContent = "";
+    preparedActions.hidden = true;
+    avatarButton.textContent = c.t("upload");
+    busy(avatarButton, false);
+    if (clearMessage) avatarMessage.textContent = "";
+  };
+  const removeAvatar = c.account.profile.avatar_url
+    ? actionButton(c.t("remove"), async (btn) => {
+      selectionRevision += 1;
+      discardPrepared();
+      await c.api.deleteAvatar(proof(c));
+      await c.refresh();
+      busy(btn, false);
+    }, "danger", c)
+    : null;
+
   avatarButton.addEventListener("click", () => avatarInput.click());
   avatarInput.addEventListener("change", async () => {
-    const file = avatarInput.files?.[0]; if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { avatarMessage.textContent = c.t("avatarTooLarge"); return; }
+    const file = avatarInput.files?.[0];
+    if (!file) return;
+    const revision = ++selectionRevision;
+    discardPrepared(false);
+    avatarMessage.textContent = c.t("avatarPreparing");
     busy(avatarButton, true);
-    try { await c.api.uploadAvatar(file, proof(c)); avatarMessage.textContent = c.t("saved"); await c.refresh(); } catch (error) { avatarMessage.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(avatarButton, false); }
+    try {
+      const next = await prepare(file);
+      if (c.signal.aborted || revision !== selectionRevision) { next.dispose(); return; }
+      prepared = next;
+      avatarPreview.src = next.previewUrl;
+      avatarDetails.textContent = formatAvatarOutput(next.metadata, c.locale);
+      avatarDetails.hidden = false;
+      preparedActions.hidden = false;
+      avatarButton.textContent = c.t("avatarReselect");
+      avatarMessage.textContent = c.t("avatarPrepared");
+    } catch (error) {
+      if (!c.signal.aborted && revision === selectionRevision) avatarMessage.textContent = avatarPreparationError(error, c.t);
+    } finally {
+      avatarInput.value = "";
+      if (revision === selectionRevision) busy(avatarButton, false);
+    }
   });
+  cancelAvatar.addEventListener("click", () => { selectionRevision += 1; discardPrepared(); });
+  confirmAvatar.addEventListener("click", async () => {
+    const uploading = prepared;
+    if (!uploading) return;
+    busy(confirmAvatar, true); busy(avatarButton, true); busy(cancelAvatar, true); if (removeAvatar) busy(removeAvatar, true);
+    try {
+      await c.api.uploadAvatar(uploading.file, proof(c));
+      if (prepared === uploading) discardPrepared(false);
+      avatarMessage.textContent = c.t("saved");
+      await c.refresh();
+    } catch (error) {
+      if (!c.signal.aborted) avatarMessage.textContent = errorText(error, c.t("unexpectedError"));
+    } finally {
+      busy(confirmAvatar, false); busy(avatarButton, false); busy(cancelAvatar, false); if (removeAvatar) busy(removeAvatar, false);
+    }
+  });
+  c.signal.addEventListener("abort", () => { selectionRevision += 1; discardPrepared(); }, { once: true });
   const profileForm = el("form", { className: "card form-card moe-glass" },
     el("h2", {}, c.t("editProfile")), inputField(c.t("displayName"), "display_name", c.account.profile.display_name, { required: true, maxLength: "80", autocomplete: "name", dir: "auto" }),
     textAreaField(c.t("bio"), "bio", c.account.profile.bio ?? "", 500),
@@ -74,7 +150,7 @@ async function renderProfile(main: HTMLElement, c: PageContext): Promise<void> {
     } catch (error) { message.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(submit, false); }
   });
   replace(main, heading(c.t("profile"), `@${username(c.account)}`),
-    el("section", { className: "card avatar-card moe-glass" }, avatar(c.account), el("div", {}, el("h2", {}, c.t("avatar")), el("p", { className: "muted" }, c.t("avatarFormats")), el("div", { className: "button-row" }, avatarInput, avatarButton, c.account.profile.avatar_url ? actionButton(c.t("remove"), async (btn) => { await c.api.deleteAvatar(proof(c)); await c.refresh(); busy(btn, false); }, "danger", c) : null, avatarMessage))),
+    el("section", { className: "card avatar-card moe-glass" }, avatarPreview, el("div", { className: "avatar-controls" }, el("h2", {}, c.t("avatar")), el("p", { className: "muted" }, c.t("avatarFormats")), avatarDetails, el("div", { className: "button-row" }, avatarInput, avatarButton, removeAvatar), preparedActions, avatarMessage)),
     profileForm, contactsPanel(contacts, c));
 }
 
@@ -189,6 +265,25 @@ function empty(text: string): HTMLElement { return el("div", { className: "empty
 function status(text: string): HTMLElement { return el("div", { className: "loading", attrs: { role: "status" } }, icon("sparkle"), text); }
 /** 生成 mutation proof。Constructs a mutation proof. */
 function proof(c: PageContext): MutationProof { return { csrfToken: c.csrfToken, signal: c.signal }; }
+/** 用本地数字格式展示最终上传尺寸与体积。Formats final upload dimensions and bytes with locale-aware digits. */
+export function formatAvatarOutput(metadata: Pick<ProcessedAvatarMetadata, "edge" | "outputBytes">, locale: Locale): string {
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+  const bytes = metadata.outputBytes;
+  const [value, unit] = bytes >= 1024 * 1024
+    ? [bytes / (1024 * 1024), "MiB"]
+    : bytes >= 1024
+      ? [bytes / 1024, "KiB"]
+      : [bytes, "B"];
+  return `${number.format(metadata.edge)} × ${number.format(metadata.edge)} px · ${number.format(value)} ${unit} · WebP`;
+}
+/** 将共享处理错误映射为本地化界面文案。Maps shared processing failures to localized UI copy. */
+export function avatarPreparationError(error: unknown, t: (key: MessageKey) => string): string {
+  if (!(error instanceof AvatarImageError)) return t("avatarProcessingFailed");
+  if (error.code === "INPUT_TOO_LARGE") return t("avatarTooLarge");
+  if (error.code === "UNSUPPORTED_TYPE") return t("avatarInvalidType");
+  if (error.code === "EMPTY_INPUT") return t("avatarEmpty");
+  return t("avatarProcessingFailed");
+}
 /** 规范化展示错误，保留关联 ID 供支持排障。Normalizes errors while retaining correlation IDs for support. */
 export function errorText(error: unknown, fallback = ""): string { if (error instanceof ApiError) return `${error.message}${error.correlationId ? ` · ID ${error.correlationId}` : ""}`; return error instanceof Error ? error.message : fallback; }
 /** 安全摘要是否需要注意。Whether a security summary needs attention. */
