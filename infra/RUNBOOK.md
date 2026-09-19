@@ -86,7 +86,7 @@ Workers Logs 与 Traces 在部署前即开启；低流量阶段 logs 100%、trac
 
 ## 冒烟检查与事故响应 / Smoke checks and incident response
 
-`scripts/smoke.sh <staging|production>` 验证：Identity deep health（含 D1）、OIDC discovery 契约、Login/Account HTML。它是部署后 gate，不代替持续外部 synthetic monitoring。
+`scripts/smoke.sh <staging|production>` 验证：Identity deep health（含 D1）、OIDC discovery 契约、Login/Account HTML，以及 Account 调用 `/v1/me` 时预检与匿名 `401` 响应的凭据式 CORS 契约。它是部署后 gate，不代替持续外部 synthetic monitoring。
 
 事故处理：
 
