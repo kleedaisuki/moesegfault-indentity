@@ -121,6 +121,24 @@ rejected_origin_status="$(request_status "$tmp_dir/rejected-origin.json" \
   "$IDENTITY_URL/v1/me/contacts/018f0000-0000-7000-8000-000000000000/verification-transactions")"
 test "$rejected_origin_status" = "403"
 jq -e '.status == 403 and .error_code == "invalid_request"' "$tmp_dir/rejected-origin.json" >/dev/null
-! grep -Eiq '^access-control-allow-origin:' "$tmp_dir/rejected-origin.headers"
+if grep -Eiq '^access-control-allow-origin:' "$tmp_dir/rejected-origin.headers"; then
+  echo 'rejected Origin unexpectedly received Access-Control-Allow-Origin' >&2
+  exit 1
+fi
+
+# Account is a trusted CORS origin for session management, not an owner of anonymous Login
+# ceremonies. Keep this capability boundary explicit while still returning readable CORS errors.
+# Account 是会话管理的可信 CORS Origin，但无权发起匿名 Login ceremony；保留这条能力边界。
+browser_scope_status="$(request_status "$tmp_dir/account-browser-scope.json" \
+  --dump-header "$tmp_dir/account-browser-scope.headers" --request POST \
+  --header "Origin: $ACCOUNT_URL" --header 'Sec-Fetch-Site: same-site' \
+  --header 'Sec-Fetch-Mode: cors' --header 'Content-Type: application/json' \
+  --header 'X-moeSegFault-CSRF: smoke-test' \
+  --header 'Idempotency-Key: account-browser-scope-smoke' --data '{}' \
+  "$IDENTITY_URL/v1/password/authentications")"
+test "$browser_scope_status" = "403"
+jq -e '.status == 403 and .error_code == "invalid_request" and .title == "Origin is not allowed"' \
+  "$tmp_dir/account-browser-scope.json" >/dev/null
+header_has_line "$tmp_dir/account-browser-scope.headers" "access-control-allow-origin: $ACCOUNT_URL"
 
 printf 'smoke checks passed / 冒烟检查通过: %s, %s, %s\n' "$IDENTITY_URL" "$LOGIN_URL" "$ACCOUNT_URL"

@@ -32,13 +32,19 @@ This document defines first-release runtime configuration names, ownership, and 
 
 These values govern newly issued objects. Tightening policy must not rewrite an existing object's original expiry; emergency handling uses explicit revocation.
 
-`LOGIN_ORIGIN` 与 `ACCOUNT_ORIGIN` 必须按环境成对配置。所有通用浏览器边界、中间件、幂等预声明和最终 CORS 响应都必须复用同一精确允许列表；禁止在下游模块再次硬编码“仅 Login”。WebAuthn 的 RP 与 expected origin 仍只使用 `LOGIN_ORIGIN`，不能因为 Account 被允许调用 Identity API 而扩大。
+`LOGIN_ORIGIN` 与 `ACCOUNT_ORIGIN` 必须按环境成对配置。最终 CORS 响应对这两个第一方 Origin
+进行精确匹配；请求授权则遵循显式能力矩阵：匿名注册、认证与恢复 ceremony 仅允许
+`LOGIN_ORIGIN`，已认证的会话管理命令允许成对的 Login 与 Account Origin。中间件必须复用
+共享的 scope-aware Origin helper，不得自行复制字符串比较。WebAuthn 的 RP 与 expected origin
+仍只使用 `LOGIN_ORIGIN`，不能因为 Account 被允许调用 Identity resource API 而扩大。
 
-`LOGIN_ORIGIN` and `ACCOUNT_ORIGIN` must be configured as an environment-matched pair. Every
-general browser boundary, middleware, idempotency preclaim, and final CORS response must reuse the
-same exact allowlist; downstream modules must not reintroduce a Login-only check. WebAuthn's RP and
-expected origin remain restricted to `LOGIN_ORIGIN` and must not be broadened merely because
-Account is allowed to call the Identity API.
+`LOGIN_ORIGIN` and `ACCOUNT_ORIGIN` must be configured as an environment-matched pair. Final CORS
+responses exactly match either first-party origin, while request authorization follows an explicit
+capability matrix: anonymous registration, authentication, and recovery ceremonies allow only
+`LOGIN_ORIGIN`; authenticated session-management commands allow the paired Login and Account
+origins. Middleware must reuse the shared scope-aware Origin helper rather than copying string
+comparisons. WebAuthn's RP and expected origin remain restricted to `LOGIN_ORIGIN` and must not be
+broadened merely because Account may call the Identity resource API.
 
 ## Cloudflare Bindings
 
