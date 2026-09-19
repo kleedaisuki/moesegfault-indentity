@@ -8,6 +8,7 @@ import { installRouter, resolveRoute } from "./router";
 import { el, icon, replace } from "./ui/dom";
 import { createShell } from "./ui/shell";
 import { localeOptions } from "./ui/locale-select";
+import { createAnonymousLanding } from "./ui/anonymous-landing";
 import { authenticatedSession, type AccountSession } from "./session";
 
 const mount = document.querySelector<HTMLElement>("#app");
@@ -22,6 +23,7 @@ applyTheme(theme, document.documentElement, media);
 document.documentElement.lang = locale;
 
 const shell = createShell(t, isInAppBrowser(navigator.userAgent), logoutUrl());
+shell.root.dataset.session = "pending";
 let session: AccountSession = { status: "pending" };
 let active: AbortController | undefined;
 const api = new AccountApiClient(resolveIdentityOrigin(location, import.meta.env.VITE_IDENTITY_API_ORIGIN), undefined, becomeAnonymous);
@@ -42,6 +44,7 @@ async function renderCurrent(reloadSession = false): Promise<void> {
       if (signal.aborted) return;
       session = authenticatedSession(envelope, loadedPreferences);
       shell.setSession(session);
+      shell.root.dataset.session = "authenticated";
     }
     if (session.status !== "authenticated") return;
     await renderPage(route, shell.main, { api, account: session.account, preferences: session.preferences, csrfToken: session.csrfToken, locale, t, signal, refresh: refreshCurrent });
@@ -59,14 +62,15 @@ function becomeAnonymous(): void {
   session = { status: "anonymous" };
   active?.abort();
   shell.setSession(session);
+  shell.root.dataset.session = "anonymous";
   renderAnonymous();
 }
 
-/** 保留当前深链接的匿名登录提示。Renders the anonymous sign-in prompt while preserving the current deep link. */
+/** 保留当前深链接并渲染独立的匿名宣传页。Renders the dedicated anonymous landing page while preserving the current deep link. */
 function renderAnonymous(): void {
   const route = resolveRoute(location.pathname);
-  const signIn = el("a", { className: "button primary", attrs: { href: loginUrl(route) } }, t("signIn"));
-  replace(shell.main, el("section", { className: "failure card moe-glass", attrs: { role: "status" } }, icon("key"), el("h1", {}, t("notSignedIn")), el("p", {}, t("notSignedInBody")), signIn));
+  document.title = `${t("landingPageTitle")} · moeSegFault`;
+  replace(shell.main, createAnonymousLanding(t, loginUrl(route)));
   shell.main.focus({ preventScroll: true });
 }
 
