@@ -39,6 +39,9 @@ h1, h2, h3 { margin-block-start: 0; font-family: Georgia, "Noto Serif SC", serif
 .mini-avatar { width: 2.35rem; height: 2.35rem; border-radius: 50%; object-fit: cover; }
 .mobile-header, .bottom-nav { display: none; }
 main { width: min(100% - 2.5rem, 72rem); margin-inline: auto; padding: clamp(2rem, 5vw, 4.5rem) 0 5rem; }
+/* 路由切换会以编程方式聚焦 main 供读屏器播报；它不是 Tab 停靠点，不应绘制覆盖整页的焦点框。
+   Route changes focus main for screen-reader context; it is not a Tab stop and must not draw a page-sized focus ring. */
+.app-shell > main[tabindex="-1"]:focus-visible { outline: none; }
 .in-app-banner { grid-column: 2; display: flex; align-items: center; gap: .7rem; padding: .65rem 1.25rem; color: var(--text); background: color-mix(in srgb, var(--gold) 28%, var(--surface-strong)); font-size: .86rem; }
 @supports (padding-left: max(1px, 2px)) { .in-app-banner { padding-inline: max(1.25rem, calc((100% - 72rem) / 2)); } }
 .in-app-banner + main { padding-top: 2rem; }
