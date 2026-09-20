@@ -1,0 +1,4 @@
+interface:
+  display_name: "moeSegFault Identity"
+  short_description: "Integrate apps with moeSegFault Identity and OIDC"
+  default_prompt: "Use $moesegfault-identity to integrate this application with moeSegFault Identity."
