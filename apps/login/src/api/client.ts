@@ -1,3 +1,4 @@
+import { apiOrigin, parseProblem } from "@moesegfault/frontend-shared";
 import type {
   AuthenticationResult,
   AuthenticationStart,
@@ -83,11 +84,7 @@ export class IdentityApiClient {
 
   /** 创建固定到可信 Identity origin 的客户端。Creates a client pinned to a trusted Identity origin. */
   public constructor(origin: string, fetchImpl: FetchLike = globalThis.fetch.bind(globalThis)) {
-    const parsed = new URL(origin);
-    if (parsed.pathname !== "/" || parsed.search || parsed.hash || !["https:", "http:"].includes(parsed.protocol)) {
-      throw new TypeError("Identity API origin 必须是纯 HTTP(S) origin");
-    }
-    this.#origin = parsed.origin;
+    this.#origin = apiOrigin(origin, "Identity API origin 必须是纯 HTTP(S) origin");
     this.#fetch = fetchImpl;
   }
 
@@ -117,7 +114,7 @@ export class IdentityApiClient {
       method: "POST", headers: { Accept: "application/json", "x-moesegfault-csrf": csrfToken, "Idempotency-Key": createIdempotencyKey() },
       body, credentials: "include", cache: "no-store", redirect: "error", signal,
     });
-    if (!response.ok) throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
+    if (!response.ok) throw new ApiError(response.status, await parseProblem<ProblemDetails>(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
     return await response.json() as Avatar;
   }
 
@@ -341,21 +338,10 @@ export class IdentityApiClient {
 
     const correlationId = response.headers.get("x-moesegfault-correlation-id") ?? undefined;
     if (!response.ok) {
-      throw new ApiError(response.status, await parseProblem(response), correlationId);
+      throw new ApiError(response.status, await parseProblem<ProblemDetails>(response), correlationId);
     }
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
-  }
-}
-
-/** 安全尝试解析问题详情，忽略代理生成的非 JSON 错误页。Safely parses Problem Details and ignores proxy HTML errors. */
-async function parseProblem(response: Response): Promise<ProblemDetails | undefined> {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("json")) return undefined;
-  try {
-    return (await response.json()) as ProblemDetails;
-  } catch {
-    return undefined;
   }
 }
 

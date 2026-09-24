@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ACCOUNT_ROUTES } from "@moesegfault/frontend-shared";
 import { resolveAccountOrigin, resolveAccountReturnUri, resolveIdentityOrigin, validateAccountReturnUri } from "./environment";
 
 describe("resolveIdentityOrigin", () => {
@@ -34,5 +35,15 @@ describe("resolveIdentityOrigin", () => {
     expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/security?next=https://evil.example")}` })).toBeUndefined();
     expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account.moesegfault.dev/unknown")}` })).toBeUndefined();
     expect(validateAccountReturnUri({ hostname: "login.moesegfault.dev", href: `${login}${encodeURIComponent("https://account-staging.moesegfault.dev/security")}` })).toBeUndefined();
+  });
+
+  it("accepts every Account route from the shared route contract", () => {
+    for (const route of ACCOUNT_ROUTES) {
+      const target = `https://account.moesegfault.dev${route}`;
+      expect(validateAccountReturnUri({
+        hostname: "login.moesegfault.dev",
+        href: `https://login.moesegfault.dev/login?return_uri=${encodeURIComponent(target)}`,
+      })).toBe(target);
+    }
   });
 });

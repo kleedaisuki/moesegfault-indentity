@@ -80,6 +80,12 @@ describe("AccountApiClient", () => {
     expect(error).toBeInstanceOf(ApiError); expect(error).toMatchObject({ status: 409, message: "Already exists", correlationId: "corr" });
   });
 
+  it("retains its HTTP fallback for non-JSON proxy errors", async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response("<h1>Unavailable</h1>", { status: 502, headers: { "content-type": "text/html" } }));
+    const error = await new AccountApiClient("https://identity.example", fetch).listContacts().catch((value: unknown) => value);
+    expect(error).toMatchObject({ status: 502, message: "HTTP 502" });
+  });
+
   it("notifies the session owner before surfacing every 401", async () => {
     const events: string[] = [];
     const fetch = vi.fn<FetchLike>().mockResolvedValue(json({ type: "urn:test", title: "Expired", status: 401 }, 401));

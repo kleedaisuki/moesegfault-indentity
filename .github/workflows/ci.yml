@@ -82,8 +82,6 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies / 安装锁定依赖
         run: npm ci --ignore-scripts
-      - name: Dependency advisory gate / 依赖公告门禁
-        run: npm audit --audit-level=high
       - name: Lint, typecheck, and test / 静态、类型检查与测试
         run: |
           npm run lint --workspace=@moesegfault/${{ matrix.app }}
@@ -112,6 +110,10 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
+      # One lockfile governs all npm workspaces; audit it once before packaging.
+      # 所有 npm 工作区共用一个锁文件；打包前只需审计一次。
+      - name: Dependency advisory gate / 依赖公告门禁
+        run: npm audit --audit-level=high
       - name: Validate shared browser primitives / 验证共享浏览器原语
         run: npm run typecheck:frontend-shared && npm run test:frontend-shared
       - name: Validate contracts and fresh migration / 验证契约与全新迁移
@@ -144,6 +146,8 @@ jobs:
           cp -a .temp/artifacts/identity-worker-${GITHUB_SHA}/. crates/identity-worker/build/
           cp -a .temp/artifacts/login-assets-${GITHUB_SHA}/. apps/login/dist/
           cp -a .temp/artifacts/account-assets-${GITHUB_SHA}/. apps/account/dist/
+      - name: Verify Worker request boundary / 验证 Worker 请求边界
+        run: node scripts/tests/security-boundary.mjs
       - name: Dry-run every deployment unit / 演练所有发布单元
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc

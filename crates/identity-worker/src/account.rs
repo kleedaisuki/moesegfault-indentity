@@ -19,7 +19,7 @@ use sha2::{Digest as _, Sha256};
 use worker::wasm_bindgen::JsValue;
 use worker::*;
 
-use crate::{account_repository as repository, ceremony_state, guard, problem};
+use crate::{account_repository as repository, ceremony_state, guard, problem, webauthn_wire};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
@@ -674,19 +674,21 @@ pub async fn update_contact(mut request: Request, context: RouteContext<()>) -> 
         current.country_calling_code.clone(),
         current.national_number.clone(),
     ));
-    db.batch(vec![
-        db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND identifier_id<>?3 AND ?5=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&current.kind),JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_f64(i64::from(primary) as f64)])?,
-        // A challenge is meaningful only for the exact normalized destination it was issued to.
-        // 验证事务只对签发时的规范化目的地有效；改值时立即消费旧事务。
-        db.prepare("UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?3 WHERE identifier_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND normalized_value<>?4)")
-            .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64),JsValue::from_str(&normalized)])?,
-        db.prepare("UPDATE identifiers SET value=?3,normalized_value=?4,country_calling_code=?5,national_number=?6,is_primary=?7,verification_state=CASE WHEN normalized_value<>?4 THEN 'unverified' ELSE verification_state END,verified_at=CASE WHEN normalized_value<>?4 THEN NULL ELSE verified_at END,updated_at=?8 WHERE identifier_id=?1 AND principal_id=?2").bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_str(&value),JsValue::from_str(&normalized),optional_js_text(calling_code.as_deref()),optional_js_text(national_number.as_deref()),JsValue::from_f64(i64::from(primary) as f64),JsValue::from_f64(now as f64)])?,
-    ]).await?;
-    let item = repository::identifiers(&db, &session.principal_id)
-        .await?
-        .into_iter()
-        .find(|item| item.identifier_id == contact_id)
-        .ok_or_else(|| Error::RustError("updated contact projection missing".into()))?;
+    let item = repository::update_contact(
+        &db,
+        repository::ContactUpdate {
+            principal_id: &session.principal_id,
+            identifier_id: contact_id,
+            kind: &current.kind,
+            value: &value,
+            normalized_value: &normalized,
+            calling_code: calling_code.as_deref(),
+            national_number: national_number.as_deref(),
+            is_primary: primary,
+            now,
+        },
+    )
+    .await?;
     json(
         &identifier_to_wire(item),
         200,
@@ -1860,14 +1862,12 @@ pub async fn start_authenticator_registration(
         now + 300,
     )
     .await?;
-    let mut public_key = serde_json::to_value(challenge)?;
-    public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
-    public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
+    let public_key = serde_json::to_value(challenge)?;
     json(
         &TransactionResponse {
             transaction_id: id,
             csrf_token: csrf_wire,
-            public_key: registration_options_to_wire(public_key),
+            public_key: webauthn_wire::registration_options_to_wire(public_key),
             expires_at: date_time(now + 300),
         },
         201,
@@ -1974,7 +1974,7 @@ pub(crate) async fn finish_authenticator_registration(
             );
         }
     };
-    canonicalize_transports(&mut credential.transports);
+    webauthn_wire::canonicalize_transports(&mut credential.transports);
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let db = context.d1("DB")?;
     repository::commit_addition(
@@ -2307,9 +2307,7 @@ fn mutation_problem(
         return problem::response("invalid_request", "Origin is not allowed", 403, correlation)
             .map(Some);
     }
-    if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
-        || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
-    {
+    if !guard::fetch_site_allowed(guard::header(request.headers(), "sec-fetch-site").as_deref()) {
         return problem::response(
             "invalid_request",
             "Invalid browser request context",
@@ -2561,53 +2559,6 @@ fn webauthn(env: &Env) -> Webauthn {
         .require_user_verification(true)
         .strict_base64(true)
         .authenticator_attachment(Attachment::Any)
-}
-
-fn registration_options_to_wire(mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(parameters) = value
-        .get_mut("pubKeyCredParams")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        parameters.retain(|parameter| {
-            parameter.get("alg").and_then(serde_json::Value::as_i64) == Some(-7)
-        });
-    }
-    rename(&mut value, "pubKeyCredParams", "pub_key_cred_params");
-    rename(&mut value, "excludeCredentials", "exclude_credentials");
-    rename(
-        &mut value,
-        "authenticatorSelection",
-        "authenticator_selection",
-    );
-    if let Some(user) = value.get_mut("user") {
-        rename(user, "displayName", "display_name");
-    }
-    if let Some(selection) = value.get_mut("authenticator_selection") {
-        rename(
-            selection,
-            "authenticatorAttachment",
-            "authenticator_attachment",
-        );
-        rename(selection, "residentKey", "resident_key");
-        rename(selection, "requireResidentKey", "require_resident_key");
-        rename(selection, "userVerification", "user_verification");
-    }
-    value
-}
-
-fn rename(value: &mut serde_json::Value, from: &str, to: &str) {
-    if let Some(object) = value.as_object_mut()
-        && let Some(item) = object.remove(from)
-    {
-        object.insert(to.to_owned(), item);
-    }
-}
-
-/// 对 transport hints 排序去重，使存储与 OpenAPI `uniqueItems` 保持一致。
-/// Sorts and deduplicates transport hints to preserve the OpenAPI `uniqueItems` contract.
-fn canonicalize_transports(transports: &mut Vec<String>) {
-    transports.sort_unstable();
-    transports.dedup();
 }
 
 fn session_csrf(request: &Request, env: &Env) -> Result<String> {
@@ -2880,8 +2831,15 @@ mod tests {
             "hybrid".to_owned(),
             "internal".to_owned(),
         ];
-        canonicalize_transports(&mut transports);
+        webauthn_wire::canonicalize_transports(&mut transports);
         assert_eq!(transports, ["hybrid", "internal"]);
+    }
+
+    #[test]
+    fn additional_passkey_uses_full_registration_wire_golden() {
+        // 附加 Passkey 与初次注册、恢复使用同一选项投影。
+        // Additional Passkeys use the same option projection as initial registration and recovery.
+        webauthn_wire::tests::assert_registration_golden();
     }
 
     #[test]

@@ -53,9 +53,15 @@ describe("IdentityApiClient", () => {
     });
   });
 
+  it("retains its localized fallback for non-JSON proxy errors", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("<h1>Unavailable</h1>", { status: 502, headers: { "content-type": "text/html" } }));
+    const error = await new IdentityApiClient("https://identity.moesegfault.dev", fetchMock).getPrincipal().catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ status: 502, message: "请求失败（HTTP 502）" });
+  });
+
   it("rejects origins containing paths or non-HTTP schemes", () => {
     expect(() => new IdentityApiClient("https://identity.moesegfault.dev/v1"))
-      .toThrow(/origin/u);
+      .toThrow("Identity API origin 必须是纯 HTTP(S) origin");
     expect(() => new IdentityApiClient("javascript:alert(1)"))
       .toThrow();
   });
