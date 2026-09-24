@@ -68,11 +68,13 @@ For each token or revocation request, create a new short-lived assertion signed 
   "iss": "client_id",
   "sub": "client_id",
   "aud": "the exact discovered token endpoint",
-  "iat": 0,
-  "exp": 0,
+  "iat": "<current Unix seconds>",
+  "exp": "<current Unix seconds + at most 300>",
   "jti": "fresh unguessable value"
 }
 ```
+
+The quoted time values are placeholders, not literal JWT claims: substitute JSON numbers calculated for each request. A literal `0` for either value creates an expired assertion. Set `exp` later than `iat` and no more than five minutes after it.
 
 Send it as `client_assertion` with:
 
