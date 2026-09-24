@@ -92,10 +92,7 @@ pub fn normalize_email(input: &str) -> Result<String, PolicyError> {
 /// Produces canonical E.164 form from a calling code and national number.
 pub fn normalize_mobile(calling_code: &str, national_number: &str) -> Result<String, PolicyError> {
     let calling_code = calling_code.trim().trim_start_matches('+');
-    let national_number: String = national_number
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '-' | '(' | ')'))
-        .collect();
+    let national_number = compact_mobile_number(national_number);
     if calling_code.is_empty()
         || calling_code.len() > 3
         || calling_code.starts_with('0')
@@ -108,6 +105,15 @@ pub fn normalize_mobile(calling_code: &str, national_number: &str) -> Result<Str
         return Err(PolicyError::InvalidMobile);
     }
     Ok(format!("+{calling_code}{national_number}"))
+}
+
+/// 仅合并共同的展示分隔符规则，登记与登录仍各自执行不同的有效性策略。
+/// Shares only display-separator handling; registration and login retain distinct validity policies.
+fn compact_mobile_number(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '(' | ')'))
+        .collect()
 }
 
 /// 用于密码登录查询的规范化标识符。/ Canonical identifier for password-login lookup.
@@ -152,8 +158,9 @@ impl LoginIdentifier {
                 value,
             });
         }
-        if input.trim().starts_with('+') {
-            let value = input.trim().replace([' ', '-', '(', ')'], "");
+        let trimmed = input.trim();
+        if trimmed.starts_with('+') {
+            let value = compact_mobile_number(trimmed);
             let digits = value.strip_prefix('+')?;
             if (5..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) {
                 return Some(Self {
@@ -309,5 +316,27 @@ mod tests {
         for input in ["", "a@", "+86 invalid", "+1234", "_klee"] {
             assert!(LoginIdentifier::parse(input).is_none(), "{input}");
         }
+    }
+
+    #[test]
+    fn registration_and_login_share_mobile_display_form_but_not_validity_policy() {
+        let registered = normalize_mobile("+86", "(138) 0013-8000").unwrap();
+        let login = LoginIdentifier::parse(" +86 (138) 0013-8000 ").unwrap();
+        assert_eq!(
+            (login.kind(), login.value()),
+            ("mobile", registered.as_str())
+        );
+
+        // 已部署的登录解析器接受历史存储值；登记必须拒绝无效国际区号。
+        // Login accepts legacy lookup values; registration rejects invalid calling codes.
+        assert_eq!(
+            LoginIdentifier::parse("+012345").unwrap().value(),
+            "+012345"
+        );
+        assert_eq!(
+            normalize_mobile("0", "12345"),
+            Err(PolicyError::InvalidMobile)
+        );
+        assert!(LoginIdentifier::parse("+1\u{a0}2345").is_none());
     }
 }
