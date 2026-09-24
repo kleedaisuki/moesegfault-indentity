@@ -5,9 +5,9 @@
 ## 验证 / Validation
 
 - [ ] Rust fmt/clippy/test and `wasm32-unknown-unknown` build
-- [ ] TypeScript lint/typecheck/test/build
-- [ ] OpenAPI lint and fresh local D1 migration
-- [ ] Both Wrangler deployment dry-runs
+- [ ] TypeScript lint/typecheck/test/build, including shared frontend primitives
+- [ ] OpenAPI lint, fresh and populated D1 migration tests
+- [ ] Identity, Login, and Account Wrangler deployment dry-runs
 
 ## 契约与发布 / Contracts and rollout
 

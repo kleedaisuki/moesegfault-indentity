@@ -82,8 +82,6 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies / 安装锁定依赖
         run: npm ci --ignore-scripts
-      - name: Dependency advisory gate / 依赖公告门禁
-        run: npm audit --audit-level=high
       - name: Lint, typecheck, and test / 静态、类型检查与测试
         run: |
           npm run lint --workspace=@moesegfault/${{ matrix.app }}
@@ -112,6 +110,10 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
+      # One lockfile governs all npm workspaces; audit it once before packaging.
+      # 所有 npm 工作区共用一个锁文件；打包前只需审计一次。
+      - name: Dependency advisory gate / 依赖公告门禁
+        run: npm audit --audit-level=high
       - name: Validate shared browser primitives / 验证共享浏览器原语
         run: npm run typecheck:frontend-shared && npm run test:frontend-shared
       - name: Validate contracts and fresh migration / 验证契约与全新迁移
