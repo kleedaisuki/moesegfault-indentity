@@ -1,3 +1,5 @@
+import { frontendOrigins } from "@moesegfault/frontend-shared";
+
 /**
  * 根据受控 Login hostname 选择对应的 Identity authority。
  * Selects the matching Identity authority from a controlled Login hostname.
@@ -8,21 +10,12 @@
  * use fixed mappings so the same static artifact never silently crosses environments.
  */
 export function resolveIdentityOrigin(location: Pick<Location, "hostname">, override?: string): string {
-  if (override) return override;
-  if (location.hostname === "login-staging.moesegfault.dev") {
-    return "https://identity-staging.moesegfault.dev";
-  }
-  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
-    return "http://localhost:8787";
-  }
-  return "https://identity.moesegfault.dev";
+  return override || frontendOrigins(location.hostname).identity;
 }
 
 /** 从登录环境映射到同环境账号中心，禁止 staging 跨到 production。Maps login to the same-environment Account origin. */
 export function resolveAccountOrigin(location: Pick<Location, "hostname">): string {
-  if (location.hostname === "login-staging.moesegfault.dev") return "https://account-staging.moesegfault.dev";
-  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") return "http://localhost:5174";
-  return "https://account.moesegfault.dev";
+  return frontendOrigins(location.hostname).account;
 }
 
 const accountReturnPaths = new Set(["/", "/profile", "/security", "/sessions", "/apps"]);

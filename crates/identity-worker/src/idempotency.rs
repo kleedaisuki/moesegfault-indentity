@@ -477,9 +477,7 @@ impl IdempotencyKey {
     }
 
     fn parse(value: String) -> Result<Self, KeyError> {
-        if !(16..=128).contains(&value.len())
-            || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-        {
+        if !guard::valid_idempotency_key(&value) {
             return Err(KeyError::Invalid);
         }
         Ok(Self(value))

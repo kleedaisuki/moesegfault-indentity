@@ -118,7 +118,8 @@ jobs:
         run: npm run lint:openapi && npm run migrate:local && npm run test:migrations
       - name: Validate scripts and JSONC / 验证脚本与 JSONC
         run: |
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
+          bash scripts/tests/wrangler-env.sh
           jq -e . wrangler.identity.jsonc wrangler.login.jsonc wrangler.account.jsonc >/dev/null
 
   package:

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Promote the exact tested bundle through one environment. / 将完全相同的已测试制品提升到指定环境。
 set -euo pipefail
+# shellcheck source=scripts/lib/wrangler-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/wrangler-env.sh"
 
 readonly TARGET="${1:-}"
 readonly IDENTITY_CONFIG="wrangler.identity.jsonc"
@@ -20,17 +22,6 @@ test -f crates/identity-worker/build/worker/shim.mjs
 test -f apps/login/dist/index.html
 test -f apps/account/dist/index.html
 
-env_args() {
-  # Wrangler represents the reviewed top-level staging config as an explicit empty environment.
-  # Wrangler 用显式空环境表示已评审的顶层 staging 配置；省略会产生多环境歧义警告。
-  printf '%s\n' --env
-  if [[ "$TARGET" == "production" ]]; then
-    printf '%s\n' production
-  else
-    printf '\n'
-  fi
-}
-
 verify_runtime_secrets() {
   local secrets_json secret
   local -a args required=(
@@ -43,7 +34,7 @@ verify_runtime_secrets() {
     SESSION_PEPPER
     CSRF_PEPPER
   )
-  mapfile -t args < <(env_args)
+  mapfile -t args < <(wrangler_env_args "$TARGET")
   if [[ "$(jq -r ".env.${TARGET}.vars.OAUTH_ENABLED // .vars.OAUTH_ENABLED" "$IDENTITY_CONFIG")" == "true" ]]; then
     required+=(AUTHORIZATION_CODE_PEPPER REFRESH_TOKEN_PEPPER PAIRWISE_SUBJECT_KEY OIDC_PRIVATE_KEY_PKCS8)
   fi
@@ -59,7 +50,7 @@ verify_runtime_secrets() {
 deploy_unit() {
   local config="$1"
   local -a args
-  mapfile -t args < <(env_args)
+  mapfile -t args < <(wrangler_env_args "$TARGET")
   # Domains are long-lived infrastructure reconciled by bootstrap-cloudflare.sh. Keeping them out
   # of application deploys lets the least-privilege CI token publish code without zone-route access.
   # 域名属于由 bootstrap-cloudflare.sh 调和的长期基础设施。将其与应用发布分离后，
@@ -73,12 +64,8 @@ verify_runtime_secrets
 # Worker 回滚无法恢复数据；迁移必须保持扩展—迁移—收缩兼容性。
 readonly DB_NAME="moesegfault-identity-${TARGET}"
 declare -a d1_args=(--remote --config "$IDENTITY_CONFIG")
-d1_args+=(--env)
-if [[ "$TARGET" == "production" ]]; then
-  d1_args+=(production)
-else
-  d1_args+=("")
-fi
+mapfile -t env_args < <(wrangler_env_args "$TARGET")
+d1_args+=("${env_args[@]}")
 npx --no-install wrangler d1 migrations list "$DB_NAME" "${d1_args[@]}"
 npx --no-install wrangler d1 migrations apply "$DB_NAME" "${d1_args[@]}"
 

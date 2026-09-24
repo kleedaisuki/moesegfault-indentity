@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Provision or verify long-lived Cloudflare data resources. / 创建或验证 Cloudflare 长期数据资源。
 set -euo pipefail
+# shellcheck source=scripts/lib/wrangler-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/wrangler-env.sh"
 
 readonly STAGING_DB="moesegfault-identity-staging"
 readonly STAGING_DB_ID="c4042bd4-bb4a-4cf7-aa7f-04cf1a5d6ad9"
@@ -189,10 +191,7 @@ verify_runtime_secrets() {
     SESSION_PEPPER
     CSRF_PEPPER
   )
-  # An empty Wrangler environment explicitly selects the top-level staging configuration.
-  # 空 Wrangler 环境会明确选择顶层 staging 配置，而不是含糊地省略目标。
-  env_args=(--env "")
-  [[ "$target" == "production" ]] && env_args=(--env production)
+  mapfile -t env_args < <(wrangler_env_args "$target")
   if [[ "$(jq -r ".env.${target}.vars.OAUTH_ENABLED // .vars.OAUTH_ENABLED" wrangler.identity.jsonc)" == "true" ]]; then
     required+=(
       AUTHORIZATION_CODE_PEPPER

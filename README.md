@@ -43,6 +43,7 @@ registration + sign-in    profile + contacts + security
 
 ```bash
 npm ci --ignore-scripts
+npm audit --audit-level=high
 cp .dev.vars.example .dev.vars
 
 cargo fmt --all -- --check
@@ -50,6 +51,7 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo check -p identity-worker --target wasm32-unknown-unknown --locked
 
+npm run typecheck:frontend-shared && npm run test:frontend-shared
 npm run lint:login && npm run test:login && npm run build:login
 npm run lint:account && npm run test:account && npm run build:account
 npm run lint:openapi
@@ -61,6 +63,10 @@ npm run dry-run:identity
 npm run dry-run:login
 npm run dry-run:account
 ```
+
+依赖清单与锁文件应一同审查，确保 `npm ci` 和 Cargo `--locked` 检查可复现。Vendored Passkey crate 有独立锁文件且不属于工作区；修改它时须单独验证。避免没有兼容性或安全公告依据的版本变动，并让仓库内 SKILL 的集成说明与 discovery、OpenAPI 和实际处理器保持一致。
+
+Review dependency manifests with their lockfiles so `npm ci` and Cargo's `--locked` checks remain reproducible. The vendored Passkey crate is outside the workspace and has its own lockfile; validate it separately when changed. Avoid version-only churn without a concrete compatibility or advisory reason, and keep the checked-in SKILL's integration claims aligned with discovery, OpenAPI, and live handlers.
 
 ## CI/CD 与 SRE
 

@@ -2330,7 +2330,7 @@ fn mutation_problem(
     let Some(key) = guard::header(request.headers(), "idempotency-key") else {
         return invalid_request("Idempotency-Key is required", correlation).map(Some);
     };
-    if !(16..=128).contains(&key.len()) || !key.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+    if !guard::valid_idempotency_key(&key) {
         return invalid_request("Invalid Idempotency-Key", correlation).map(Some);
     }
     let expected = match body {
