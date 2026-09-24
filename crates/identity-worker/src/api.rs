@@ -1937,16 +1937,28 @@ mod tests {
         assert_eq!(wire["pub_key_cred_params"].as_array().unwrap().len(), 1);
         assert_eq!(wire["user"]["display_name"], "Klee");
         assert_eq!(wire["authenticator_selection"]["resident_key"], "required");
-        assert_eq!(wire["authenticator_selection"]["require_resident_key"], true);
-        assert_eq!(wire["authenticator_selection"]["user_verification"], "required");
+        assert_eq!(
+            wire["authenticator_selection"]["require_resident_key"],
+            true
+        );
+        assert_eq!(
+            wire["authenticator_selection"]["user_verification"],
+            "required"
+        );
     }
 
     #[test]
     fn ceremony_binding_hashes_browser_and_csrf_independently() {
         let pepper = b"transaction pepper";
         let binding = CeremonyBinding::new(pepper, "browser wire", "csrf wire");
-        assert_eq!(binding.browser_digest, SecretDigest::hmac(pepper, b"browser wire"));
-        assert_eq!(binding.csrf_digest, SecretDigest::hmac(pepper, b"csrf wire"));
+        assert_eq!(
+            binding.browser_digest,
+            SecretDigest::hmac(pepper, b"browser wire")
+        );
+        assert_eq!(
+            binding.csrf_digest,
+            SecretDigest::hmac(pepper, b"csrf wire")
+        );
         assert_ne!(binding.browser_digest, binding.csrf_digest);
     }
 

@@ -1321,9 +1321,7 @@ fn validate_bodyless_mutation(
     if guard::allowed_origin(env, guard::header(request.headers(), "origin").as_deref()).is_none() {
         return Err(guard::GuardError::Origin);
     }
-    if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
-        || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
-    {
+    if !guard::fetch_site_allowed(guard::header(request.headers(), "sec-fetch-site").as_deref()) {
         return Err(guard::GuardError::FetchMetadata);
     }
     if guard::header(request.headers(), "x-moesegfault-csrf").is_none() {

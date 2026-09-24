@@ -323,9 +323,7 @@ async fn validate_preclaim_boundary(
         return boundary_problem("invalid_request", "Origin is not allowed", 403, correlation)
             .map(Boundary::Response);
     }
-    if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
-        || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
-    {
+    if !guard::fetch_site_allowed(guard::header(request.headers(), "sec-fetch-site").as_deref()) {
         return boundary_problem(
             "invalid_request",
             "Invalid browser request context",

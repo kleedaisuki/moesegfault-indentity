@@ -33,8 +33,8 @@ pub enum OriginScope {
     PairedFrontends,
 }
 
-/// 校验浏览器 JSON mutation 的 Origin、内容类型与 Fetch Metadata。
-/// Validates Origin, content type, and Fetch Metadata for browser JSON mutations.
+/// 校验浏览器 JSON mutation 的精确 Origin、内容类型和 CSRF header；显式跨站信号被拒绝。
+/// Validates exact Origin, content type, and CSRF header for browser JSON mutations; explicit cross-site signals are rejected.
 pub fn validate_browser_mutation(request: &Request, env: &Env) -> Result<(), GuardError> {
     let headers = request.headers();
     if allowed_origin(env, header(headers, "origin").as_deref()).is_none() {
@@ -48,15 +48,20 @@ pub fn validate_browser_mutation(request: &Request, env: &Env) -> Result<(), Gua
     {
         return Err(GuardError::ContentType);
     }
-    if header(headers, "sec-fetch-site").as_deref() != Some("same-site")
-        || header(headers, "sec-fetch-mode").as_deref() != Some("cors")
-    {
+    if !fetch_site_allowed(header(headers, "sec-fetch-site").as_deref()) {
         return Err(GuardError::FetchMetadata);
     }
     if header(headers, "x-moesegfault-csrf").is_none() {
         return Err(GuardError::Csrf);
     }
     Ok(())
+}
+
+/// Fetch Metadata 缺失时回退到精确 Origin 与 CSRF 校验；只拒绝显式跨站请求。
+/// Falls back to exact Origin and CSRF checks when Fetch Metadata is absent; rejects only explicit cross-site requests.
+#[must_use]
+pub fn fetch_site_allowed(site: Option<&str>) -> bool {
+    site != Some("cross-site")
 }
 
 /// 验证事务绑定 cookie 和 CSRF token 的摘要。
@@ -121,7 +126,14 @@ pub fn session_csrf_token(session_wire: &str, csrf_pepper: &[u8]) -> String {
 /// 常量时间验证会话绑定 CSRF header。/ Constant-time verifies the session-bound CSRF header.
 #[must_use]
 pub fn validate_session_csrf(request: &Request, session_wire: &str, csrf_pepper: &[u8]) -> bool {
-    let Some(presented) = header(request.headers(), "x-moesegfault-csrf") else {
+    let presented = header(request.headers(), "x-moesegfault-csrf");
+    csrf_token_matches(presented.as_deref(), session_wire, csrf_pepper)
+}
+
+/// 在请求解析后仍用常量时间比较，不把 Fetch Metadata 当作凭据。
+/// Uses a constant-time comparison after header extraction; Fetch Metadata is not a credential.
+fn csrf_token_matches(presented: Option<&str>, session_wire: &str, csrf_pepper: &[u8]) -> bool {
+    let Some(presented) = presented else {
         return false;
     };
     let expected = session_csrf_token(session_wire, csrf_pepper);
@@ -302,5 +314,44 @@ mod tests {
                 .as_deref(),
             Some(account)
         );
+    }
+
+    #[test]
+    fn fetch_metadata_is_optional_but_explicit_cross_site_is_denied() {
+        assert!(fetch_site_allowed(None));
+        assert!(fetch_site_allowed(Some("same-site")));
+        assert!(fetch_site_allowed(Some("same-origin")));
+        assert!(fetch_site_allowed(Some("none")));
+        assert!(fetch_site_allowed(Some("future-value")));
+        assert!(!fetch_site_allowed(Some("cross-site")));
+    }
+
+    #[test]
+    fn metadata_fallback_does_not_bypass_origin_or_token_requirements() {
+        let login = "https://login.moesegfault.dev";
+        let account = "https://account.moesegfault.dev";
+        let accepted_origin =
+            configured_origin(Some(login), login, account, OriginScope::LoginOnly);
+        let token = session_csrf_token("browser wire", b"csrf pepper");
+        assert!(fetch_site_allowed(None));
+        assert_eq!(accepted_origin.as_deref(), Some(login));
+        assert!(csrf_token_matches(
+            Some(&token),
+            "browser wire",
+            b"csrf pepper"
+        ));
+        assert!(!csrf_token_matches(None, "browser wire", b"csrf pepper"));
+        assert!(!csrf_token_matches(
+            Some("wrong"),
+            "browser wire",
+            b"csrf pepper"
+        ));
+        assert!(!csrf_token_matches(
+            Some(&token),
+            "other browser",
+            b"csrf pepper"
+        ));
+        assert!(configured_origin(None, login, account, OriginScope::LoginOnly).is_none());
+        assert!(configured_origin(Some(account), login, account, OriginScope::LoginOnly).is_none());
     }
 }

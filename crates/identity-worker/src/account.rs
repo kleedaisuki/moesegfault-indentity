@@ -2307,9 +2307,7 @@ fn mutation_problem(
         return problem::response("invalid_request", "Origin is not allowed", 403, correlation)
             .map(Some);
     }
-    if guard::header(request.headers(), "sec-fetch-site").as_deref() != Some("same-site")
-        || guard::header(request.headers(), "sec-fetch-mode").as_deref() != Some("cors")
-    {
+    if !guard::fetch_site_allowed(guard::header(request.headers(), "sec-fetch-site").as_deref()) {
         return problem::response(
             "invalid_request",
             "Invalid browser request context",
