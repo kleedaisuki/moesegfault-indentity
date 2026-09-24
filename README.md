@@ -60,6 +60,7 @@ npm run test:migrations
 
 # worker-build 0.8.5 is required / 需要 worker-build 0.8.5
 npm run dry-run:identity
+node scripts/tests/security-boundary.mjs
 npm run dry-run:login
 npm run dry-run:account
 ```
@@ -70,7 +71,7 @@ Review dependency manifests with their lockfiles so `npm ci` and Cargo's `--lock
 
 ## CI/CD 与 SRE
 
-GitHub Actions 对 Rust、Wasm、两个前端及共享浏览器原语、OpenAPI、全新和含数据的 D1 migration、脚本和三个 Wrangler 包执行门禁。npm 工作区共享一个锁文件，依赖公告审计在契约任务中运行一次并阻止打包。`main` 把同一个校验和制品先部署至 staging 并冒烟验证，再经 GitHub Environment 提升至 production；不会在两个环境重新构建。
+GitHub Actions 对 Rust、Wasm、两个前端及共享浏览器原语、OpenAPI、全新和含数据的 D1 migration、隔离本地 D1 上的 Worker 请求边界、脚本和三个 Wrangler 包执行门禁。npm 工作区共享一个锁文件，依赖公告审计在契约任务中运行一次并阻止打包。`main` 把同一个校验和制品先部署至 staging 并冒烟验证，再经 GitHub Environment 提升至 production；不会在两个环境重新构建。
 
 可观测性是发布契约的一部分：结构化日志和关联 ID 必须覆盖认证与 OAuth 路径，指标保持低基数，SLO 同时约束可用性与延迟。告警、回滚、迁移和故障响应见 [`infra/RUNBOOK.md`](infra/RUNBOOK.md)。
 
