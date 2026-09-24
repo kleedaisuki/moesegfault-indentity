@@ -7,8 +7,8 @@
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use identity_domain::{
-    AuditEventId, IdentifierId, PrincipalId, SecretDigest, SessionId, TransactionId,
-    normalize_email, normalize_mobile, normalize_username, validate_password,
+    AuditEventId, IdentifierId, LoginIdentifier, PrincipalId, SecretDigest, SessionId,
+    TransactionId, normalize_email, normalize_mobile, normalize_username, validate_password,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -299,12 +299,12 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
     if input.password.chars().count() > 128 {
         return authentication_failed(&correlation);
     }
-    let normalized = normalize_login(&input.login);
+    let normalized = LoginIdentifier::parse(&input.login);
     let identity = match normalized {
-        Some((kind, value)) => context
+        Some(login) => context
             .d1("DB")?
             .prepare("SELECT p.principal_id,p.lifecycle_state,c.password_hash FROM identifiers i JOIN principals p ON p.principal_id=i.principal_id JOIN password_credentials c ON c.principal_id=p.principal_id WHERE i.kind=?1 AND i.normalized_value=?2 AND (i.kind='username' OR i.verification_state='verified') LIMIT 1")
-            .bind(&[text(kind), text(&value)])?
+            .bind(&[text(login.kind()), text(login.value())])?
             .first::<PasswordIdentity>(None)
             .await?,
         None => None,
@@ -407,23 +407,6 @@ pub(crate) fn verify_password(password: &str, encoded: &str) -> bool {
             .verify_password(password.as_bytes(), &hash)
             .is_ok()
     })
-}
-
-fn normalize_login(input: &str) -> Option<(&'static str, String)> {
-    if input.contains('@') {
-        return normalize_email(input).ok().map(|value| ("email", value));
-    }
-    if input.trim().starts_with('+') {
-        let value = input.trim().replace([' ', '-', '(', ')'], "");
-        let digits = value.strip_prefix('+')?;
-        if (5..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) {
-            return Some(("mobile", value));
-        }
-        return None;
-    }
-    normalize_username(input)
-        .ok()
-        .map(|value| ("username", value))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -658,21 +641,5 @@ mod tests {
         assert!(encoded.starts_with("$argon2id$"));
         assert!(verify_password("correct horse battery staple", &encoded));
         assert!(!verify_password("another long wrong password", &encoded));
-    }
-
-    #[test]
-    fn login_discriminator_uses_canonical_identifier_kind() {
-        assert_eq!(
-            normalize_login(" Klee "),
-            Some(("username", "klee".to_owned()))
-        );
-        assert_eq!(
-            normalize_login("Klee@EXAMPLE.COM"),
-            Some(("email", "Klee@example.com".to_owned()))
-        );
-        assert_eq!(
-            normalize_login("+86 138-0013-8000"),
-            Some(("mobile", "+8613800138000".to_owned()))
-        );
     }
 }

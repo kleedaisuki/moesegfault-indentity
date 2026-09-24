@@ -110,6 +110,82 @@ pub fn normalize_mobile(calling_code: &str, national_number: &str) -> Result<Str
     Ok(format!("+{calling_code}{national_number}"))
 }
 
+/// 用于密码登录查询的规范化标识符。/ Canonical identifier for password-login lookup.
+///
+/// 类型与值只能经 `parse` 一起产生，避免把邮箱值误配到 username 查询。
+/// Kind and value are produced together by `parse`, avoiding a mismatched lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginIdentifier {
+    kind: LoginIdentifierKind,
+    value: String,
+}
+
+/// 登录标识符的存储类别。/ Storage category of a login identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginIdentifierKind {
+    Username,
+    Email,
+    Mobile,
+}
+
+impl LoginIdentifier {
+    /// 按既有优先级解析登录输入；不合规输入返回 `None`。
+    /// Parses login input with the established precedence; invalid input returns `None`.
+    ///
+    /// `@` 优先判为邮箱，前导 `+` 判为手机号，其余判为用户名。手机号保留
+    /// 已部署的宽松登录格式；登记时仍应使用 `normalize_mobile`。
+    /// `@` selects email, a leading `+` selects mobile, and otherwise username.
+    /// Mobile retains the deployed permissive login format; registration should
+    /// continue to use `normalize_mobile`.
+    ///
+    /// ```
+    /// use identity_domain::LoginIdentifier;
+    /// let login = LoginIdentifier::parse(" Klee@EXAMPLE.COM ").unwrap();
+    /// assert_eq!(login.kind(), "email");
+    /// assert_eq!(login.value(), "Klee@example.com");
+    /// ```
+    #[must_use]
+    pub fn parse(input: &str) -> Option<Self> {
+        if input.contains('@') {
+            return normalize_email(input).ok().map(|value| Self {
+                kind: LoginIdentifierKind::Email,
+                value,
+            });
+        }
+        if input.trim().starts_with('+') {
+            let value = input.trim().replace([' ', '-', '(', ')'], "");
+            let digits = value.strip_prefix('+')?;
+            if (5..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Some(Self {
+                    kind: LoginIdentifierKind::Mobile,
+                    value,
+                });
+            }
+            return None;
+        }
+        normalize_username(input).ok().map(|value| Self {
+            kind: LoginIdentifierKind::Username,
+            value,
+        })
+    }
+
+    /// 返回数据库标识符类别。/ Returns the database identifier kind.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self.kind {
+            LoginIdentifierKind::Username => "username",
+            LoginIdentifierKind::Email => "email",
+            LoginIdentifierKind::Mobile => "mobile",
+        }
+    }
+
+    /// 返回用于精确匹配的规范值。/ Returns the canonical value for exact lookup.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
 /// 验证 PKCE S256 challenge 的 RFC 7636 线格式。
 /// Validates the RFC 7636 wire format of a PKCE S256 challenge.
 pub fn validate_pkce_s256(challenge: &str) -> Result<(), PolicyError> {
@@ -218,5 +294,20 @@ mod tests {
             normalize_mobile("086", "13800138000"),
             Err(PolicyError::InvalidMobile)
         );
+    }
+
+    #[test]
+    fn login_identifier_preserves_lookup_precedence_and_wire_values() {
+        for (input, kind, value) in [
+            (" Klee ", "username", "klee"),
+            ("Klee@EXAMPLE.COM", "email", "Klee@example.com"),
+            ("+86 138-0013-8000", "mobile", "+8613800138000"),
+        ] {
+            let login = LoginIdentifier::parse(input).expect("valid login");
+            assert_eq!((login.kind(), login.value()), (kind, value));
+        }
+        for input in ["", "a@", "+86 invalid", "+1234", "_klee"] {
+            assert!(LoginIdentifier::parse(input).is_none(), "{input}");
+        }
     }
 }
