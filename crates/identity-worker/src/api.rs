@@ -20,6 +20,24 @@ const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
 const CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
+/// 将一次浏览器仪式绑定到两个独立的一次性凭据；仅摘要进入 D1。
+/// Binds a browser ceremony to two distinct one-time credentials; only digests enter D1.
+struct CeremonyBinding {
+    browser_digest: SecretDigest,
+    csrf_digest: SecretDigest,
+}
+
+impl CeremonyBinding {
+    /// 使用同一用途专属 pepper 派生两个摘要，不保存原始 cookie 或 CSRF 值。
+    /// Derives both digests with the purpose-specific pepper without retaining raw credentials.
+    fn new(pepper: &[u8], browser_wire: &str, csrf_wire: &str) -> Self {
+        Self {
+            browser_digest: SecretDigest::hmac(pepper, browser_wire.as_bytes()),
+            csrf_digest: SecretDigest::hmac(pepper, csrf_wire.as_bytes()),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Health<'a> {
     status: &'a str,
@@ -390,17 +408,12 @@ pub async fn start_registration(
     };
     let csrf_wire = random_secret_wire();
     let transaction_pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
-    let browser_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), browser_wire.as_bytes());
-    let csrf_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), csrf_wire.as_bytes());
+    let binding = CeremonyBinding::new(transaction_pepper.as_bytes(), &browser_wire, &csrf_wire);
     let user_handle = random_bytes();
     let webauthn = webauthn(&context.env);
     let (challenge, state) =
         webauthn.start_registration(&user_handle, &username, display_name, &[]);
-    let mut public_key = serde_json::to_value(challenge)?;
-    // passkey-auth 0.1.3 exposes "preferred" only; the RP policy is stronger.
-    public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
-    public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
-    let public_key = registration_options_to_wire(public_key);
+    let public_key = registration_options_to_wire(serde_json::to_value(challenge)?);
     let tx_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredRegistration {
         username,
@@ -431,8 +444,8 @@ pub async fn start_registration(
         None,
         decision.capability_id.as_deref(),
         &Sha256::digest(stored.state.challenge.as_bytes()),
-        &browser_digest.0,
-        &csrf_digest.0,
+        &binding.browser_digest.0,
+        &binding.csrf_digest.0,
         &rp_id(&context.env),
         &guard::login_origin(&context.env),
         &stored_envelope,
@@ -799,8 +812,7 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
     };
     let csrf_wire = random_secret_wire();
     let pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
-    let browser_digest = SecretDigest::hmac(pepper.as_bytes(), browser_wire.as_bytes());
-    let csrf_digest = SecretDigest::hmac(pepper.as_bytes(), csrf_wire.as_bytes());
+    let binding = CeremonyBinding::new(pepper.as_bytes(), &browser_wire, &csrf_wire);
     let (challenge, state) = match user_handle.as_deref() {
         Some(user_handle) => {
             webauthn(&context.env).start_authentication_for_user(user_handle, &credentials)
@@ -828,8 +840,8 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
             &id,
             principal_id,
             &challenge_digest,
-            &browser_digest.0,
-            &csrf_digest.0,
+            &binding.browser_digest.0,
+            &binding.csrf_digest.0,
             &rp_id(&context.env),
             &guard::login_origin(&context.env),
             &stored_envelope,
@@ -846,8 +858,8 @@ pub async fn start_authentication(request: Request, context: RouteContext<()>) -
             None,
             None,
             &challenge_digest,
-            &browser_digest.0,
-            &csrf_digest.0,
+            &binding.browser_digest.0,
+            &binding.csrf_digest.0,
             &rp_id(&context.env),
             &guard::login_origin(&context.env),
             &stored_envelope,
@@ -1463,19 +1475,15 @@ pub async fn start_recovery(mut request: Request, context: RouteContext<()>) -> 
         .ok_or_else(|| Error::RustError("validated browser cookie disappeared".into()))?;
     let csrf_wire = random_secret_wire();
     let transaction_pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
-    let browser_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), browser_wire.as_bytes());
-    let csrf_digest = SecretDigest::hmac(transaction_pepper.as_bytes(), csrf_wire.as_bytes());
+    let binding = CeremonyBinding::new(transaction_pepper.as_bytes(), &browser_wire, &csrf_wire);
     let now = now_seconds();
-    let mut public_key = serde_json::to_value(challenge)?;
-    public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
-    public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
-    let public_key = registration_options_to_wire(public_key);
+    let public_key = registration_options_to_wire(serde_json::to_value(challenge)?);
     repository::insert_recovery_transaction(
         &db,
         &id,
         &identity,
-        &browser_digest.0,
-        &csrf_digest.0,
+        &binding.browser_digest.0,
+        &binding.csrf_digest.0,
         &challenge_digest,
         &rp_id(&context.env),
         &guard::login_origin(&context.env),
@@ -1755,7 +1763,13 @@ fn date_time(seconds: i64) -> String {
         .expect("RFC 3339 formatting is infallible for a valid timestamp")
 }
 
+/// 对注册及恢复使用同一 RP 凭据策略，再映射为公开的 snake_case 契约。
+/// Applies one RP credential policy to registration and recovery before mapping the public snake_case contract.
 fn registration_options_to_wire(mut value: serde_json::Value) -> serde_json::Value {
+    // passkey-auth 0.1.3 只暴露 preferred；两个仪式均要求可发现凭据。
+    // passkey-auth 0.1.3 exposes "preferred" only; both ceremonies require discoverable credentials.
+    value["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
+    value["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
     if let Some(parameters) = value
         .get_mut("pubKeyCredParams")
         .and_then(|v| v.as_array_mut())
@@ -1917,12 +1931,23 @@ mod tests {
 
     #[test]
     fn webauthn_options_use_contract_snake_case() {
-        let value = serde_json::json!({"pubKeyCredParams":[{"type":"public-key","alg":-7},{"type":"public-key","alg":-8}],"user":{"displayName":"Klee"},"authenticatorSelection":{"residentKey":"required","requireResidentKey":true,"userVerification":"required"}});
+        let value = serde_json::json!({"pubKeyCredParams":[{"type":"public-key","alg":-7},{"type":"public-key","alg":-8}],"user":{"displayName":"Klee"},"authenticatorSelection":{"residentKey":"preferred","requireResidentKey":false,"userVerification":"required"}});
         let wire = registration_options_to_wire(value);
         assert!(wire.get("pub_key_cred_params").is_some());
         assert_eq!(wire["pub_key_cred_params"].as_array().unwrap().len(), 1);
         assert_eq!(wire["user"]["display_name"], "Klee");
         assert_eq!(wire["authenticator_selection"]["resident_key"], "required");
+        assert_eq!(wire["authenticator_selection"]["require_resident_key"], true);
+        assert_eq!(wire["authenticator_selection"]["user_verification"], "required");
+    }
+
+    #[test]
+    fn ceremony_binding_hashes_browser_and_csrf_independently() {
+        let pepper = b"transaction pepper";
+        let binding = CeremonyBinding::new(pepper, "browser wire", "csrf wire");
+        assert_eq!(binding.browser_digest, SecretDigest::hmac(pepper, b"browser wire"));
+        assert_eq!(binding.csrf_digest, SecretDigest::hmac(pepper, b"csrf wire"));
+        assert_ne!(binding.browser_digest, binding.csrf_digest);
     }
 
     #[test]
