@@ -17,6 +17,7 @@ pub(crate) mod oauth_repository;
 mod password;
 mod problem;
 mod repository;
+mod webauthn_wire;
 mod webcrypto;
 
 use worker::*;

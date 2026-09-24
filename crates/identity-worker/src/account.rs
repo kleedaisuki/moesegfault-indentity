@@ -19,7 +19,7 @@ use sha2::{Digest as _, Sha256};
 use worker::wasm_bindgen::JsValue;
 use worker::*;
 
-use crate::{account_repository as repository, ceremony_state, guard, problem};
+use crate::{account_repository as repository, ceremony_state, guard, problem, webauthn_wire};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
@@ -1862,14 +1862,12 @@ pub async fn start_authenticator_registration(
         now + 300,
     )
     .await?;
-    let mut public_key = serde_json::to_value(challenge)?;
-    public_key["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
-    public_key["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
+    let public_key = serde_json::to_value(challenge)?;
     json(
         &TransactionResponse {
             transaction_id: id,
             csrf_token: csrf_wire,
-            public_key: registration_options_to_wire(public_key),
+            public_key: webauthn_wire::registration_options_to_wire(public_key),
             expires_at: date_time(now + 300),
         },
         201,
@@ -1976,7 +1974,7 @@ pub(crate) async fn finish_authenticator_registration(
             );
         }
     };
-    canonicalize_transports(&mut credential.transports);
+    webauthn_wire::canonicalize_transports(&mut credential.transports);
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let db = context.d1("DB")?;
     repository::commit_addition(
@@ -2563,53 +2561,6 @@ fn webauthn(env: &Env) -> Webauthn {
         .authenticator_attachment(Attachment::Any)
 }
 
-fn registration_options_to_wire(mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(parameters) = value
-        .get_mut("pubKeyCredParams")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        parameters.retain(|parameter| {
-            parameter.get("alg").and_then(serde_json::Value::as_i64) == Some(-7)
-        });
-    }
-    rename(&mut value, "pubKeyCredParams", "pub_key_cred_params");
-    rename(&mut value, "excludeCredentials", "exclude_credentials");
-    rename(
-        &mut value,
-        "authenticatorSelection",
-        "authenticator_selection",
-    );
-    if let Some(user) = value.get_mut("user") {
-        rename(user, "displayName", "display_name");
-    }
-    if let Some(selection) = value.get_mut("authenticator_selection") {
-        rename(
-            selection,
-            "authenticatorAttachment",
-            "authenticator_attachment",
-        );
-        rename(selection, "residentKey", "resident_key");
-        rename(selection, "requireResidentKey", "require_resident_key");
-        rename(selection, "userVerification", "user_verification");
-    }
-    value
-}
-
-fn rename(value: &mut serde_json::Value, from: &str, to: &str) {
-    if let Some(object) = value.as_object_mut()
-        && let Some(item) = object.remove(from)
-    {
-        object.insert(to.to_owned(), item);
-    }
-}
-
-/// 对 transport hints 排序去重，使存储与 OpenAPI `uniqueItems` 保持一致。
-/// Sorts and deduplicates transport hints to preserve the OpenAPI `uniqueItems` contract.
-fn canonicalize_transports(transports: &mut Vec<String>) {
-    transports.sort_unstable();
-    transports.dedup();
-}
-
 fn session_csrf(request: &Request, env: &Env) -> Result<String> {
     let wire = guard::cookie(request, guard::SESSION_COOKIE)
         .ok_or_else(|| Error::RustError("authenticated request lost its session cookie".into()))?;
@@ -2880,8 +2831,15 @@ mod tests {
             "hybrid".to_owned(),
             "internal".to_owned(),
         ];
-        canonicalize_transports(&mut transports);
+        webauthn_wire::canonicalize_transports(&mut transports);
         assert_eq!(transports, ["hybrid", "internal"]);
+    }
+
+    #[test]
+    fn additional_passkey_uses_full_registration_wire_golden() {
+        // 附加 Passkey 与初次注册、恢复使用同一选项投影。
+        // Additional Passkeys use the same option projection as initial registration and recovery.
+        webauthn_wire::tests::assert_registration_golden();
     }
 
     #[test]

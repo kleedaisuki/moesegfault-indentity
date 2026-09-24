@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::*;
 
-use crate::{ceremony_state, guard, oauth_repository, problem, repository};
+use crate::{ceremony_state, guard, oauth_repository, problem, repository, webauthn_wire};
 
 const RP_NAME: &str = "moeSegFault";
 const MAX_JSON_BYTES: u64 = 64 * 1024;
@@ -413,7 +413,7 @@ pub async fn start_registration(
     let webauthn = webauthn(&context.env);
     let (challenge, state) =
         webauthn.start_registration(&user_handle, &username, display_name, &[]);
-    let public_key = registration_options_to_wire(serde_json::to_value(challenge)?);
+    let public_key = webauthn_wire::registration_options_to_wire(serde_json::to_value(challenge)?);
     let tx_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
     let stored = StoredRegistration {
         username,
@@ -609,7 +609,7 @@ async fn finish_registration_inner(
                 );
             }
         };
-    canonicalize_transports(&mut credential.transports);
+    webauthn_wire::canonicalize_transports(&mut credential.transports);
     let principal_id = PrincipalId::new_v4().to_string();
     let identifier_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
     let email_identifier_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -1477,7 +1477,7 @@ pub async fn start_recovery(mut request: Request, context: RouteContext<()>) -> 
     let transaction_pepper = secret(&context.env, "TRANSACTION_PEPPER")?;
     let binding = CeremonyBinding::new(transaction_pepper.as_bytes(), &browser_wire, &csrf_wire);
     let now = now_seconds();
-    let public_key = registration_options_to_wire(serde_json::to_value(challenge)?);
+    let public_key = webauthn_wire::registration_options_to_wire(serde_json::to_value(challenge)?);
     repository::insert_recovery_transaction(
         &db,
         &id,
@@ -1607,7 +1607,7 @@ pub async fn finish_recovery(mut request: Request, context: RouteContext<()>) ->
             );
         }
     };
-    canonicalize_transports(&mut credential.transports);
+    webauthn_wire::canonicalize_transports(&mut credential.transports);
     let now = now_seconds();
     let authenticator_id = AuthenticatorId::new_v7(worker::Date::now().as_millis()).to_string();
     let session_id = SessionId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -1763,42 +1763,6 @@ fn date_time(seconds: i64) -> String {
         .expect("RFC 3339 formatting is infallible for a valid timestamp")
 }
 
-/// 对注册及恢复使用同一 RP 凭据策略，再映射为公开的 snake_case 契约。
-/// Applies one RP credential policy to registration and recovery before mapping the public snake_case contract.
-fn registration_options_to_wire(mut value: serde_json::Value) -> serde_json::Value {
-    // passkey-auth 0.1.3 只暴露 preferred；两个仪式均要求可发现凭据。
-    // passkey-auth 0.1.3 exposes "preferred" only; both ceremonies require discoverable credentials.
-    value["authenticatorSelection"]["residentKey"] = serde_json::json!("required");
-    value["authenticatorSelection"]["requireResidentKey"] = serde_json::json!(true);
-    if let Some(parameters) = value
-        .get_mut("pubKeyCredParams")
-        .and_then(|v| v.as_array_mut())
-    {
-        parameters.retain(|parameter| parameter.get("alg").and_then(|v| v.as_i64()) == Some(-7));
-    }
-    rename(&mut value, "pubKeyCredParams", "pub_key_cred_params");
-    rename(&mut value, "excludeCredentials", "exclude_credentials");
-    rename(
-        &mut value,
-        "authenticatorSelection",
-        "authenticator_selection",
-    );
-    if let Some(user) = value.get_mut("user") {
-        rename(user, "displayName", "display_name");
-    }
-    if let Some(selection) = value.get_mut("authenticator_selection") {
-        rename(
-            selection,
-            "authenticatorAttachment",
-            "authenticator_attachment",
-        );
-        rename(selection, "residentKey", "resident_key");
-        rename(selection, "requireResidentKey", "require_resident_key");
-        rename(selection, "userVerification", "user_verification");
-    }
-    value
-}
-
 fn authentication_options_to_wire(mut value: serde_json::Value) -> serde_json::Value {
     rename(&mut value, "rpId", "rp_id");
     rename(&mut value, "allowCredentials", "allow_credentials");
@@ -1815,12 +1779,6 @@ fn rename(value: &mut serde_json::Value, from: &str, to: &str) {
     }
 }
 
-/// 对 transport hints 排序去重，使存储与 OpenAPI `uniqueItems` 保持一致。
-/// Sorts and deduplicates transport hints to preserve the OpenAPI `uniqueItems` contract.
-fn canonicalize_transports(transports: &mut Vec<String>) {
-    transports.sort_unstable();
-    transports.dedup();
-}
 fn secret(env: &Env, name: &str) -> Result<String> {
     env.secret(name)
         .map(|s| s.to_string())
@@ -1932,7 +1890,7 @@ mod tests {
     #[test]
     fn webauthn_options_use_contract_snake_case() {
         let value = serde_json::json!({"pubKeyCredParams":[{"type":"public-key","alg":-7},{"type":"public-key","alg":-8}],"user":{"displayName":"Klee"},"authenticatorSelection":{"residentKey":"preferred","requireResidentKey":false,"userVerification":"required"}});
-        let wire = registration_options_to_wire(value);
+        let wire = webauthn_wire::registration_options_to_wire(value);
         assert!(wire.get("pub_key_cred_params").is_some());
         assert_eq!(wire["pub_key_cred_params"].as_array().unwrap().len(), 1);
         assert_eq!(wire["user"]["display_name"], "Klee");
@@ -1945,6 +1903,20 @@ mod tests {
             wire["authenticator_selection"]["user_verification"],
             "required"
         );
+    }
+
+    #[test]
+    fn initial_registration_uses_full_registration_wire_golden() {
+        // 完整快照包括可选数组和重复 transport。
+        // The full snapshot includes optional arrays and duplicate transports.
+        webauthn_wire::tests::assert_registration_golden();
+    }
+
+    #[test]
+    fn recovery_uses_full_registration_wire_golden() {
+        // 恢复与初次注册使用相同的公开选项策略。
+        // Recovery uses the same public option policy as initial registration.
+        webauthn_wire::tests::assert_registration_golden();
     }
 
     #[test]
@@ -1969,7 +1941,7 @@ mod tests {
             "internal".to_owned(),
             "hybrid".to_owned(),
         ];
-        canonicalize_transports(&mut transports);
+        webauthn_wire::canonicalize_transports(&mut transports);
         assert_eq!(transports, ["hybrid", "internal"]);
     }
 
