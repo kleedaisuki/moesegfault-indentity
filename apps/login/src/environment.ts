@@ -1,4 +1,4 @@
-import { frontendOrigins } from "@moesegfault/frontend-shared";
+import { ACCOUNT_ROUTES, frontendOrigins } from "@moesegfault/frontend-shared";
 
 /**
  * 根据受控 Login hostname 选择对应的 Identity authority。
@@ -18,7 +18,7 @@ export function resolveAccountOrigin(location: Pick<Location, "hostname">): stri
   return frontendOrigins(location.hostname).account;
 }
 
-const accountReturnPaths = new Set(["/", "/profile", "/security", "/sessions", "/apps"]);
+const accountReturnPaths: ReadonlySet<string> = new Set(ACCOUNT_ROUTES);
 
 /**
  * 验证 Account 回跳地址是当前环境的已知页面，且不携带用户信息、查询或片段。

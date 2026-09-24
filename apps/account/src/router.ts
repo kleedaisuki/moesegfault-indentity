@@ -1,6 +1,8 @@
+import { ACCOUNT_ROUTES } from "@moesegfault/frontend-shared";
+
 /** 账号中心的稳定一级路由。Stable top-level Account routes. */
-export type Route = "/" | "/profile" | "/security" | "/sessions" | "/apps";
-const routes = new Set<Route>(["/", "/profile", "/security", "/sessions", "/apps"]);
+export type Route = (typeof ACCOUNT_ROUTES)[number];
+const routes: ReadonlySet<string> = new Set(ACCOUNT_ROUTES);
 
 /** 未知路径回到总览而不是制造错误页。Unknown paths normalize to the overview. */
 export function resolveRoute(pathname: string): Route { const clean = pathname.length > 1 ? pathname.replace(/\/+$/u, "") : pathname; return routes.has(clean as Route) ? clean as Route : "/"; }

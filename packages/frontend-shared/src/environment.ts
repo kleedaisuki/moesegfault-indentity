@@ -8,6 +8,12 @@ export interface FrontendOrigins {
   readonly account: string;
 }
 
+/**
+ * Account 的稳定回跳路径集合，也是账号站路由的单一契约来源。
+ * Stable Account return paths, shared as the single route contract with Login.
+ */
+export const ACCOUNT_ROUTES = ["/", "/profile", "/security", "/sessions", "/apps"] as const;
+
 const production: FrontendOrigins = {
   identity: "https://identity.moesegfault.dev",
   login: "https://login.moesegfault.dev",

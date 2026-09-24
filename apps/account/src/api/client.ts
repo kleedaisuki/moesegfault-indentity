@@ -1,3 +1,4 @@
+import { apiOrigin, parseProblem } from "@moesegfault/frontend-shared";
 import type { Account, AccountPreferences, Avatar, ConnectedApp, Contact, ContactCreate, ContactVerificationTransaction, Credential, MeEnvelope, MutationProof, ProblemDetails, ProfilePatch, ResourceList, SecuritySummary, Session } from "./types";
 
 /** 可注入的 Fetch 接口。Injectable Fetch interface. */
@@ -28,9 +29,7 @@ export class AccountApiClient {
   /** 让应用外壳在任意 401 上同步撤销本地会话。Lets the application shell synchronously revoke local session state on any 401. */
   readonly #onUnauthorized: () => void;
   public constructor(origin: string, fetchImpl: FetchLike = globalThis.fetch.bind(globalThis), onUnauthorized: () => void = () => undefined) {
-    const value = new URL(origin);
-    if (!/^https?:$/u.test(value.protocol) || value.pathname !== "/" || value.search || value.hash) throw new TypeError("API origin must be a plain HTTP(S) origin");
-    this.#origin = value.origin;
+    this.#origin = apiOrigin(origin);
     this.#fetch = fetchImpl;
     this.#onUnauthorized = onUnauthorized;
   }
@@ -96,15 +95,9 @@ export class AccountApiClient {
     }
     if (!response.ok) {
       if (response.status === 401) this.#onUnauthorized();
-      throw new ApiError(response.status, await parseProblem(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
+      throw new ApiError(response.status, await parseProblem<ProblemDetails>(response), response.headers.get("x-moesegfault-correlation-id") ?? undefined);
     }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;
   }
-}
-
-/** 安全解析代理或服务返回的问题详情。Safely parses service or proxy problem details. */
-async function parseProblem(response: Response): Promise<ProblemDetails | undefined> {
-  if (!response.headers.get("content-type")?.includes("json")) return undefined;
-  try { return await response.json() as ProblemDetails; } catch { return undefined; }
 }
