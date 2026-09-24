@@ -146,6 +146,8 @@ jobs:
           cp -a .temp/artifacts/identity-worker-${GITHUB_SHA}/. crates/identity-worker/build/
           cp -a .temp/artifacts/login-assets-${GITHUB_SHA}/. apps/login/dist/
           cp -a .temp/artifacts/account-assets-${GITHUB_SHA}/. apps/account/dist/
+      - name: Verify Worker request boundary / 验证 Worker 请求边界
+        run: node scripts/tests/security-boundary.mjs
       - name: Dry-run every deployment unit / 演练所有发布单元
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc
