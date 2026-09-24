@@ -1,47 +1,8 @@
-/** 可被 DOM helper 接受的子节点。Child value accepted by the DOM helper. */
-export type Child = Node | string | number | false | null | undefined;
+import { el } from "@moesegfault/frontend-shared";
 
-/** 元素属性、dataset 与事件的简洁声明。Compact declaration of element attributes, dataset, and events. */
-export interface ElementOptions {
-  className?: string;
-  attrs?: Record<string, string | boolean | undefined>;
-  dataset?: Record<string, string>;
-  on?: Partial<Record<keyof HTMLElementEventMap, EventListener>>;
-}
-
-/**
- * 通过 text nodes 构建 DOM，杜绝把 API 文本拼入 HTML。
- * Builds DOM with text nodes so API text is never interpolated into HTML.
- */
-export function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  options: ElementOptions = {},
-  ...children: Child[]
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (options.className) node.className = options.className;
-  for (const [name, value] of Object.entries(options.attrs ?? {})) {
-    if (value === undefined || value === false) continue;
-    if (value === true) node.setAttribute(name, "");
-    else node.setAttribute(name, value);
-  }
-  for (const [name, value] of Object.entries(options.dataset ?? {})) node.dataset[name] = value;
-  for (const [event, listener] of Object.entries(options.on ?? {})) {
-    node.addEventListener(event, listener as EventListener);
-  }
-  for (const child of children) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return node;
-}
-
-/** 清空容器并原子替换可见内容。Clears a container and atomically replaces visible content. */
-export function replace(container: Element, ...children: Child[]): void {
-  container.replaceChildren(...children.filter((child): child is Node | string | number =>
-    child !== null && child !== undefined && child !== false,
-  ).map((child) => child instanceof Node ? child : document.createTextNode(String(child))));
-}
+/** 共享 DOM 原语保持既有模块入口不变。Shared DOM primitives retain this module's existing import path. */
+export { el, replace } from "@moesegfault/frontend-shared";
+export type { Child, ElementOptions } from "@moesegfault/frontend-shared";
 
 /** 创建包含显式 label 的文本输入。Creates a text input with an explicit label. */
 export function field(

@@ -55,3 +55,5 @@ export function normalizeLocale(value: string | null | undefined): Locale {
 }
 
 export * from "./avatar";
+export * from "./dom";
+export * from "./environment";
