@@ -1285,9 +1285,10 @@ fn mutation_boundary(
         ));
     }
     let idempotency_key = guard::header(request.headers(), "idempotency-key");
-    if !idempotency_key.as_deref().is_some_and(|value| {
-        (16..=128).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_graphic())
-    }) {
+    if !idempotency_key
+        .as_deref()
+        .is_some_and(guard::valid_idempotency_key)
+    {
         return Err(problem::response(
             "invalid_request",
             "A valid Idempotency-Key is required",

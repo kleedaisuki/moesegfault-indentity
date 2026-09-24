@@ -7,6 +7,13 @@ use worker::{Env, Headers, Request};
 pub const SESSION_COOKIE: &str = "__Host-identity_session";
 pub const BROWSER_COOKIE: &str = "__Host-identity_browser";
 
+/// 校验幂等键的公共线路语法；缺失键与错误响应仍由各路由自行处理。
+/// Validates shared Idempotency-Key wire syntax; routes retain their own missing-key responses.
+#[must_use]
+pub fn valid_idempotency_key(value: &str) -> bool {
+    (16..=128).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 /// 请求边界拒绝原因。/ Request-boundary rejection reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardError {
@@ -196,6 +203,22 @@ fn digest_from_slice(value: &[u8]) -> Option<SecretDigest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idempotency_key_syntax_matches_all_mutation_boundaries() {
+        assert!(valid_idempotency_key("!234567890abc,;~"));
+        assert!(valid_idempotency_key(&"~".repeat(128)));
+        for invalid in [
+            "",
+            "short",
+            &"x".repeat(129),
+            "1234567890abcde ",
+            "1234567890abcde\u{7f}",
+            "1234567890abcd\u{00e9}",
+        ] {
+            assert!(!valid_idempotency_key(invalid), "accepted {invalid:?}");
+        }
+    }
 
     #[test]
     fn cookies_never_set_domain_and_have_expected_same_site() {
