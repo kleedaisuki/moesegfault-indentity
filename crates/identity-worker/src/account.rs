@@ -674,19 +674,21 @@ pub async fn update_contact(mut request: Request, context: RouteContext<()>) -> 
         current.country_calling_code.clone(),
         current.national_number.clone(),
     ));
-    db.batch(vec![
-        db.prepare("UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND identifier_id<>?3 AND ?5=1").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&current.kind),JsValue::from_str(contact_id),JsValue::from_f64(now as f64),JsValue::from_f64(i64::from(primary) as f64)])?,
-        // A challenge is meaningful only for the exact normalized destination it was issued to.
-        // 验证事务只对签发时的规范化目的地有效；改值时立即消费旧事务。
-        db.prepare("UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?3 WHERE identifier_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND normalized_value<>?4)")
-            .bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64),JsValue::from_str(&normalized)])?,
-        db.prepare("UPDATE identifiers SET value=?3,normalized_value=?4,country_calling_code=?5,national_number=?6,is_primary=?7,verification_state=CASE WHEN normalized_value<>?4 THEN 'unverified' ELSE verification_state END,verified_at=CASE WHEN normalized_value<>?4 THEN NULL ELSE verified_at END,updated_at=?8 WHERE identifier_id=?1 AND principal_id=?2").bind(&[JsValue::from_str(contact_id),JsValue::from_str(&session.principal_id),JsValue::from_str(&value),JsValue::from_str(&normalized),optional_js_text(calling_code.as_deref()),optional_js_text(national_number.as_deref()),JsValue::from_f64(i64::from(primary) as f64),JsValue::from_f64(now as f64)])?,
-    ]).await?;
-    let item = repository::identifiers(&db, &session.principal_id)
-        .await?
-        .into_iter()
-        .find(|item| item.identifier_id == contact_id)
-        .ok_or_else(|| Error::RustError("updated contact projection missing".into()))?;
+    let item = repository::update_contact(
+        &db,
+        repository::ContactUpdate {
+            principal_id: &session.principal_id,
+            identifier_id: contact_id,
+            kind: &current.kind,
+            value: &value,
+            normalized_value: &normalized,
+            calling_code: calling_code.as_deref(),
+            national_number: national_number.as_deref(),
+            is_primary: primary,
+            now,
+        },
+    )
+    .await?;
     json(
         &identifier_to_wire(item),
         200,

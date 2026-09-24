@@ -20,6 +20,10 @@ const CREATE_CONTACT_SQL: &str = "INSERT INTO identifiers(\
     WHERE principal_id=?2 AND kind='human' AND lifecycle_state='active' \
     AND ?3 IN ('email','mobile')";
 
+const PROMOTE_CONTACT_SQL: &str = "UPDATE identifiers SET is_primary=0,updated_at=?4 WHERE principal_id=?1 AND kind=?2 AND identifier_id<>?3 AND ?5=1";
+const CANCEL_CONTACT_VERIFICATION_SQL: &str = "UPDATE identifier_verification_transactions SET state='cancelled',consumed_at=?3 WHERE identifier_id=?1 AND state='pending' AND EXISTS(SELECT 1 FROM identifiers WHERE identifier_id=?1 AND principal_id=?2 AND normalized_value<>?4)";
+const UPDATE_CONTACT_SQL: &str = "UPDATE identifiers SET value=?3,normalized_value=?4,country_calling_code=?5,national_number=?6,is_primary=?7,verification_state=CASE WHEN normalized_value<>?4 THEN 'unverified' ELSE verification_state END,verified_at=CASE WHEN normalized_value<>?4 THEN NULL ELSE verified_at END,updated_at=?8 WHERE identifier_id=?1 AND principal_id=?2";
+
 const STEP_UP_SESSION_INSERT_SQL: &str = "INSERT INTO identity_sessions(\
     session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,\
     authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at,created_from_session_id) \
@@ -516,6 +520,69 @@ pub async fn create_contact(
         return Ok(None);
     }
     identifier(db, principal_id, identifier_id).await
+}
+
+/// 已在 HTTP 边界验证和规范化的联系方式变更。/ Contact change validated and normalized at the HTTP boundary.
+///
+/// `kind` 与 `identifier_id` 来自当前账户的标识符投影，而不是请求体。
+/// `kind` and `identifier_id` come from the current account projection, not the request body.
+pub struct ContactUpdate<'a> {
+    /// 所有者主体。/ Owner principal.
+    pub principal_id: &'a str,
+    /// 当前联系方式 ID。/ Existing contact identifier ID.
+    pub identifier_id: &'a str,
+    /// 当前联系方式类别。/ Existing contact kind.
+    pub kind: &'a str,
+    /// 展示值。/ Display value.
+    pub value: &'a str,
+    /// 规范化目的地。/ Normalized destination.
+    pub normalized_value: &'a str,
+    /// 可选国际区号。/ Optional country calling code.
+    pub calling_code: Option<&'a str>,
+    /// 可选本地号码。/ Optional national number.
+    pub national_number: Option<&'a str>,
+    /// 更新后的主联系方式标志。/ Resulting primary-contact flag.
+    pub is_primary: bool,
+    /// 当前 Unix 秒。/ Current Unix seconds.
+    pub now: i64,
+}
+
+/// 原子更新联系渠道、取消旧目的地验证并读取最新投影。
+/// Atomically updates a contact, cancels verification for the old destination, and reads its new projection.
+///
+/// D1 batch 的三个语句必须保持顺序及单事务；仅规范化值变化时取消待处理验证。
+/// The three D1 batch statements must stay ordered in one transaction; only a normalized-value
+/// change cancels pending verification. The readback deliberately occurs after the batch commit.
+pub async fn update_contact(db: &D1Database, input: ContactUpdate<'_>) -> Result<IdentifierView> {
+    db.batch(vec![
+        db.prepare(PROMOTE_CONTACT_SQL).bind(&[
+            text(input.principal_id),
+            text(input.kind),
+            text(input.identifier_id),
+            integer(input.now),
+            integer(i64::from(input.is_primary)),
+        ])?,
+        db.prepare(CANCEL_CONTACT_VERIFICATION_SQL).bind(&[
+            text(input.identifier_id),
+            text(input.principal_id),
+            integer(input.now),
+            text(input.normalized_value),
+        ])?,
+        db.prepare(UPDATE_CONTACT_SQL).bind(&[
+            text(input.identifier_id),
+            text(input.principal_id),
+            text(input.value),
+            text(input.normalized_value),
+            optional_text(input.calling_code),
+            optional_text(input.national_number),
+            integer(i64::from(input.is_primary)),
+            integer(input.now),
+        ])?,
+    ])
+    .await?;
+    identifier(db, input.principal_id, input.identifier_id)
+        .await?
+        .ok_or_else(|| Error::RustError("updated contact projection missing".into()))
 }
 
 /// 删除联系渠道但保留 username 账户锚点。/ Deletes a contact channel while retaining the username account anchor.
@@ -1789,5 +1856,18 @@ mod tests {
     fn unverified_contact_explicitly_clears_schema_verified_default() {
         assert!(CREATE_CONTACT_SQL.contains("verification_state,verified_at"));
         assert!(CREATE_CONTACT_SQL.contains("'unverified',NULL"));
+    }
+
+    #[test]
+    fn contact_update_preserves_primary_and_verification_decisions() {
+        assert!(PROMOTE_CONTACT_SQL.contains("identifier_id<>?3 AND ?5=1"));
+        assert!(PROMOTE_CONTACT_SQL.contains("principal_id=?1 AND kind=?2"));
+        assert!(CANCEL_CONTACT_VERIFICATION_SQL.contains("state='pending'"));
+        assert!(
+            CANCEL_CONTACT_VERIFICATION_SQL.contains("principal_id=?2 AND normalized_value<>?4")
+        );
+        assert!(UPDATE_CONTACT_SQL.contains("identifier_id=?1 AND principal_id=?2"));
+        assert!(UPDATE_CONTACT_SQL.contains("normalized_value<>?4 THEN 'unverified'"));
+        assert!(UPDATE_CONTACT_SQL.contains("normalized_value<>?4 THEN NULL"));
     }
 }
