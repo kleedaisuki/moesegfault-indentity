@@ -12,6 +12,10 @@ on:
         required: true
         default: verify-only
         options: [verify-only, staging-only]
+      verify_client_id:
+        description: 'Optional OAuth client ID to read back from staging D1 / 可选的预发布 D1 客户端 ID'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -210,6 +214,17 @@ jobs:
           sha256sum --check release-${GITHUB_SHA}.sha256
           tar -xzf release-${GITHUB_SHA}.tar.gz
           scripts/release.sh staging
+      - name: Read back reviewed OAuth client / 回读已评审客户端
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_client_id != ''
+        env:
+          CLIENT_ID: ${{ inputs.verify_client_id }}
+        run: |
+          [[ "$CLIENT_ID" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] || { echo 'invalid client ID' >&2; exit 2; }
+          client_json="$(npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc --command="SELECT client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,state FROM oauth_clients WHERE client_id='$CLIENT_ID'" --json)"
+          jq -e --arg id "$CLIENT_ID" '[.[].results[] | select(.client_id == $id and .state == "enabled")] | length == 1' <<<"$client_json" >/dev/null
+          jq . <<<"$client_json"
+          npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc --command="SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id='$CLIENT_ID' ORDER BY redirect_uri" --json
+          npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc --command="SELECT scope FROM oauth_client_scopes WHERE client_id='$CLIENT_ID' ORDER BY scope" --json
 
   deploy-production:
     name: Promote verified revision to production
