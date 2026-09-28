@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      delivery:
+        description: 'Deployment after verified package / 校验制品后的部署'
+        type: choice
+        required: true
+        default: verify-only
+        options: [verify-only, staging-only]
 
 permissions:
   contents: read
@@ -176,7 +183,9 @@ jobs:
 
   deploy-staging:
     name: Deploy and verify staging
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # A branch dispatch can stage one reviewed candidate; only main pushes promote to production.
+    # 分支手动触发只部署预发布候选；仅 main 推送才继续提升至生产。
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only')
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -204,7 +213,7 @@ jobs:
 
   deploy-production:
     name: Promote verified revision to production
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: deploy-staging
     runs-on: ubuntu-24.04
     timeout-minutes: 25
