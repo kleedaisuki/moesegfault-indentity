@@ -14,6 +14,8 @@ The login origin only authenticates and creates accounts. Password and Passkey a
 - OAuth authorization transaction handles are held in memory and forwarded to every login method;
 - UI language (`zh-CN`, `en`, `ja`) and theme are the only values persisted locally. Credentials and CSRF material are never persisted.
 
+When recovering a registration email through `/v1/me/contacts`, the client accepts both the public `contact_id` and legacy `identifier_id` response fields. It refuses a missing contact ID before starting or completing verification, so a projection mismatch cannot become a misleading contact-not-found request.
+
 Account Center may invoke two narrow Login-owned ceremonies:
 
 - `/passkey/enroll?return_uri=…` adds one authenticator;

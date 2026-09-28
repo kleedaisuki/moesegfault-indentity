@@ -181,7 +181,9 @@ async fn route_request(request: Request, env: Env) -> Result<Response> {
         )
         .put_async(
             "/v1/me/password",
-            idempotent!(account::put_password, PutPassword, Session, Replayable),
+            // Password rotation returns a new session cookie: never snapshot that secret for replay.
+            // 密码轮换返回新会话 Cookie：不得为了幂等重放而持久化该秘密。
+            idempotent!(account::put_password, PutPassword, Session, SecretResult),
         )
         .delete_async("/v1/me/password", account::delete_password)
         .delete_async(
@@ -383,8 +385,8 @@ fn vary_with_origin(existing: Option<&str>) -> String {
     fields.join(", ")
 }
 
-/// 定时归档不可变安全审计；失败留在 outbox，绝不阻塞登录。
-/// Scheduled immutable audit archival; failures remain in the outbox and never block login.
+/// 定时排空邮件和审计 outbox，并有界清理过期记录；失败不阻塞登录。
+/// Drains email/audit outboxes and boundedly purges expired rows; failures never block login.
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleContext) {
     if let Err(error) = account::drain_email_verification_outbox(&env, 25).await {
@@ -398,6 +400,11 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleConte
         Ok(db) => {
             if let Err(error) = idempotency::purge_expired(&db, now, 500).await {
                 console_error!("idempotency_expiry_purge_failed error={error}");
+            }
+            // Keep anonymous login-attempt buckets bounded without coupling cleanup to login latency.
+            // 定时限量清理匿名登录尝试桶，避免把清理延迟叠加到登录请求。
+            if let Err(error) = password::purge_expired_attempts(&db, now, 500).await {
+                console_error!("password_attempt_expiry_purge_failed error={error}");
             }
         }
         Err(error) => console_error!("idempotency_expiry_purge_failed error={error}"),

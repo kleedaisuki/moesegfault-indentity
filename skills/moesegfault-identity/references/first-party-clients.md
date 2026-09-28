@@ -40,13 +40,15 @@ Use OpenAPI operation IDs and schemas rather than copying endpoint details into 
 | --- | --- | --- |
 | Registration/sign-in/recovery | Browser context, then a password operation or start/complete Passkey transaction | Start and completion are separate, expiring, idempotent operations; OAuth continuation uses only the server-provided resume URI |
 | Profile and preferences | Account bootstrap, merge-patch profile/preferences | Presentation data never becomes an authentication identifier implicitly |
-| Contacts | List/add/update, start verification, complete with delivered code | Adding a contact does not verify it or automatically grant login/recovery authority |
+| Contacts | List/add/update, start verification, complete with delivered code | Adding a contact does not verify it or automatically grant login/recovery authority; use canonical `contact_id` in verification paths, normalizing legacy `identifier_id` responses at the API boundary during staggered rollout |
 | Avatar | Multipart upload or delete | Keep upload on its media boundary; do not JSON/base64-wrap files |
 | Credentials/recovery | Password set/delete, Passkey add/rename/revoke, recovery-code status/rotation | Preserve at least one usable authentication/recovery path; recovery codes are displayed once |
 | Sessions and connected apps | List/revoke sessions or grants | Revoking a session, grant, refresh family, or current browser cookie has different scope |
 | External identity bindings | List providers/bindings, start server-directed redirect, remove binding | Navigate only to the URL returned by Identity; the callback belongs to Identity |
 
 Before adding a feature, inspect the relevant operations in [`../../../openapi/identity.yaml`](../../../openapi/identity.yaml), then the domain invariants and handler tests. Do not infer a mutation body from a TypeScript view model.
+
+For the registration/account verification sequence, its ID compatibility rule, and `Contact was not found` triage, read [contact verification](contact-verification.md).
 
 ## WebAuthn ceremonies
 

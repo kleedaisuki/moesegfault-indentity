@@ -624,3 +624,28 @@ until the verification transition succeeds.
    outbox; the current digest-only transaction cannot reconstruct a code after a crash.
 5. Measure real delivery latency and inbox placement for the target provider mix before finalizing
    the 30-minute TTL and resend thresholds.
+
+## Implementation incident: contact identifier contract (2026-09-28)
+
+The Account verification action failed before creating a verification transaction with
+`Contact was not found`. This was an HTTP response-contract mismatch, not evidence of a
+Cloudflare email failure: `GET /v1/me/contacts` returned `identifier_id` through the shared
+account identifier projection, whereas the OpenAPI `Contact` schema and Account/Login clients
+read `contact_id`. The resulting request used an undefined contact path segment, which the
+Worker's UUIDv7 path guard correctly rejected with a 404. The displayed `ID` was a correlation
+ID, not the missing contact ID.
+
+The contact-only response projection now emits canonical `contact_id` and a same-valued
+deprecated `identifier_id` alias for deployed consumers. It is used consistently for contact
+list, create, update, and verification-completion responses. The `/v1/me` account identifier
+projection still emits only `identifier_id`; its established contract is unchanged. A Rust
+serialization regression test asserts the two contact IDs agree and that the account
+projection does not acquire `contact_id`. The focused Worker suite (80 tests), Rust format and
+Clippy checks, and release Wasm build passed locally on 2026-09-28. These checks validate the
+contract fix but do **not** establish remote provider acceptance or inbox delivery; staging
+delivery remains a separate release gate.
+
+The general integration invariant is that response projections must be tested against their
+endpoint-specific OpenAPI schemas and at least one actual caller. Reusing one internal database
+model across account and contact APIs is safe only if the public wire names are explicitly
+projected at each boundary.

@@ -88,6 +88,16 @@ Workers Logs 与 Traces 在部署前即开启；低流量阶段 logs 100%、trac
 
 `scripts/smoke.sh <staging|production>` 验证：Identity deep health（含 D1）、OIDC discovery 契约、Login/Account HTML，以及 Account 调用 `/v1/me` 时预检与匿名 `401` 响应的凭据式 CORS 契约。它是部署后 gate，不代替持续外部 synthetic monitoring。
 
+### 邮箱验证故障分流 / Email-verification triage
+
+`Contact was not found` 是联系方式查找阶段的 `404`，发生在邮件 outbox 创建及 Email Service 发送**之前**；不要把它误判为邮件投递故障。用响应的 `x-moesegfault-correlation-id`（或 Problem Details 中的 ID）关联 Worker 日志，先检查请求路径里的 `contact_id` 是否为真实 UUIDv7、当前会话是否拥有该联系方式、联系方式是否已删除或在请求期间改变。不要在日志、工单或聊天中粘贴 cookie、CSRF、验证码或完整邮箱。2026-09-28 的回归原因是联系方式响应曾只给 `identifier_id`，但浏览器读取 `contact_id`，于是请求路径包含 `undefined`；修复后联系方式接口提供标准 `contact_id`，并暂留 `identifier_id` 兼容别名。`/v1/me` 的 account identifier 仍用 `identifier_id`，不可把两种资源的字段全局替换。
+
+只有成功创建验证事务之后，才检查 `email_verification_outbox` 的 `state`、`next_attempt_at`、`attempt_count` 和低基数 `last_error_code`，再检查 Cron 与 Cloudflare Email Service 活动记录。`delivered` 在本系统只表示发送服务接受，不表示用户收件箱收到，更不表示邮箱已验证。Cloudflare 本地 `send_email` binding 默认**模拟发送**，不会送达真实邮箱；部署前的 staging 外部收件人演练必须明确使用远端服务，并避免把验证码写入持久日志。[Cloudflare 本地邮件测试](https://developers.cloudflare.com/email-service/local-development/sending/) [Workers 邮件 API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+
+### 密码登录滥用防护 / Password-login abuse control
+
+Identity 在 D1 中原子限制已知账户的密码尝试次数，并对未知标识符建立不含明文的短期桶；这不能阻止攻击者不断更换不存在的用户名，从而消耗 Argon2 与 D1 资源。上线前在 Cloudflare WAF 为 `POST /v1/password/authentications` 配置按请求来源限速或挑战的**外层**规则，用预发布流量校准阈值，观察 429、挑战率、正常登录成功率和 Worker CPU。不要把基于 IP 的边缘规则当成账户级权威，也不要用很低的全局阈值误伤校园或运营商 NAT 用户。当前仓库无法证明 Cloudflare 面板上的规则已经存在；发布负责人必须核验。[Cloudflare WAF 限速规则](https://developers.cloudflare.com/waf/rate-limiting-rules/)
+
 事故处理：
 
 1. **Triage**：确认用户影响、环境、首个异常时间与当前 version；用 request/trace ID 关联，不先重启或清日志。

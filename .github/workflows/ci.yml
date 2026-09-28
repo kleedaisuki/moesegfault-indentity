@@ -118,6 +118,12 @@ jobs:
         run: npm run typecheck:frontend-shared && npm run test:frontend-shared
       - name: Validate contracts and fresh migration / 验证契约与全新迁移
         run: npm run lint:openapi && npm run migrate:local && npm run test:migrations
+      - name: Validate OAuth client provisioning / 验证 OAuth 客户端配置生成
+        run: npm run test:oauth-client-migration
+      - name: Validate recovery authority revocation / 验证恢复后的旧权限撤销
+        run: npm run test:recovery-authority
+      - name: Validate password-attempt policy / 验证密码尝试限速策略
+        run: npm run test:password-rate-limit
       - name: Validate scripts and JSONC / 验证脚本与 JSONC
         run: |
           shellcheck scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
@@ -148,6 +154,10 @@ jobs:
           cp -a .temp/artifacts/account-assets-${GITHUB_SHA}/. apps/account/dist/
       - name: Verify Worker request boundary / 验证 Worker 请求边界
         run: node scripts/tests/security-boundary.mjs
+      - name: Verify contact creation and email-verification contract / 验证联系方式与邮箱验证契约
+        run: npm run test:contact-verification
+      - name: Verify password authority and session rotation / 验证密码权限与会话轮换
+        run: npm run test:password-security
       - name: Dry-run every deployment unit / 演练所有发布单元
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc

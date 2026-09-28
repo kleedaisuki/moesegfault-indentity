@@ -83,6 +83,15 @@ struct IdentifierWire {
     updated_at: String,
 }
 
+/// 联系方式端点的公开投影；保留旧字段以免破坏已部署的客户端。
+/// Public contact projection; retains the legacy field for deployed clients.
+#[derive(Debug, Serialize)]
+struct ContactWire {
+    contact_id: String,
+    #[serde(flatten)]
+    identifier: IdentifierWire,
+}
+
 #[derive(Debug, Serialize)]
 struct AuthenticatorWire {
     authenticator_id: String,
@@ -490,7 +499,7 @@ pub async fn list_contacts(request: Request, context: RouteContext<()>) -> Resul
         .await?
         .into_iter()
         .filter(|item| matches!(item.kind.as_str(), "email" | "mobile"))
-        .map(identifier_to_wire)
+        .map(contact_to_wire)
         .collect::<Vec<_>>();
     json(&items, 200, &correlation, &context.env, None)
 }
@@ -558,7 +567,7 @@ pub async fn create_contact(mut request: Request, context: RouteContext<()>) -> 
         Err(error) => return Err(error),
     };
     json(
-        &identifier_to_wire(item),
+        &contact_to_wire(item),
         201,
         &correlation,
         &context.env,
@@ -690,7 +699,7 @@ pub async fn update_contact(mut request: Request, context: RouteContext<()>) -> 
     )
     .await?;
     json(
-        &identifier_to_wire(item),
+        &contact_to_wire(item),
         200,
         &correlation,
         &context.env,
@@ -1084,7 +1093,7 @@ pub async fn complete_contact_verification(
         .find(|item| item.identifier_id == contact_id)
         .ok_or_else(|| Error::RustError("verified contact projection missing".into()))?;
     json(
-        &identifier_to_wire(item),
+        &contact_to_wire(item),
         200,
         &correlation,
         &context.env,
@@ -1474,7 +1483,8 @@ fn optional_js_bool(value: Option<bool>) -> JsValue {
     value.map_or(JsValue::NULL, JsValue::from_bool)
 }
 
-/// 创建或轮换可选密码；已有密码必须提交当前密码。/ Creates or rotates the optional password; an existing password requires the current password.
+/// 创建或轮换密码，同时撤销旧会话与 OAuth 授权并轮换当前 Cookie。
+/// Creates or rotates a password, revoking old sessions and OAuth authority while rotating the current cookie.
 pub async fn put_password(mut request: Request, context: RouteContext<()>) -> Result<Response> {
     let correlation = correlation_id();
     let session =
@@ -1497,25 +1507,54 @@ pub async fn put_password(mut request: Request, context: RouteContext<()>) -> Re
         .bind(&[JsValue::from_str(&session.principal_id)])?
         .first::<PasswordCredentialRow>(None)
         .await?;
-    if let Some(existing) = existing.as_ref()
-        && !input
-            .current_password
-            .as_deref()
-            .is_some_and(|value| crate::password::verify_password(value, &existing.password_hash))
-    {
-        return problem::response(
-            "reauthentication_required",
-            "Current password is required",
-            403,
-            &correlation,
-        );
-    }
+    let proof = match existing.as_ref() {
+        Some(existing) => {
+            if !input.current_password.as_deref().is_some_and(|value| {
+                crate::password::verify_password(value, &existing.password_hash)
+            }) {
+                return reauthentication_required(&correlation);
+            }
+            repository::PasswordChangeProof::CurrentPassword {
+                hash: &existing.password_hash,
+                version: existing.password_version,
+            }
+        }
+        None if recent_passkey(&session, now_seconds()) => {
+            repository::PasswordChangeProof::RecentPasskey
+        }
+        None => return reauthentication_required(&correlation),
+    };
     let hash = crate::password::hash_password(&input.new_password)?;
     let now = now_seconds();
-    let version = existing.as_ref().map_or(1, |row| row.password_version + 1);
-    db.prepare("INSERT INTO password_credentials(principal_id,password_hash,hash_algorithm,hash_parameters_json,password_version,created_at,updated_at) VALUES(?1,?2,'argon2id','{}',?3,?4,?4) ON CONFLICT(principal_id) DO UPDATE SET password_hash=excluded.password_hash,hash_algorithm='argon2id',hash_parameters_json='{}',password_version=excluded.password_version,updated_at=excluded.updated_at,last_used_at=NULL")
-        .bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&hash),JsValue::from_f64(version as f64),JsValue::from_f64(now as f64)])?.run().await?;
-    no_content(&correlation, &context.env, None)
+    let old_wire = guard::cookie(&request, guard::SESSION_COOKIE).ok_or_else(|| {
+        Error::RustError("authenticated password mutation lost its cookie".into())
+    })?;
+    let replacement_wire = random_secret_wire();
+    let session_pepper = secret(&context.env, "SESSION_PEPPER")?;
+    let old_digest = SecretDigest::hmac(session_pepper.as_bytes(), old_wire.as_bytes());
+    let replacement_digest =
+        SecretDigest::hmac(session_pepper.as_bytes(), replacement_wire.as_bytes());
+    let replacement_session_id = uuid::Uuid::now_v7().to_string();
+    repository::change_password(
+        &db,
+        repository::PasswordChange {
+            session: &session,
+            initiating_digest: &old_digest.0,
+            proof,
+            new_hash: &hash,
+            replacement_session_id: &replacement_session_id,
+            replacement_digest: &replacement_digest.0,
+            audit_id: &audit_id(),
+            correlation_id: &correlation,
+            now,
+        },
+    )
+    .await?;
+    no_content(
+        &correlation,
+        &context.env,
+        Some(&guard::session_cookie(&replacement_wire)),
+    )
 }
 
 /// 删除密码前确认当前密码且确保仍有其他登录方法。/ Removes a password after checking it and ensuring another login method remains.
@@ -2524,6 +2563,16 @@ fn identifier_to_wire(value: repository::IdentifierView) -> IdentifierWire {
     }
 }
 
+/// 为联系方式路由添加规范 contact_id，并保留同值的 identifier_id 别名。
+/// Adds canonical contact_id while keeping the equal-valued identifier_id alias.
+fn contact_to_wire(value: repository::IdentifierView) -> ContactWire {
+    let identifier = identifier_to_wire(value);
+    ContactWire {
+        contact_id: identifier.identifier_id.clone(),
+        identifier,
+    }
+}
+
 fn authenticator_to_wire(value: repository::AuthenticatorView) -> AuthenticatorWire {
     AuthenticatorWire {
         authenticator_id: value.authenticator_id,
@@ -2752,6 +2801,27 @@ fn response_headers(correlation: &str, env: &Env) -> Result<Headers> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_projection_exposes_canonical_id_without_breaking_legacy_id() {
+        let identifier = repository::IdentifierView {
+            identifier_id: "0196fc56-61ba-7e23-ae0b-41ae1fbe51b1".into(),
+            kind: "email".into(),
+            value: "klee@example.net".into(),
+            country_calling_code: None,
+            national_number: None,
+            is_primary: true,
+            verification_state: "unverified".into(),
+            verified_at: None,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        let account_json = serde_json::to_value(identifier_to_wire(identifier.clone())).unwrap();
+        let contact_json = serde_json::to_value(contact_to_wire(identifier)).unwrap();
+        assert_eq!(contact_json["contact_id"], account_json["identifier_id"]);
+        assert_eq!(contact_json["identifier_id"], account_json["identifier_id"]);
+        assert!(account_json.get("contact_id").is_none());
+    }
 
     #[test]
     fn recent_passkey_rejects_old_federated_and_future_sessions() {

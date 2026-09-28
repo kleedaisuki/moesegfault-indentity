@@ -196,7 +196,7 @@ async function renderSecurity(main: HTMLElement, c: PageContext): Promise<void> 
   );
 }
 
-/** 密码可选，且绝不暗示 Passkey 是唯一选项。Password is optional and passkeys are never presented as mandatory. */
+/** 密码可选；近期认证不足时沿用安全操作的 Login 回跳。Password is optional; recent-auth failures use the shared Login return flow. */
 function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
   const form = el("form", { className: "password-form" },
     security.password ? inputField(c.t("currentPassword"), "current_password", "", { required: true, type: "password", autocomplete: "current-password" }) : null,
@@ -205,7 +205,22 @@ function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
     security.password ? actionButton(c.t("remove"), async (btn) => { await c.api.deletePassword(proof(c)); await c.refresh(); busy(btn, false); }, "danger", c) : null,
     el("span", { className: "inline-message" }),
   );
-  form.addEventListener("submit", async (event) => { event.preventDefault(); const btn = form.querySelector<HTMLButtonElement>("button[type=submit]")!; const data = new FormData(form); busy(btn, true); try { await c.api.setPassword(String(data.get("password")), proof(c), String(data.get("current_password") ?? "")); await c.refresh(); } catch (error) { form.querySelector<HTMLElement>(".inline-message")!.textContent = errorText(error, c.t("unexpectedError")); } finally { busy(btn, false); } });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const btn = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+    const message = form.querySelector<HTMLElement>(".inline-message")!;
+    const data = new FormData(form);
+    message.replaceChildren();
+    busy(btn, true);
+    try {
+      await c.api.setPassword(String(data.get("password")), proof(c), String(data.get("current_password") ?? ""));
+      await c.refresh();
+    } catch (error) {
+      const presentation = mutationErrorPresentation(error, c.t, location);
+      message.replaceChildren(presentation.message);
+      if (presentation.actionHref) message.append(el("a", { className: "button quiet", attrs: { href: presentation.actionHref } }, presentation.actionLabel));
+    } finally { busy(btn, false); }
+  });
   return securityCard("shield", c.t("password"), security.password ? c.t("enabled") : c.t("disabled"), form);
 }
 

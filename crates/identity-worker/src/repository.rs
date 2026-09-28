@@ -471,8 +471,16 @@ pub async fn commit_webauthn_failure(
     Ok(())
 }
 
-/// 在一个 D1 batch 中从旧认证能力切换到新 Passkey、session 与恢复码。
-/// Switches from old authority to a new Passkey, session, and recovery codes in one D1 batch.
+/// 删除无撤销状态的旧密码凭据；恢复后需经新会话重新设置密码。
+/// Deletes the old password verifier, which has no revocation state; a new session may enroll one later.
+const RECOVERY_DELETE_PASSWORD_SQL: &str = "DELETE FROM password_credentials WHERE principal_id=?1";
+
+/// 撤销旧的联合认证绑定，同时保留行以满足审计外键。
+/// Revokes old federated login bindings while retaining rows for audit foreign keys.
+const RECOVERY_REVOKE_BINDINGS_SQL: &str = "UPDATE identity_bindings SET authentication_enabled=0,revoked_at=?2 WHERE principal_id=?1 AND revoked_at IS NULL";
+
+/// 在一个 D1 batch 中从全部旧认证能力切换到新 Passkey、session 与恢复码。
+/// Switches from all old authority to a new Passkey, session, and recovery codes in one D1 batch.
 #[allow(clippy::too_many_arguments)]
 pub async fn commit_recovery(
     db: &D1Database,
@@ -503,6 +511,10 @@ pub async fn commit_recovery(
             .bind(&[text(&tx.transaction_id),blob(request_digest),text(authenticator_id),integer(now)])?,
         db.prepare("UPDATE authenticators SET revoked_at=?3 WHERE principal_id=?1 AND authenticator_id<>?2 AND revoked_at IS NULL")
             .bind(&[text(&tx.principal_id),text(authenticator_id),integer(now)])?,
+        db.prepare(RECOVERY_DELETE_PASSWORD_SQL)
+            .bind(&[text(&tx.principal_id)])?,
+        db.prepare(RECOVERY_REVOKE_BINDINGS_SQL)
+            .bind(&[text(&tx.principal_id),integer(now)])?,
         db.prepare("UPDATE identity_sessions SET revoked_at=?2,revocation_reason='account_recovery' WHERE principal_id=?1 AND revoked_at IS NULL")
             .bind(&[text(&tx.principal_id),integer(now)])?,
         db.prepare("UPDATE oauth_authorization_codes SET revoked_at=?2 WHERE principal_id=?1 AND revoked_at IS NULL")

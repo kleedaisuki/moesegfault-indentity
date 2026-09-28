@@ -890,7 +890,10 @@ paths:
       summary: Authenticate using username, email, or mobile and password
       description: |
         `login` is normalized according to its detected identifier kind. A successful
-        OAuth entry returns an authorization resume URI.
+        OAuth entry returns an authorization resume URI. Known and unknown
+        identifiers share a generic account-scoped rate-limit response to avoid
+        leaking account existence; clients must honor `Retry-After` in seconds.
+        已知与未知标识符均使用通用限流响应；客户端须遵守以秒计的 `Retry-After`。
       security: [{browser_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
@@ -910,6 +913,15 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AuthenticationCompletion'}
+        '429':
+          description: Generic `rate_limited` Problem Details for throttled password attempts; `Retry-After` is seconds.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Retry-After: {required: true, schema: {type: integer, minimum: 1}}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
         default: {$ref: '#/components/responses/Problem'}
 
   /v1/me:
@@ -1179,7 +1191,18 @@ paths:
       tags: [account]
       operationId: setMyPassword
       summary: Add or replace the password credential
-      description: Existing password users supply `current_password`; passwordless users must have a recent step-up session.
+      description: |
+        Existing password users supply `current_password`; passwordless users must
+        have a recent Passkey step-up session. On success, Identity atomically
+        replaces the credential and current session, revokes the old sessions and
+        refresh-token families, and sets a fresh Identity session cookie. The old
+        CSRF token is no longer valid; call `GET /v1/me` for a new memory-only
+        CSRF token before another mutation. The 204 response contains a new
+        cookie secret and is not replayable: repeating the same Idempotency-Key
+        returns `409 idempotency_result_unavailable`, not another Set-Cookie.
+        If that response is lost, the old cookie is already invalid and the
+        user must sign in again rather than retrying with the old session.
+        成功后轮换会话 Cookie 并撤销旧授权；旧 CSRF 失效，后续修改须先重新获取 `/v1/me`。
       security: [{identity_cookie: [], csrf_header: []}]
       parameters:
         - {$ref: '#/components/parameters/CsrfToken'}
@@ -1191,7 +1214,12 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetPasswordRequest'}
       responses:
-        '204': {$ref: '#/components/responses/NoContent'}
+        '204':
+          description: Password changed and a new Identity session cookie issued; no response body.
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Set-Cookie: {$ref: '#/components/headers/IdentitySetCookie'}
+            Cache-Control: {schema: {type: string, const: no-store}}
         default: {$ref: '#/components/responses/Problem'}
     delete:
       tags: [account]
@@ -1298,8 +1326,8 @@ components:
       name: Origin
       in: header
       required: true
-      description: Exact reviewed first-party origin; deployments may add explicitly configured origins rather than reflecting arbitrary values.
-      schema: {type: string, enum: ['https://login.moesegfault.dev', 'https://account.moesegfault.dev']}
+      description: Exact environment-matched `LOGIN_ORIGIN` or `ACCOUNT_ORIGIN`; never reflect arbitrary Origins. / 必须与当前环境配置的第一方 Origin 完全一致，不得反射任意 Origin。
+      schema: {type: string, format: uri}
     CsrfToken:
       name: x-moesegfault-csrf
       in: header
@@ -1496,9 +1524,18 @@ components:
     Contact:
       type: object
       additionalProperties: false
+      description: |
+        `contact_id` is the canonical identifier for `/v1/me/contacts/{contact_id}`.
+        `identifier_id` is a deprecated, same-valued response alias retained for
+        existing clients; new integrations must use `contact_id`.
+        `contact_id` 是联系方式路径的规范标识；`identifier_id` 仅为兼容旧客户端的同值响应别名。
       required: [contact_id, kind, value, is_primary, verification_state, created_at, updated_at]
       properties:
         contact_id: {$ref: '#/components/schemas/UuidV7'}
+        identifier_id:
+          allOf: [{$ref: '#/components/schemas/UuidV7'}]
+          deprecated: true
+          description: Deprecated response-only alias equal to `contact_id`. / 仅限响应的旧别名，值必须等于 `contact_id`。
         kind: {type: string, enum: [email, mobile]}
         value: {type: string, minLength: 3, maxLength: 320, description: Email or canonical E.164 mobile value.}
         country_calling_code: {type: ['string', 'null'], pattern: '^\+[1-9][0-9]{0,2}$'}
@@ -1667,15 +1704,16 @@ components:
     OpenIdConfiguration:
       type: object
       additionalProperties: false
+      description: All absolute endpoint URLs derive from this deployment's exact `ISSUER`; the production server URL above is not a staging or local constant. / 所有端点 URL 均由当前部署的 `ISSUER` 派生。
       required: [issuer, authorization_endpoint, token_endpoint, revocation_endpoint, userinfo_endpoint, jwks_uri, end_session_endpoint, authorization_response_iss_parameter_supported, response_types_supported, response_modes_supported, grant_types_supported, subject_types_supported, id_token_signing_alg_values_supported, scopes_supported, token_endpoint_auth_methods_supported, code_challenge_methods_supported, claims_supported]
       properties:
-        issuer: {type: string, const: 'https://identity.moesegfault.dev'}
-        authorization_endpoint: {type: string, const: 'https://identity.moesegfault.dev/v1/oauth/authorizations'}
-        token_endpoint: {type: string, const: 'https://identity.moesegfault.dev/v1/oauth/tokens'}
-        revocation_endpoint: {type: string, const: 'https://identity.moesegfault.dev/v1/oauth/revocations'}
-        userinfo_endpoint: {type: string, const: 'https://identity.moesegfault.dev/v1/oidc/user-claims'}
-        jwks_uri: {type: string, const: 'https://identity.moesegfault.dev/.well-known/jwks.json'}
-        end_session_endpoint: {type: string, const: 'https://identity.moesegfault.dev/v1/oidc/logout-requests'}
+        issuer: {type: string, format: uri}
+        authorization_endpoint: {type: string, format: uri}
+        token_endpoint: {type: string, format: uri}
+        revocation_endpoint: {type: string, format: uri}
+        userinfo_endpoint: {type: string, format: uri}
+        jwks_uri: {type: string, format: uri}
+        end_session_endpoint: {type: string, format: uri}
         authorization_response_iss_parameter_supported: {type: boolean, const: true}
         response_types_supported: {type: array, const: [code]}
         response_modes_supported: {type: array, const: [query]}

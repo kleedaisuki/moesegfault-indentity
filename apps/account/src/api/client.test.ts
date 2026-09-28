@@ -57,7 +57,7 @@ describe("AccountApiClient", () => {
     const transaction = { transaction_id: "txn", expires_at: "2026-01-01T00:10:00Z", delivery_hint: "k***@example.com" };
     const fetch = vi.fn<FetchLike>()
       .mockResolvedValueOnce(json(transaction))
-      .mockResolvedValueOnce(json(account));
+      .mockResolvedValueOnce(json({ contact_id: "contact/a", kind: "email", value: "klee@example.com", verification_state: "verified" }));
     const api = new AccountApiClient("https://identity.example", fetch);
 
     await api.startContactVerification("contact/a", { csrfToken: "csrf" });
@@ -72,6 +72,29 @@ describe("AccountApiClient", () => {
       expect(headers.get("x-moesegfault-csrf")).toBe("csrf");
       expect(headers.get("idempotency-key")).toBeTruthy();
     }
+  });
+
+  it("normalizes both deployed and public contact IDs before verification", async () => {
+    const legacy = { identifier_id: "legacy-id", kind: "email", value: "klee@example.com", verification_state: "unverified" };
+    const current = { contact_id: "current-id", kind: "email", value: "new@example.com", verification_state: "unverified" };
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(json([legacy, current]))
+      .mockResolvedValueOnce(json({ transaction_id: "tx", expires_at: "later", delivery_hint: "k***@example.com" }))
+      .mockResolvedValueOnce(json({ ...legacy, verification_state: "verified" }));
+    const api = new AccountApiClient("https://identity.example", fetch);
+    const contacts = await api.listContacts();
+    expect(contacts.map((contact) => contact.contact_id)).toEqual(["legacy-id", "current-id"]);
+    await api.startContactVerification(contacts[0]!.contact_id, { csrfToken: "csrf" });
+    expect((await api.completeContactVerification(contacts[0]!.contact_id, "tx", "12345678", { csrfToken: "csrf" })).contact_id).toBe("legacy-id");
+    expect(String(fetch.mock.calls[1]![0])).toContain("/contacts/legacy-id/verification-transactions");
+    expect(String(fetch.mock.calls[2]![0])).toContain("/contacts/legacy-id/verification-transactions/tx/completion");
+  });
+
+  it("rejects a malformed contact ID before sending a verification request", async () => {
+    const fetch = vi.fn<FetchLike>();
+    const api = new AccountApiClient("https://identity.example", fetch);
+    expect(() => api.startContactVerification(undefined as unknown as string, { csrfToken: "csrf" })).toThrow("Contact ID is required");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("preserves RFC 9457 details and correlation IDs", async () => {
