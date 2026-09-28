@@ -16,6 +16,8 @@ The SPA uses cookie-authenticated `/v1/me` APIs with `credentials: include`, `ca
 
 Only non-sensitive theme and language preferences are persisted in `localStorage`; cookies and CSRF material are never stored by JavaScript.
 
+Contact routes use the `contact_id` returned by `/v1/me/contacts`. The API client also accepts the older deployed `identifier_id` response shape during staggered rollout, normalizes it before UI rendering, and rejects a missing ID before constructing a mutation URL. The server must still authorize ownership; this client-side check only prevents misleading `/contacts/undefined` requests.
+
 ## Session rendering contract
 
 The browser models the session as one discriminated state: `pending`, `anonymous`, or `authenticated`. Account data, server preferences, and the CSRF token enter memory together only in the authenticated state. The shell starts with authenticated navigation, the user chip, and in-app guidance hidden, so neither startup nor deep links flash misleading controls. Every API `401` moves the whole shell to `anonymous`; transport and other HTTP failures retain a retry action.

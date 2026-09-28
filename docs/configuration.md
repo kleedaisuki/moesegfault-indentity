@@ -86,10 +86,12 @@ D1 迁移位于 `migrations/`，必须使用 database name（而不是易变 bin
 
 以下内容通过受审查的部署步骤写 D1，并同时产生 `security_audit_events` 与 archive outbox；不提供普通账号 HTTP 管理面：
 
-- 单例 `registration_policy`（默认 `invite_only`）及一次性 capability；
+- 单例 `registration_policy`（初始迁移为 `invite_only`，`0003_open_registration.sql` 将当前部署基线改为 `open`）及一次性 capability；
 - `binding_providers` 及 provider client metadata；
 - `oauth_clients`、public keys、redirect/post-logout URI 与 scope grants；
 - `signing_keys` 的公开 JWK 和状态（私钥仍在 Secret）。
+
+新应用的部署管理客户端清单、当前实际 OIDC 能力和只生成非秘密 SQL 的迁移工具见 [应用接入指南](integrating-app.md)。生成器不直接写 D1；评审后的迁移由现有发布流程应用。/ For a new application, use the [integration guide](integrating-app.md); its generator only prepares a public-metadata migration for review and never writes D1 itself.
 
 Configuration changes must be deterministic and idempotent. Exact redirect URI rows must not contain `*`; native loopback variable ports use `match_mode=native_loopback_any_port` only for `127.0.0.1` or `[::1]`.
 

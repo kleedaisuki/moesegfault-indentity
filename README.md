@@ -27,6 +27,8 @@ registration + sign-in    profile + contacts + security
 
 平台设计见 [`ADR-0003`](docs/adr/0003-account-platform-redesign.md)，Cloudflare 邮箱验证与持久投递边界见 [`ADR-0004`](docs/adr/0004-email-verification.md)；视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
 
+接入新应用请从 [`docs/integrating-app.md`](docs/integrating-app.md) 开始：它区分当前已实现的 OIDC 能力与长期设计，说明客户端登记、PKCE、回调校验、令牌与运维验收。 / New applications should start with the implemented-contract [integration guide](docs/integrating-app.md), including reviewed client provisioning and an acceptance checklist.
+
 ## 账户能力 / Account capabilities
 
 - Username、必填 Email、可选国际手机号（独立国家区号并规范化为 E.164）。
