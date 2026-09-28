@@ -1136,7 +1136,7 @@ pub async fn finish_authentication(
         response["authorization_resume_uri"] =
             serde_json::json!(crate::oauth::authorization_resume_uri(
                 &crate::oauth::issuer(&context.env),
-                authorization_id
+                &authorization_id
             ));
     }
     json(
