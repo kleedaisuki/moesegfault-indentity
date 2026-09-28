@@ -18,7 +18,11 @@ else
   readonly ACCOUNT_URL="${ACCOUNT_URL:-https://account.moesegfault.dev}"
 fi
 
-tmp_dir="$(mktemp -d)"
+# Keep transient probe artifacts inside the repository. The fixed prefix is not caller-controlled;
+# mktemp supplies the unique suffix. / 临时探测产物始终留在仓库内；固定前缀不受调用者控制，
+# 唯一后缀由 mktemp 生成。
+mkdir -p .temp
+tmp_dir="$(mktemp -d .temp/smoke.XXXXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 retry_curl() {
