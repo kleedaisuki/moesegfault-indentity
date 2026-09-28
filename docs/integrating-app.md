@@ -71,6 +71,8 @@ npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --con
 
 The production environment uses `node scripts/prepare-migrations.mjs production`, `moesegfault-identity-production`, `--env production`, and **different** app IDs, origins, key material, and redirect URIs. Neither the example manifest nor read-only queries create the client. A reviewed provisioning operation is still required. Avoid ad-hoc partial multi-statement writes: D1's Worker `batch()` is transactional, whereas separate CLI invocations are not one transaction.
 
+After deployment, run the manually dispatched [`Inspect OAuth client registration`](../.github/workflows/inspect-oauth-client.yml) workflow on the deployed revision with the exact target environment and public client ID. It performs only bounded read-only D1 queries and prints the client state, redirect policy, scopes, and OAuth-client migration history; it cannot register, rotate, or disable a client. A missing row fails the job. / 部署后，可在已部署修订上手动运行该只读工作流，回读客户端、回调、授权范围和迁移历史；缺失客户端会使任务失败，工作流不能修改 D1。
+
 ## Sign-in interaction / 登录交互
 
 1. Discover `ISSUER/.well-known/openid-configuration`; reject a discovery document whose `issuer` differs **exactly** from the configured issuer. Follow its endpoint URLs rather than hardcoding production paths. Discovery returns 503 when issuance is not configured; local `.dev.vars.example` has `OAUTH_ENABLED=false` by default.
