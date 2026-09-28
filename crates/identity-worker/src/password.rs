@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use worker::{Env, Error, Headers, Request, Response, Result, RouteContext, wasm_bindgen::JsValue};
 
-use crate::{guard, problem, repository};
+use crate::{guard, oauth, problem, repository};
 
 const MAX_BODY_BYTES: u64 = 65_536;
 const PASSWORD_ATTEMPT_TTL_SECONDS: i64 = 86_400;
@@ -640,8 +640,10 @@ fn authentication_response(
     };
     let mut body = serde_json::json!({"account":account,"session":session,"csrf_token":csrf,"csrf_expires_at":date_time(context.now+43_200)});
     if let Some(id) = context.authorization_transaction_id {
-        body["authorization_resume_uri"] =
-            serde_json::json!(format!("/v1/oauth/authorization-transactions/{id}/resume"));
+        body["authorization_resume_uri"] = serde_json::json!(oauth::authorization_resume_uri(
+            &oauth::issuer(context.env),
+            id
+        ));
     }
     json(
         &body,

@@ -75,11 +75,14 @@ const authenticator = randomUUID();
 const current = randomUUID();
 const stale = randomUUID();
 const other = randomUUID();
+const resumeTransaction = randomUUID();
 const digest = createHmac("sha256", sessionPepper).update(initialWire).digest("hex");
 query(`INSERT INTO principals(principal_id,kind,lifecycle_state,webauthn_user_handle,created_at,updated_at,state_changed_at) VALUES('${principal}','human','active',randomblob(32),${now - 1000},${now - 1000},${now - 1000})`);
 query(`INSERT INTO authenticators(authenticator_id,principal_id,credential_id,public_key_cose,sign_count,aaguid,backup_eligible,backup_state,label,created_at) VALUES('${authenticator}','${principal}',randomblob(32),randomblob(64),0,randomblob(16),0,0,'Security key',${now - 1000})`);
 query(`INSERT INTO identity_sessions(session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES('${current}',X'${digest}','${principal}','${authenticator}','passkey','["passkey"]','urn:moesegfault:acr:passkey-uv',${now - 5},${now - 5},${now + 43200},${now + 2592000}),('${stale}',randomblob(32),'${principal}','${authenticator}','passkey','["passkey"]','urn:moesegfault:acr:passkey-uv',${now - 400},${now - 400},${now + 43200},${now + 2592000}),('${other}',randomblob(32),'${principal}','${authenticator}','passkey','["passkey"]','urn:moesegfault:acr:passkey-uv',${now - 100},${now - 100},${now + 43200},${now + 2592000})`);
 query(`INSERT INTO oauth_clients(client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,subject_salt_revision,created_at,updated_at) VALUES('test-client','Test client','native','none','test.example',1,${now - 1000},${now - 1000})`);
+query(`INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,created_at,updated_at) VALUES('${randomUUID()}','${principal}','username','resumefixture','resumefixture',1,${now - 1000},${now - 1000})`);
+query(`INSERT INTO oauth_authorization_transactions(authorization_transaction_id,client_id,redirect_uri,response_type,scope,state_value,nonce,code_challenge,code_challenge_method,created_at,expires_at) VALUES('${resumeTransaction}','test-client','http://127.0.0.1:9000/callback','code','openid','test-state-12345','test-nonce-12345','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','S256',${now},${now + 3600})`);
 query(`INSERT INTO oauth_refresh_token_families(refresh_token_family_id,client_id,principal_id,identity_session_id,scope,audience,created_at,absolute_expires_at) VALUES('${randomUUID()}','test-client','${principal}','${other}','openid offline_access','test-api',${now - 100},${now + 86400})`);
 
 const port = await freePort();
@@ -112,6 +115,25 @@ try {
   assert.equal(added.status, 204, await added.text());
   const secondWire = rotatedWire(added);
   assert.notEqual(secondWire, initialWire);
+  // Password-authenticated OAuth must resume at the configured Identity issuer,
+  // not at the Login origin that rendered the page. / 密码 OAuth 续接必须指向固定 Identity 发行方。
+  const browserContext = await fetch(`${base}/v1/browser-context`, { headers: { origin: "http://localhost:5173" } });
+  assert.equal(browserContext.status, 200);
+  const browserCookie = browserContext.headers.get("set-cookie")?.split(";")[0];
+  assert.ok(browserCookie?.startsWith("__Host-identity_browser="));
+  const { csrf_token: browserCsrf } = await browserContext.json();
+  const oauthAuthentication = await fetch(`${base}/v1/password/authentications`, {
+    method: "POST", headers: { origin: "http://localhost:5173", cookie: browserCookie,
+      "content-type": "application/json", "x-moesegfault-csrf": browserCsrf,
+      "idempotency-key": "password-oauth-resume-001" },
+    body: JSON.stringify({ login: "resumefixture", password: firstBody.new_password, authorization_transaction_id: resumeTransaction }),
+  });
+  assert.equal(oauthAuthentication.status, 200, `Password OAuth authentication returned ${oauthAuthentication.status}`);
+  const authenticated = await oauthAuthentication.json();
+  assert.equal(authenticated.authorization_resume_uri,
+    `https://identity-staging.moesegfault.dev/v1/oauth/authorization-transactions/${resumeTransaction}/resume`);
+  assert.equal(query(`SELECT state FROM oauth_authorization_transactions WHERE authorization_transaction_id='${resumeTransaction}'`)[0].state, "authenticated");
+  console.log("password security: OAuth password login returned issuer-rooted resume URI");
   assert.equal((await fetch(`${base}/v1/principals/self/sessions`, { headers: { cookie: `__Host-identity_session=${initialWire}`, origin } })).status, 401);
   assert.equal((await fetch(`${base}/v1/principals/self/sessions`, { headers: { cookie: `__Host-identity_session=${secondWire}`, origin } })).status, 200);
   const lostResponseRetry = await change(base, initialWire, "password-step-up-required", firstBody);

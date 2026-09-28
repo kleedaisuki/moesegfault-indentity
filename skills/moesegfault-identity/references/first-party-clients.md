@@ -68,6 +68,7 @@ When Identity sends Login an opaque authorization transaction:
 4. navigate the top-level browser to that URI.
 
 The Login JavaScript must never receive or forward the authorization code itself. Identity validates and consumes the resume transaction before redirecting to the relying party's exact registered URI.
+Password and Passkey completions must use the **same absolute issuer-rooted URI contract**. A root-relative `/v1/oauth/.../resume` value is not equivalent: resolving it against `login[-staging].moesegfault.dev` sends the browser to a Login page instead of the Identity Worker and leaves the transaction authenticated but unfinished. Preserve the issuer boundary when changing either ceremony or the Login navigation code; exercise the real OAuth password route in staging after deployment.
 
 ## Errors and retries
 

@@ -1133,10 +1133,11 @@ pub async fn finish_authentication(
         "csrf_token":csrf_token,"csrf_expires_at":date_time(now+43_200)
     });
     if let Some(authorization_id) = authorization_id {
-        response["authorization_resume_uri"] = serde_json::json!(format!(
-            "{}/v1/oauth/authorization-transactions/{authorization_id}/resume",
-            issuer(&context.env)
-        ));
+        response["authorization_resume_uri"] =
+            serde_json::json!(crate::oauth::authorization_resume_uri(
+                &crate::oauth::issuer(&context.env),
+                authorization_id
+            ));
     }
     json(
         &response,
@@ -1708,11 +1709,6 @@ fn webauthn(env: &Env) -> Webauthn {
         .require_user_verification(true)
         .strict_base64(true)
         .authenticator_attachment(Attachment::Any)
-}
-fn issuer(env: &Env) -> String {
-    env.var("ISSUER")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| "https://identity.moesegfault.dev".to_owned())
 }
 fn rp_id(env: &Env) -> String {
     env.var("WEBAUTHN_RP_ID")

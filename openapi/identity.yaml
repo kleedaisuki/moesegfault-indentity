@@ -1943,7 +1943,10 @@ components:
         session: {$ref: '#/components/schemas/IdentitySession'}
         csrf_token: {type: string, minLength: 32, maxLength: 256, readOnly: true}
         csrf_expires_at: {$ref: '#/components/schemas/DateTime'}
-        authorization_resume_uri: {type: string, format: uri, pattern: '^https://identity\.moesegfault\.dev/v1/oauth/authorization-transactions/[0-9a-f-]+/resume$'}
+        authorization_resume_uri:
+          type: string
+          format: uri
+          description: Absolute OAuth resume URI at this deployment's configured Identity issuer, never a path relative to the Login origin. / OAuth 续接地址为当前部署固定 Identity 发行方下的绝对 URI，绝不是相对于 Login 来源的路径。
     CreateRecoveryRequest:
       type: object
       additionalProperties: false
