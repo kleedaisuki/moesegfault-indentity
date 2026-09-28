@@ -1,0 +1,58 @@
+name: Inspect OAuth client registration
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Identity issuer environment / 身份发行方环境'
+        required: true
+        type: choice
+        options: [staging, production]
+      client_id:
+        description: 'Registered OAuth client ID (public metadata only) / 已登记客户端 ID（仅公开元数据）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Read client, redirects, scopes, and migration history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: cloudflare-${{ inputs.target }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TARGET: ${{ inputs.target }}
+      CLIENT_ID: ${{ inputs.client_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Read public registration / 回读公开登记信息
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CLIENT_ID" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] || { echo 'invalid client ID' >&2; exit 2; }
+          case "$TARGET" in
+            staging) env_args=() ;;
+            production) env_args=(--env production) ;;
+            *) echo 'invalid environment' >&2; exit 2 ;;
+          esac
+          db="moesegfault-identity-$TARGET"
+          query() {
+            npx --no-install wrangler d1 execute "$db" --remote --config wrangler.identity.jsonc "${env_args[@]}" --command="$1" --json
+          }
+          client="$(query "SELECT client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,state FROM oauth_clients WHERE client_id='$CLIENT_ID'")"
+          jq -e --arg id "$CLIENT_ID" '[.[].results[] | select(.client_id == $id)] | length == 1' <<<"$client" >/dev/null
+          printf 'client:\n'; jq '[.[].results[]]' <<<"$client"
+          printf 'redirects:\n'; query "SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id='$CLIENT_ID' ORDER BY redirect_uri" | jq '[.[].results[]]'
+          printf 'scopes:\n'; query "SELECT scope FROM oauth_client_scopes WHERE client_id='$CLIENT_ID' ORDER BY scope" | jq '[.[].results[]]'
+          printf 'migrations:\n'; query "SELECT name FROM d1_migrations WHERE name LIKE '%oauth_client%' ORDER BY id" | jq '[.[].results[]]'
