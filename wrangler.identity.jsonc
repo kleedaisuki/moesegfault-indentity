@@ -33,7 +33,7 @@
       "binding": "DB",
       "database_name": "moesegfault-identity-staging",
       "database_id": "c4042bd4-bb4a-4cf7-aa7f-04cf1a5d6ad9",
-      "migrations_dir": "./migrations"
+      "migrations_dir": "./.temp/migration-streams/staging"
     }
   ],
   "r2_buckets": [
@@ -94,7 +94,7 @@
           "binding": "DB",
           "database_name": "moesegfault-identity-production",
           "database_id": "b3f4a7dd-4415-417d-a1eb-47c36a47ad24",
-          "migrations_dir": "./migrations"
+          "migrations_dir": "./.temp/migration-streams/production"
         }
       ],
       "r2_buckets": [

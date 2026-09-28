@@ -63,6 +63,9 @@ verify_runtime_secrets
 # Worker rollback cannot restore data; migrations must remain expand/migrate/contract compatible.
 # Worker 回滚无法恢复数据；迁移必须保持扩展—迁移—收缩兼容性。
 readonly DB_NAME="moesegfault-identity-${TARGET}"
+# Materialize only this issuer's reviewed overlay; names of already-applied common migrations stay unchanged.
+# 仅物化当前发行方已评审的专属迁移；已应用的公共迁移文件名保持不变。
+node scripts/prepare-migrations.mjs "$TARGET"
 declare -a d1_args=(--remote --config "$IDENTITY_CONFIG")
 mapfile -t env_args < <(wrangler_env_args "$TARGET")
 d1_args+=("${env_args[@]}")

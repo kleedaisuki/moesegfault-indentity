@@ -40,12 +40,15 @@ Required D1 rows are `oauth_clients`, `oauth_redirect_uris`, `oauth_client_scope
 
 管理员应写入 `oauth_clients`、`oauth_redirect_uris`、`oauth_client_scopes`，机密客户端还需 `oauth_client_keys`；登出回调可选。redirect URI 须逐字匹配，不接受通配符。`sector_identifier` 一旦改变会改变应用看到的成对 `sub`，不可当作普通配置重命名。
 
-**Executable provisioning path / 可执行的配置流程.** Place the manifest JSON in `.temp/new-app-staging.json`, replace the sample JWK with a real **public** key, then generate a create-only migration. The generator validates client type, supported scopes, redirect URI mode, and public JWK; it has no database access. Review the generated SQL and commit it under the next numbered filename in `migrations/`. Do not put ephemeral test or generated files outside repository `.temp` or `.cache`. A separate reviewed production manifest/migration must use production metadata.
+**Executable provisioning path / 可执行的配置流程.** Place the manifest JSON in `.temp/new-app-staging.json`, replace the sample JWK with a real **public** key, then generate a create-only migration. The generator validates client type, supported scopes, redirect URI mode, and public JWK; it has no database access. Review the generated SQL and commit it under the next numbered filename in `migrations/environments/staging/`. Do not put ephemeral test or generated files outside repository `.temp` or `.cache`. A separate reviewed production manifest/migration belongs in `migrations/environments/production/` and must use production metadata. Shared schema changes continue to live at the top level of `migrations/`; the generator picks a number beyond both environment overlays to avoid a later collision.
+
+**Environment isolation / 环境隔离.** Both issuers previously used the same migration directory. Provisioning two clients there would register *both* client IDs in *both* D1 databases, despite their distinct issuer contracts. `scripts/prepare-migrations.mjs <staging|production>` now composes the common migrations and exactly one reviewed environment overlay into `.temp/migration-streams/<target>`; each Wrangler D1 binding points to its corresponding stream. The composition retains the original `0001`–`0006` basenames, which are the already-applied D1 history keys. Run preparation before every manual `d1 migrations list/apply`; the release script and local migration command do this automatically. Do not invoke `d1 migrations apply` against an unprepared or wrong-environment stream.
 
 ```bash
 node scripts/generate-oauth-client-migration.mjs .temp/new-app-staging.json
 # Prints .temp/NNNN_oauth_client_new-app-staging.sql with the next available migration number.
-# Review that file, recheck that its number is still free, then copy it into migrations/ for review.
+# Review that file, recheck that its number is still free, then copy it into migrations/environments/staging/ for review.
+node scripts/prepare-migrations.mjs staging
 npx --no-install wrangler d1 migrations apply moesegfault-identity-staging --local --config wrangler.identity.jsonc
 npx --no-install wrangler d1 migrations list moesegfault-identity-staging --remote --config wrangler.identity.jsonc
 # After code review and local tests, deploy using the existing reviewed release process.
@@ -64,7 +67,7 @@ npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --con
   --command="SELECT scope FROM oauth_client_scopes WHERE client_id='new-app-staging' ORDER BY scope"
 ```
 
-The production environment uses `moesegfault-identity-production`, `--env production`, and **different** app IDs, origins, key material, and redirect URIs. Neither the example manifest nor read-only queries create the client. A reviewed provisioning operation is still required. Avoid ad-hoc partial multi-statement writes: D1's Worker `batch()` is transactional, whereas separate CLI invocations are not one transaction.
+The production environment uses `node scripts/prepare-migrations.mjs production`, `moesegfault-identity-production`, `--env production`, and **different** app IDs, origins, key material, and redirect URIs. Neither the example manifest nor read-only queries create the client. A reviewed provisioning operation is still required. Avoid ad-hoc partial multi-statement writes: D1's Worker `batch()` is transactional, whereas separate CLI invocations are not one transaction.
 
 ## Sign-in interaction / 登录交互
 

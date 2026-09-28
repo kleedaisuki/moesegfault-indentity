@@ -60,7 +60,7 @@ broadened merely because Account may call the Identity resource API.
 Worker 的同一 Cloudflare 账号中为 `moesegfault.dev` 完成 Email Sending 域名接入及其
 SPF、DKIM、DMARC DNS 记录；绑定配置本身不会完成域名接入。
 
-D1 迁移位于 `migrations/`，必须使用 database name（而不是易变 binding name）执行远端迁移。生产正确性读使用 primary-first D1 Session/bookmark；KV 不得承担 credential、transaction、session、revocation、Binding 唯一性或幂等权威。
+D1 迁移的公共源文件位于 `migrations/`，发行方专属客户端配置位于 `migrations/environments/{staging,production}/`。运行 `node scripts/prepare-migrations.mjs <target>` 后，Wrangler 从 `.temp/migration-streams/<target>` 读取该环境独有的迁移流；既有迁移 basename 保持不变。必须使用 database name（而不是易变 binding name）执行远端迁移，且不得在未物化正确环境流时运行。生产正确性读使用 primary-first D1 Session/bookmark；KV 不得承担 credential、transaction、session、revocation、Binding 唯一性或幂等权威。
 
 ## Workers Secrets
 
@@ -99,10 +99,12 @@ Configuration changes must be deterministic and idempotent. Exact redirect URI r
 
 ```bash
 # Local schema verification / 本地模式验证
+node scripts/prepare-migrations.mjs staging
 npx wrangler d1 migrations apply moesegfault-identity-staging --local --config wrangler.identity.jsonc
 sqlite3 :memory: ".read migrations/0001_identity_foundation.sql" "PRAGMA foreign_key_check;" "PRAGMA integrity_check;"
 
 # Production is a reviewed deployment step / 生产为受审查部署步骤
+node scripts/prepare-migrations.mjs production
 npx wrangler d1 migrations apply moesegfault-identity-production --remote --env production --config wrangler.identity.jsonc
 ```
 

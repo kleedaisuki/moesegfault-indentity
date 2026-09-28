@@ -128,7 +128,11 @@ async function main() {
   if (process.argv.length !== 3) throw new Error('usage: node scripts/generate-oauth-client-migration.mjs <manifest.json>');
   const manifest = JSON.parse(await readFile(process.argv[2], 'utf8'));
   const migration = renderClientMigration(manifest);
-  const number = nextMigrationNumber(await readdir('migrations'));
+  const names = await readdir('migrations');
+  for (const target of ['staging', 'production']) {
+    names.push(...await readdir(join('migrations', 'environments', target)));
+  }
+  const number = nextMigrationNumber(names);
   const basename = `${number}_oauth_client_${manifest.client_id.replaceAll(/[^A-Za-z0-9_-]/g, '_')}.sql`;
   await mkdir('.temp', { recursive: true });
   const output = join('.temp', basename);

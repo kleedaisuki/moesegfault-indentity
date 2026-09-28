@@ -66,6 +66,8 @@ function rotatedWire(response) {
   return match[1];
 }
 
+const prepared = spawnSync(process.execPath, ['scripts/prepare-migrations.mjs', 'staging'], { cwd: root, encoding: 'utf8' });
+assert.equal(prepared.status, 0, `${prepared.stdout}\n${prepared.stderr}`);
 runWrangler(["d1", "migrations", "apply", "moesegfault-identity-staging", "--local", `--persist-to=${state}`, "--config=wrangler.identity.jsonc"]);
 const now = Math.floor(Date.now() / 1000);
 const principal = randomUUID();
