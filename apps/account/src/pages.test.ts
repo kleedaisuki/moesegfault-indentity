@@ -32,6 +32,29 @@ describe("recent-authentication mutation UX", () => {
   it("normalizes unknown Account paths before constructing the strict return URI", () => {
     expect(reauthenticationUrl({ hostname: "account.moesegfault.dev", pathname: "/security/other" })).toBe("https://login.moesegfault.dev/login?return_uri=https%3A%2F%2Faccount.moesegfault.dev%2F");
   });
+
+  it("offers the Login step-up link when adding a password requires recent authentication", async () => {
+    const setPassword = vi.fn(async () => { throw new ApiError(403, { type: "urn:moesegfault:problem:reauthentication_required", title: "Recent authentication required", status: 403, error_code: "reauthentication_required" }); });
+    const api = {
+      getSecurity: vi.fn(async () => ({ password: false, passkey_count: 1, mfa_methods: ["passkey"], verified_email_count: 1, verified_mobile_count: 0, recovery_ready: true })),
+      listCredentials: vi.fn(async () => ({ items: [] })),
+      setPassword,
+    } as unknown as AccountApiClient;
+    const main = document.createElement("main");
+    const context = {
+      api, account: {} as Account, preferences: {} as PageContext["preferences"], csrfToken: "csrf", locale: "en", t: translator("en"),
+      signal: new AbortController().signal, refresh: vi.fn(async () => undefined),
+    } satisfies PageContext;
+    await renderPage("/security", main, context);
+    const form = main.querySelector<HTMLFormElement>(".password-form")!;
+    form.querySelector<HTMLInputElement>('input[name="password"]')!.value = "a very long new password";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(setPassword).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(form.querySelector<HTMLAnchorElement>(".inline-message a")?.href).toBe(reauthenticationUrl(location)));
+    expect(form.querySelector(".inline-message")?.textContent).toContain(translator("en")("reauthenticationBody"));
+    expect(context.refresh).not.toHaveBeenCalled();
+  });
 });
 
 describe("avatar preparation UX", () => {

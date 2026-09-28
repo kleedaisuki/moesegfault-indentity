@@ -393,6 +393,59 @@ pub async fn ensure_pairwise_subject(
         .ok_or_else(|| worker::Error::RustError("pairwise subject disappeared".into()))
 }
 
+/// 解析客户端作用域内的 subject；客户端所属 sector 是查询的一部分。
+/// Resolves a client-scoped subject; the client's sector is part of the lookup.
+pub async fn principal_for_client_subject(
+    db: &D1Database,
+    client_id: &str,
+    subject: &str,
+) -> Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct Row {
+        principal_id: String,
+    }
+    let row = primary(db)?.prepare("SELECT p.principal_id FROM pairwise_subjects p JOIN oauth_clients c ON c.sector_identifier=p.sector_identifier WHERE c.client_id=?1 AND c.state='enabled' AND p.pairwise_subject=?2")
+        .bind(&[text(client_id),text(subject)])?.first::<Row>(None).await?;
+    Ok(row.map(|row| row.principal_id))
+}
+
+/// 稳定持久化客户端专属的随机 session claim；绝不返回全局 session ID。
+/// Persists a stable random session claim for one client without exposing the global session ID.
+pub async fn ensure_client_session_id(
+    db: &D1Database,
+    client_id: &str,
+    session_id: &str,
+    candidate: &str,
+    now: i64,
+) -> Result<String> {
+    db.prepare("INSERT OR IGNORE INTO oauth_client_session_ids(client_id,identity_session_id,public_sid,created_at) VALUES(?1,?2,?3,?4)")
+        .bind(&[text(client_id),text(session_id),text(candidate),integer(now)])?.run().await?;
+    #[derive(Deserialize)]
+    struct Row {
+        public_sid: String,
+    }
+    let row = primary(db)?.prepare("SELECT public_sid FROM oauth_client_session_ids WHERE client_id=?1 AND identity_session_id=?2")
+        .bind(&[text(client_id),text(session_id)])?.first::<Row>(None).await?;
+    row.map(|row| row.public_sid)
+        .ok_or_else(|| worker::Error::RustError("client session ID disappeared".into()))
+}
+
+/// 将已签名 ID Token 的客户端专属 sid 解析回内部 session ID。
+/// Resolves a signed ID Token's client-scoped sid to the internal session ID.
+pub async fn session_for_client_sid(
+    db: &D1Database,
+    client_id: &str,
+    public_sid: &str,
+) -> Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct Row {
+        identity_session_id: String,
+    }
+    let row = primary(db)?.prepare("SELECT identity_session_id FROM oauth_client_session_ids WHERE client_id=?1 AND public_sid=?2")
+        .bind(&[text(client_id),text(public_sid)])?.first::<Row>(None).await?;
+    Ok(row.map(|row| row.identity_session_id))
+}
+
 /// 以 session ID 撤销 Identity session 与关联 refresh families。
 /// Revokes an Identity session and all refresh families linked to it.
 pub async fn logout_session(db: &D1Database, session_id: &str, now: i64) -> Result<()> {

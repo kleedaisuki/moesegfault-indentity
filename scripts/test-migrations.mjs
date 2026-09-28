@@ -82,6 +82,27 @@ for (const file of [
 executeSql("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,verified_at,created_at,updated_at) VALUES('email1','p1','email','klee@example.net','klee@example.net',1,'unverified',NULL,1000,1000)");
 executeSql("INSERT INTO identifier_verification_transactions(transaction_id,identifier_id,code_digest,attempt_count,state,created_at,expires_at) VALUES('legacy-email-txn','email1',randomblob(32),0,'pending',1000,1600)");
 executeFile("migrations/0004_email_verification.sql");
+executeFile("migrations/0005_oauth_pairwise_session.sql");
+executeFile("migrations/0006_password_rate_limit.sql");
+
+// Password throttle buckets persist only 32-byte digests with bounded counts.
+// 密码限速桶只持久化 32 字节摘要及有界次数。
+executeSql("INSERT INTO password_auth_attempts VALUES(randomblob(32),1,1000,1000,2000)");
+executeSql("INSERT INTO password_auth_attempts VALUES('plaintext-login',1,1000,1000,2000)", false);
+executeSql("INSERT INTO password_auth_attempts VALUES(randomblob(32),101,1000,1000,2000)", false);
+
+// One Identity session can have distinct, stable public session IDs per OAuth client.
+// 同一 Identity 会话在不同 OAuth 客户端具有不同且稳定的公开会话 ID。
+executeSql("INSERT INTO oauth_clients VALUES('app2','App 2','native','none','app2.example',1,'enabled',1000,1000)");
+executeSql("INSERT INTO oauth_client_session_ids VALUES('app','s1','public-sid-for-app',1000)");
+executeSql("INSERT INTO oauth_client_session_ids VALUES('app2','s1','public-sid-for-app2',1000)");
+executeSql("INSERT OR IGNORE INTO oauth_client_session_ids VALUES('app','s1','ignored-candidate',1001)");
+executeSql("CREATE TABLE _sid_assert(passed INTEGER CHECK(passed=1)); INSERT INTO _sid_assert VALUES((SELECT count(*)=2 AND count(DISTINCT public_sid)=2 FROM oauth_client_session_ids)); DROP TABLE _sid_assert");
+executeSql("INSERT INTO oauth_client_session_ids VALUES('app','s2','public-sid-for-app2',1000)", false);
+executeSql("INSERT INTO oauth_client_session_ids VALUES('unknown-client','s1','unknown-client-sid',1000)", false);
+executeSql("INSERT INTO oauth_client_session_ids VALUES('app','missing-session','missing-session-sid',1000)", false);
+executeSql("INSERT INTO pairwise_subjects VALUES('app.example','p1','pairwise-subject-for-app',1,1000)");
+executeSql("CREATE TABLE _subject_assert(passed INTEGER CHECK(passed=1)); INSERT INTO _subject_assert VALUES((SELECT count(*)=1 FROM pairwise_subjects p JOIN oauth_clients c ON c.sector_identifier=p.sector_identifier WHERE c.client_id='app' AND c.state='enabled' AND p.pairwise_subject='pairwise-subject-for-app')); INSERT INTO _subject_assert VALUES((SELECT count(*)=0 FROM pairwise_subjects p JOIN oauth_clients c ON c.sector_identifier=p.sector_identifier WHERE c.client_id='app2' AND c.state='enabled' AND p.pairwise_subject='pairwise-subject-for-app')); DROP TABLE _subject_assert");
 
 // Unverified contact values may coexist across accounts, but account-local duplicates
 // and a second verified owner are rejected by distinct database constraints.

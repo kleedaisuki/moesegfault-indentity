@@ -6,6 +6,7 @@
 //! cross-table writes use D1 batches and let database constraints and triggers
 //! arbitrate concurrent state transitions.
 
+use identity_domain::LifetimePolicy;
 use serde::{Deserialize, Serialize};
 use worker::{D1Database, D1SessionConstraint, Error, Result, wasm_bindgen::JsValue};
 
@@ -67,6 +68,116 @@ pub struct AccountSession {
     pub auth_method: String,
     /// 最近一次完整认证的 Unix 秒。/ Unix seconds of the most recent full authentication.
     pub authenticated_at: i64,
+}
+
+/// 已完成的密码变更证明；决定新会话真实的 AMR。/ Proof of a password change; selects the new session's actual AMR.
+#[derive(Clone, Copy)]
+pub enum PasswordChangeProof<'a> {
+    /// 当前密码已由调用方验证，数据库仍须 CAS 验证读到的凭据。/ Current password was verified; D1 must CAS the observed credential.
+    CurrentPassword { hash: &'a str, version: i64 },
+    /// 无密码账户已完成近期 Passkey 认证。/ A passwordless account has a recent Passkey authentication.
+    RecentPasskey,
+}
+
+/// 一次密码更改所需的不透明持久化参数。/ Opaque persistence inputs for one password change.
+pub struct PasswordChange<'a> {
+    /// 请求开始时已鉴权的会话。/ Session authenticated at request entry.
+    pub session: &'a AccountSession,
+    /// 请求 Cookie 的 HMAC 摘要。/ HMAC digest of the request cookie.
+    pub initiating_digest: &'a [u8],
+    /// 变更授权证明。/ Authorization proof for the change.
+    pub proof: PasswordChangeProof<'a>,
+    /// 新 PHC 密码摘要。/ New PHC password verifier.
+    pub new_hash: &'a str,
+    /// 随机新会话 ID。/ Fresh random session ID.
+    pub replacement_session_id: &'a str,
+    /// 随机新会话密钥的 HMAC 摘要。/ HMAC digest of the fresh session secret.
+    pub replacement_digest: &'a [u8],
+    /// 审计 ID。/ Audit ID.
+    pub audit_id: &'a str,
+    /// 请求关联 ID。/ Request correlation ID.
+    pub correlation_id: &'a str,
+    /// Unix 秒。/ Unix timestamp in seconds.
+    pub now: i64,
+}
+
+/// 原子替换密码与旧授权，仅保留新发的当前浏览器会话。
+/// Atomically replaces the password and old authority, retaining only a fresh current browser session.
+///
+/// D1 batch rolls back if a concurrent recovery/session revocation wins, or the
+/// observed password row changes. The deliberately invalid guard inserts turn
+/// zero-row conditional writes into transaction failures; a zero-row D1 update
+/// alone would otherwise silently commit subsequent revocations.
+pub async fn change_password(db: &D1Database, change: PasswordChange<'_>) -> Result<()> {
+    let principal = &change.session.principal_id;
+    let source = &change.session.session_id;
+    let now = change.now;
+    let policy = LifetimePolicy::default();
+    let (method, authenticator_id) = match change.proof {
+        PasswordChangeProof::CurrentPassword { .. } => ("password", None),
+        PasswordChangeProof::RecentPasskey => {
+            ("passkey", change.session.authenticator_id.as_deref())
+        }
+    };
+    let authenticated_at = if method == "passkey" {
+        change.session.authenticated_at
+    } else {
+        now
+    };
+    let amr = format!("[\"{method}\"]");
+    let acr = format!(
+        "urn:moesegfault:acr:{}",
+        if method == "passkey" {
+            "passkey-uv"
+        } else {
+            "password"
+        }
+    );
+    let mut statements = vec![
+        db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,authenticator_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at,created_from_session_id) \
+            SELECT ?1,?2,s.principal_id,?5,?6,?7,?8,?9,?10,?12,?13,s.session_id FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id \
+            WHERE s.session_id=?3 AND s.session_digest=?4 AND s.principal_id=?11 AND s.revoked_at IS NULL AND s.idle_expires_at>?10 AND s.absolute_expires_at>?10 AND p.lifecycle_state='active' \
+            AND (?6='password' OR (s.auth_method='passkey' AND s.authenticator_id=?5 AND s.authenticated_at=?9 AND s.authenticated_at<=?10 AND s.authenticated_at>=?14 AND EXISTS(SELECT 1 FROM authenticators a WHERE a.authenticator_id=?5 AND a.principal_id=s.principal_id AND a.revoked_at IS NULL)))")
+            .bind(&[text(change.replacement_session_id),blob(change.replacement_digest),text(source),blob(change.initiating_digest),optional_text(authenticator_id),text(method),text(&amr),text(&acr),integer(authenticated_at),integer(now),text(principal),integer(now+policy.session_idle_seconds as i64),integer(now+policy.session_absolute_seconds as i64),integer(now-policy.recent_authentication_seconds as i64)])?,
+        db.prepare("INSERT INTO identity_sessions(session_id) SELECT ?1 WHERE NOT EXISTS(SELECT 1 FROM identity_sessions WHERE session_id=?1 AND session_digest=?2 AND principal_id=?3 AND created_from_session_id=?4 AND revoked_at IS NULL)")
+            .bind(&[text(change.replacement_session_id),blob(change.replacement_digest),text(principal),text(source)])?,
+        db.prepare("INSERT INTO session_authentication_methods(session_id,sequence,method,authenticated_at) VALUES(?1,1,?2,?3)")
+            .bind(&[text(change.replacement_session_id),text(method),integer(authenticated_at)])?,
+    ];
+    match change.proof {
+        PasswordChangeProof::CurrentPassword { hash, version } => {
+            let next_version = version
+                .checked_add(1)
+                .ok_or_else(|| Error::RustError("password credential version overflow".into()))?;
+            statements.push(db.prepare("UPDATE password_credentials SET password_hash=?2,hash_algorithm='argon2id',hash_parameters_json='{}',password_version=?3,updated_at=?4,last_used_at=NULL WHERE principal_id=?1 AND password_hash=?5 AND password_version=?6")
+                .bind(&[text(principal),text(change.new_hash),integer(next_version),integer(now),text(hash),integer(version)])?);
+            statements.push(db.prepare("INSERT INTO password_credentials(principal_id) SELECT ?1 WHERE NOT EXISTS(SELECT 1 FROM password_credentials WHERE principal_id=?1 AND password_hash=?2 AND password_version=?3)")
+                .bind(&[text(principal),text(change.new_hash),integer(next_version)])?);
+        }
+        PasswordChangeProof::RecentPasskey => {
+            statements.push(db.prepare("INSERT INTO password_credentials(principal_id,password_hash,hash_algorithm,hash_parameters_json,password_version,created_at,updated_at) VALUES(?1,?2,'argon2id','{}',1,?3,?3)")
+                .bind(&[text(principal),text(change.new_hash),integer(now)])?);
+        }
+    }
+    statements.extend([
+        db.prepare("UPDATE oauth_authorization_codes SET revoked_at=?2 WHERE principal_id=?1 AND revoked_at IS NULL AND consumed_at IS NULL")
+            .bind(&[text(principal),integer(now)])?,
+        db.prepare("UPDATE oauth_authorization_transactions SET state='denied',consumed_at=?2 WHERE principal_id=?1 AND state='authenticated'")
+            .bind(&[text(principal),integer(now)])?,
+        db.prepare("UPDATE oauth_refresh_token_families SET revoked_at=?2,revocation_reason='password_changed' WHERE principal_id=?1 AND revoked_at IS NULL")
+            .bind(&[text(principal),integer(now)])?,
+        db.prepare("UPDATE webauthn_transactions SET state='cancelled',consumed_at=?2,result_reference=NULL WHERE principal_id=?1 AND state='pending'")
+            .bind(&[text(principal),integer(now)])?,
+        db.prepare("UPDATE binding_transactions SET state='cancelled',consumed_at=?2,result_binding_id=NULL WHERE principal_id=?1 AND state='pending'")
+            .bind(&[text(principal),integer(now)])?,
+        db.prepare("UPDATE identity_sessions SET revoked_at=?2,revocation_reason='password_changed' WHERE principal_id=?1 AND session_id<>?3 AND revoked_at IS NULL")
+            .bind(&[text(principal),integer(now),text(change.replacement_session_id)])?,
+        db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) VALUES(?1,'identity.password.changed',?2,?2,?3,?3,'success',?4,1,json_object('replacement_session_id',?5))")
+            .bind(&[text(change.audit_id),integer(now),text(principal),text(change.correlation_id),text(change.replacement_session_id)])?,
+        archive_outbox(db, change.audit_id, now)?,
+    ]);
+    db.batch(statements).await?;
+    Ok(())
 }
 
 /// 可公开返回的账户标识符投影。/ Account-identifier projection safe to return to the caller.

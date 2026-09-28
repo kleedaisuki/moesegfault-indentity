@@ -119,24 +119,25 @@ export class IdentityApiClient {
   }
 
   /** 列出当前账号联系方式，用于恢复缺失的注册响应投影。Lists current contacts to recover from a missing registration projection. */
-  public listContacts(signal?: AbortSignal) {
-    return this.#request<Contact[]>("/v1/me/contacts", { method: "GET", signal });
+  public async listContacts(signal?: AbortSignal) {
+    const contacts = await this.#request<ContactWire[]>("/v1/me/contacts", { method: "GET", signal });
+    return contacts.map(contactFromWire);
   }
 
   /** 向注册产生的邮箱发送短期验证码。Sends a short-lived verification code to a registration-created email. */
   public startContactVerification(contactId: string, controls: MutationControls) {
     return this.#request<ContactVerificationTransaction>(
-      `/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions`,
+      `${contactPath(contactId)}/verification-transactions`,
       { method: "POST", body: {}, ...controls },
     );
   }
 
   /** 使用 8 位邮箱验证码完成联系方式验证。Completes contact verification with an eight-digit email code. */
   public completeContactVerification(contactId: string, transactionId: string, code: string, controls: MutationControls) {
-    return this.#request<Contact>(
-      `/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions/${encodeURIComponent(transactionId)}/completion`,
+    return this.#request<ContactWire>(
+      `${contactPath(contactId)}/verification-transactions/${encodeURIComponent(transactionId)}/completion`,
       { method: "POST", body: { code }, ...controls },
-    );
+    ).then(contactFromWire);
   }
 
   /** 创建 Passkey 注册事务。Starts a passkey registration transaction. */
@@ -348,4 +349,20 @@ export class IdentityApiClient {
 /** 为不可安全重复的动作创建浏览器生命周期内幂等键。Creates a page-lifetime idempotency key for unsafe-to-repeat actions. */
 export function createIdempotencyKey(): string {
   return crypto.randomUUID();
+}
+
+/** 新旧部署的联系方式响应形状。Contact response shape across new and legacy deployments. */
+type ContactWire = Omit<Contact, "contact_id"> & { contact_id?: string; identifier_id?: string };
+
+/** 在 API 边界统一联系方式 ID。Normalizes the contact ID at the API boundary. */
+function contactFromWire(contact: ContactWire): Contact {
+  const contactId = contact.contact_id ?? contact.identifier_id;
+  if (!contactId) throw new TypeError("Contact response lacks an ID");
+  return { ...contact, contact_id: contactId };
+}
+
+/** 缺失 ID 必须在发请求前暴露，不能伪装成联系方式 404。Missing IDs fail before a request rather than masquerading as a contact 404. */
+function contactPath(contactId: string): string {
+  if (typeof contactId !== "string" || !contactId) throw new TypeError("Contact ID is required");
+  return `/v1/me/contacts/${encodeURIComponent(contactId)}`;
 }

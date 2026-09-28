@@ -135,11 +135,13 @@ describe("IdentityApiClient", () => {
   });
 
   it("starts and completes registration email verification with explicit mutation controls", async () => {
-    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ transaction_id: "verify-1", expires_at: "later", delivery_hint: "k***@example.com" }), { status: 201, headers: { "content-type": "application/json" } }));
+    const fetchMock = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ transaction_id: "verify-1", expires_at: "later", delivery_hint: "k***@example.com" }), { status: 201, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ identifier_id: "email/contact", kind: "email", value: "klee@example.com", verification_state: "verified" }), { headers: { "content-type": "application/json" } }));
     const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
 
     await client.startContactVerification("email/contact", { csrfToken: "session-csrf", idempotencyKey: "send-1" });
-    await client.completeContactVerification("email/contact", "verify/1", "01234567", { csrfToken: "session-csrf", idempotencyKey: "complete-1" });
+    expect((await client.completeContactVerification("email/contact", "verify/1", "01234567", { csrfToken: "session-csrf", idempotencyKey: "complete-1" })).contact_id).toBe("email/contact");
 
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://identity.moesegfault.dev/v1/me/contacts/email%2Fcontact/verification-transactions");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({});
@@ -147,5 +149,21 @@ describe("IdentityApiClient", () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://identity.moesegfault.dev/v1/me/contacts/email%2Fcontact/verification-transactions/verify%2F1/completion");
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ code: "01234567" });
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("idempotency-key")).toBe("complete-1");
+  });
+
+  it("recovers contact IDs from both deployed and public list projections", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify([
+      { identifier_id: "old-contact", kind: "email", value: "old@example.com", verification_state: "unverified" },
+      { contact_id: "new-contact", kind: "email", value: "new@example.com", verification_state: "unverified" },
+    ]), { headers: { "content-type": "application/json" } }));
+    const contacts = await new IdentityApiClient("https://identity.moesegfault.dev", fetchMock).listContacts();
+    expect(contacts.map((contact) => contact.contact_id)).toEqual(["old-contact", "new-contact"]);
+  });
+
+  it("never sends a verification request with an absent contact ID", () => {
+    const fetchMock = vi.fn<FetchLike>();
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    expect(() => client.startContactVerification(undefined as unknown as string, { csrfToken: "csrf", idempotencyKey: "key" })).toThrow("Contact ID is required");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

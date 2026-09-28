@@ -17,6 +17,7 @@ use worker::{Env, Error, Headers, Request, Response, Result, RouteContext, wasm_
 use crate::{guard, problem, repository};
 
 const MAX_BODY_BYTES: u64 = 65_536;
+const PASSWORD_ATTEMPT_TTL_SECONDS: i64 = 86_400;
 const PASSWORD_PARAMETERS: &str =
     r#"{"algorithm":"argon2id","version":19,"memory_kib":19456,"iterations":2,"parallelism":1}"#;
 
@@ -68,6 +69,7 @@ struct PasswordAuthenticationRequest {
 struct PasswordIdentity {
     principal_id: String,
     password_hash: String,
+    password_version: i64,
     lifecycle_state: String,
 }
 
@@ -299,16 +301,31 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
     if input.password.chars().count() > 128 {
         return authentication_failed(&correlation);
     }
+    let db = context.d1("DB")?;
     let normalized = LoginIdentifier::parse(&input.login);
     let identity = match normalized {
-        Some(login) => context
-            .d1("DB")?
-            .prepare("SELECT p.principal_id,p.lifecycle_state,c.password_hash FROM identifiers i JOIN principals p ON p.principal_id=i.principal_id JOIN password_credentials c ON c.principal_id=p.principal_id WHERE i.kind=?1 AND i.normalized_value=?2 AND (i.kind='username' OR i.verification_state='verified') LIMIT 1")
+        Some(ref login) => db
+            .prepare("SELECT p.principal_id,p.lifecycle_state,c.password_hash,c.password_version FROM identifiers i JOIN principals p ON p.principal_id=i.principal_id JOIN password_credentials c ON c.principal_id=p.principal_id WHERE i.kind=?1 AND i.normalized_value=?2 AND (i.kind='username' OR i.verification_state='verified') LIMIT 1")
             .bind(&[text(login.kind()), text(login.value())])?
             .first::<PasswordIdentity>(None)
             .await?,
         None => None,
     };
+    // Reserve a slot with one primary D1 write before running Argon2. All verified
+    // aliases of a principal share a bucket; unknown/unverified values use a
+    // keyed, non-reversible identifier bucket to avoid storing contact PII.
+    // 在运行 Argon2 前通过一次 D1 主库写入预占次数。已验证别名共用主体桶；
+    // 未知或未验证值使用带密钥的不可逆标识符桶，避免保存联系方式个人信息。
+    let now = now_seconds();
+    let bucket = password_attempt_bucket(
+        &context.env,
+        identity.as_ref(),
+        normalized.as_ref(),
+        &input.login,
+    )?;
+    if let Some(retry_after) = reserve_password_attempt(&db, &bucket, now).await? {
+        return password_rate_limited(&correlation, retry_after);
+    }
     let candidate_hash = identity
         .as_ref()
         .map_or(DUMMY_PASSWORD_HASH, |row| row.password_hash.as_str());
@@ -320,8 +337,6 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
         return authentication_failed(&correlation);
     }
     let identity = identity.expect("verified identity exists");
-    let db = context.d1("DB")?;
-    let now = now_seconds();
     if let Some(authorization_id) = input.authorization_transaction_id.as_deref() {
         let valid = db
             .prepare("SELECT authorization_transaction_id FROM oauth_authorization_transactions WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>?2")
@@ -346,8 +361,16 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
     );
     let audit_id = AuditEventId::new_v7(worker::Date::now().as_millis()).to_string();
     let mut statements = vec![
-        db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,'password','[\"password\"]','urn:moesegfault:acr:password',?4,?4,?5,?6)")
-            .bind(&[text(&session_id), blob(&session_digest.0), text(&identity.principal_id), integer(now), integer(now + 43_200), integer(now + 2_592_000)])?,
+        db.prepare("DELETE FROM password_auth_attempts WHERE bucket_digest=?1")
+            .bind(&[blob(&bucket)])?,
+        // A recovery/password rotation may have won after the pre-hash read.
+        // The session insert must prove the exact credential is still current
+        // inside this atomic batch; the following FK write rolls it all back
+        // if no row was inserted.
+        // 恢复或密码轮换可能在哈希前读取之后已完成；会话插入必须在原子 batch 内
+        // 证明所验证的凭据仍然有效。若未插入，后续外键写入会回滚整个 batch。
+        db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) SELECT ?1,?2,p.principal_id,'password','[\"password\"]','urn:moesegfault:acr:password',?5,?5,?6,?7 FROM principals p JOIN password_credentials c ON c.principal_id=p.principal_id WHERE p.principal_id=?3 AND p.lifecycle_state='active' AND c.password_hash=?4 AND c.password_version=?8")
+            .bind(&[text(&session_id), blob(&session_digest.0), text(&identity.principal_id), text(&identity.password_hash), integer(now), integer(now + 43_200), integer(now + 2_592_000), integer(identity.password_version)])?,
         db.prepare("INSERT INTO session_authentication_methods(session_id,sequence,method,authenticated_at) VALUES(?1,1,'password',?2)").bind(&[text(&session_id), integer(now)])?,
         db.prepare("UPDATE password_credentials SET last_used_at=?2 WHERE principal_id=?1").bind(&[text(&identity.principal_id), integer(now)])?,
         db.prepare("INSERT INTO security_audit_events(audit_event_id,event_name,occurred_at,observed_at,actor_principal_id,subject_principal_id,outcome,correlation_id,policy_revision,context_json) VALUES(?1,'identity.authentication.succeeded',?2,?2,?3,?3,'success',?4,1,'{\"method\":\"password\"}')")
@@ -358,7 +381,25 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
         statements.push(db.prepare("UPDATE oauth_authorization_transactions SET principal_id=?2,identity_session_id=?3,state='authenticated' WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>?4")
             .bind(&[text(authorization_id), text(&identity.principal_id), text(&session_id), integer(now)])?);
     }
-    db.batch(statements).await?;
+    if let Err(error) = db.batch(statements).await {
+        if error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("foreign key constraint")
+        {
+            // Only the expected authority-loss FK is an authentication failure.
+            // Surface unrelated integrity failures to the route's internal-error
+            // logging rather than silently misclassifying them as bad passwords.
+            // 仅将预期的权限丢失外键失败映射为认证失败；其他完整性错误交给路由错误日志。
+            let still_current = db.prepare("SELECT 1 AS current FROM principals p JOIN password_credentials c ON c.principal_id=p.principal_id WHERE p.principal_id=?1 AND p.lifecycle_state='active' AND c.password_hash=?2 AND c.password_version=?3")
+                .bind(&[text(&identity.principal_id), text(&identity.password_hash), integer(identity.password_version)])?
+                .first::<i64>(Some("current")).await?.is_some();
+            if !still_current {
+                return authentication_failed(&correlation);
+            }
+        }
+        return Err(error);
+    }
     let account = repository::principal(&db, &identity.principal_id).await?;
     let account = account.map_or_else(
         || serde_json::json!({"principal_id": identity.principal_id}),
@@ -388,6 +429,116 @@ pub async fn authenticate(mut request: Request, context: RouteContext<()>) -> Re
 struct AuthorizationRow {
     #[allow(dead_code)]
     authorization_transaction_id: String,
+}
+
+/// Derive one opaque bucket for the principal, or for an unknown identifier.
+/// 为主体（或未知标识符）派生一个不透明限速桶。
+fn password_attempt_bucket(
+    env: &Env,
+    identity: Option<&PasswordIdentity>,
+    normalized: Option<&LoginIdentifier>,
+    raw_login: &str,
+) -> Result<[u8; 32]> {
+    let material = password_attempt_scope(identity, normalized, raw_login);
+    Ok(SecretDigest::hmac(
+        secret(env, "SESSION_PEPPER")?.as_bytes(),
+        material.as_bytes(),
+    )
+    .0)
+}
+
+/// Resolve every known verified alias to its principal-wide throttle scope.
+/// 将已知且已验证的每个别名归入同一主体限速范围。
+fn password_attempt_scope(
+    identity: Option<&PasswordIdentity>,
+    normalized: Option<&LoginIdentifier>,
+    raw_login: &str,
+) -> String {
+    if let Some(identity) = identity {
+        format!("password-auth:principal:{}", identity.principal_id)
+    } else if let Some(login) = normalized {
+        format!("password-auth:unknown:{}:{}", login.kind(), login.value())
+    } else {
+        format!("password-auth:invalid:{raw_login}")
+    }
+}
+
+/// Atomically reserve an Argon2 attempt; denied requests never run a hash.
+/// 原子预占一次 Argon2 尝试；拒绝的请求绝不运行哈希。
+///
+/// The conditional UPSERT is the concurrency boundary. A read-then-write
+/// counter would allow simultaneous guesses to bypass the cap. The 24-hour
+/// inactivity expiry avoids a permanent denial of password login, while
+/// exponential backoff starts after four attempts and tops out at one hour.
+/// 条件 UPSERT 是并发边界。先读后写计数会让并发猜测绕过上限。
+/// 24 小时无尝试即过期，避免永久拒绝密码登录；四次后开始指数退避，最长一小时。
+async fn reserve_password_attempt(
+    db: &worker::D1Database,
+    bucket: &[u8; 32],
+    now: i64,
+) -> Result<Option<i64>> {
+    let reserved = db.prepare(
+        "INSERT INTO password_auth_attempts(bucket_digest,attempt_count,last_attempt_at,next_allowed_at,expires_at) \
+         VALUES(?1,1,?2,?2,?3) \
+         ON CONFLICT(bucket_digest) DO UPDATE SET \
+         attempt_count=CASE WHEN password_auth_attempts.expires_at<=excluded.last_attempt_at \
+             THEN 1 ELSE password_auth_attempts.attempt_count+1 END, \
+         last_attempt_at=excluded.last_attempt_at, \
+         next_allowed_at=CASE WHEN password_auth_attempts.expires_at<=excluded.last_attempt_at \
+             OR password_auth_attempts.attempt_count<4 THEN excluded.last_attempt_at \
+             ELSE excluded.last_attempt_at + min(3600, 1 << min(12, password_auth_attempts.attempt_count-4)) END, \
+         expires_at=excluded.expires_at \
+         WHERE password_auth_attempts.expires_at<=excluded.last_attempt_at \
+             OR (password_auth_attempts.attempt_count<100 AND password_auth_attempts.next_allowed_at<=excluded.last_attempt_at) \
+         RETURNING attempt_count"
+    ).bind(&[blob(bucket), integer(now), integer(now + PASSWORD_ATTEMPT_TTL_SECONDS)])?
+        .first::<i64>(Some("attempt_count")).await?;
+    if reserved.is_some() {
+        return Ok(None);
+    }
+    // This read is diagnostic only. The preceding write remains authoritative.
+    // 此读取仅用于给出等待时间；前面的写入仍是权威判定。
+    let row = db
+        .prepare(
+            "SELECT attempt_count,next_allowed_at,expires_at FROM password_auth_attempts WHERE bucket_digest=?1",
+        )
+        .bind(&[blob(bucket)])?
+        .first::<PasswordAttemptWait>(None)
+        .await?;
+    let retry_after = row.map_or(1, |row| row.retry_after(now));
+    Ok(Some(retry_after.max(1)))
+}
+
+#[derive(Debug, Deserialize)]
+struct PasswordAttemptWait {
+    attempt_count: i64,
+    next_allowed_at: i64,
+    expires_at: i64,
+}
+
+impl PasswordAttemptWait {
+    /// Report the actual next admission time, including the terminal cap.
+    /// 报告真实的下次可尝试时间，包括次数耗尽后的最终限制。
+    fn retry_after(&self, now: i64) -> i64 {
+        if self.attempt_count >= 100 {
+            self.expires_at.saturating_sub(now)
+        } else {
+            self.next_allowed_at.saturating_sub(now)
+        }
+    }
+}
+
+/// Delete expired anonymous and principal buckets in a bounded cron batch.
+/// 在定时任务中有界地清理过期的匿名及主体桶。
+pub(crate) async fn purge_expired_attempts(
+    db: &worker::D1Database,
+    now: i64,
+    limit: u32,
+) -> Result<()> {
+    db.prepare("DELETE FROM password_auth_attempts WHERE bucket_digest IN (SELECT bucket_digest FROM password_auth_attempts WHERE expires_at<=?1 ORDER BY expires_at LIMIT ?2)")
+        .bind(&[integer(now), integer(i64::from(limit.min(500)))])?
+        .run().await?;
+    Ok(())
 }
 
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZS1maXhlZC1zYWx0$MeZ7LaoKcHj8oWkYckLpDrLFIW8VOfUCFSSqu2V9fcI";
@@ -540,6 +691,21 @@ fn authentication_failed(correlation: &str) -> Result<Response> {
     )
 }
 
+/// Return one generic 429 for known and unknown identifiers alike.
+/// 对已知和未知标识符统一返回通用 429。
+fn password_rate_limited(correlation: &str, retry_after: i64) -> Result<Response> {
+    let response = problem::response(
+        "rate_limited",
+        "Too many authentication attempts",
+        429,
+        correlation,
+    )?;
+    response
+        .headers()
+        .set("retry-after", &retry_after.to_string())?;
+    Ok(response)
+}
+
 fn invalid_request(title: &'static str, correlation: &str) -> Result<Response> {
     problem::response("invalid_request", title, 400, correlation)
 }
@@ -641,5 +807,41 @@ mod tests {
         assert!(encoded.starts_with("$argon2id$"));
         assert!(verify_password("correct horse battery staple", &encoded));
         assert!(!verify_password("another long wrong password", &encoded));
+    }
+
+    #[test]
+    fn verified_aliases_share_one_principal_attempt_scope() {
+        let identity = PasswordIdentity {
+            principal_id: "principal-1".into(),
+            password_hash: DUMMY_PASSWORD_HASH.into(),
+            password_version: 1,
+            lifecycle_state: "active".into(),
+        };
+        let username = LoginIdentifier::parse("Klee").unwrap();
+        let email = LoginIdentifier::parse("Klee@example.com").unwrap();
+        assert_eq!(
+            password_attempt_scope(Some(&identity), Some(&username), "Klee"),
+            password_attempt_scope(Some(&identity), Some(&email), "Klee@example.com")
+        );
+        assert_ne!(
+            password_attempt_scope(None, Some(&email), "Klee@example.com"),
+            password_attempt_scope(Some(&identity), Some(&email), "Klee@example.com")
+        );
+    }
+
+    #[test]
+    fn retry_after_reports_expiry_after_terminal_cap() {
+        let row = PasswordAttemptWait {
+            attempt_count: 100,
+            next_allowed_at: 4_600,
+            expires_at: 87_400,
+        };
+        assert_eq!(row.retry_after(1_000), 86_400);
+        let row = PasswordAttemptWait {
+            attempt_count: 5,
+            next_allowed_at: 1_010,
+            expires_at: 87_400,
+        };
+        assert_eq!(row.retry_after(1_000), 10);
     }
 }

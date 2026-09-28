@@ -4,6 +4,22 @@ import type { Account, AccountPreferences, Avatar, ConnectedApp, Contact, Contac
 /** 可注入的 Fetch 接口。Injectable Fetch interface. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+/** 兼容已部署的 identifier_id 形状及公开契约中的 contact_id。Accepts the deployed identifier_id shape and the public contact_id contract. */
+type ContactWire = Omit<Contact, "contact_id"> & { contact_id?: string; identifier_id?: string };
+
+/** 在 API 边界统一联系方式 ID，避免向验证路径发送 undefined。Normalizes contact IDs at the API boundary so verification never targets undefined. */
+function contactFromWire(contact: ContactWire): Contact {
+  const contactId = contact.contact_id ?? contact.identifier_id;
+  if (!contactId) throw new TypeError("Contact response lacks an ID");
+  return { ...contact, contact_id: contactId };
+}
+
+/** 拒绝缺失 ID，而非把字符串 undefined 送往联系方式路由。Rejects missing IDs instead of sending the string undefined to a contact route. */
+function contactPath(contactId: string): string {
+  if (typeof contactId !== "string" || !contactId) throw new TypeError("Contact ID is required");
+  return `/v1/me/contacts/${encodeURIComponent(contactId)}`;
+}
+
 /** 可安全展示且携带关联 ID 的 API 错误。Display-safe API error carrying a correlation ID. */
 export class ApiError extends Error {
   /** 从后端问题详情构造错误。Constructs an error from backend Problem Details. */
@@ -43,17 +59,17 @@ export class AccountApiClient {
   /** 删除头像。Deletes the avatar. */
   public deleteAvatar(proof: MutationProof) { return this.#request<void>("/v1/me/avatar", { method: "DELETE", ...proof }); }
   /** 列出联系方式。Lists private contacts. */
-  public listContacts(signal?: AbortSignal) { return this.#request<Contact[]>("/v1/me/contacts", { method: "GET", signal }); }
+  public async listContacts(signal?: AbortSignal) { return (await this.#request<ContactWire[]>("/v1/me/contacts", { method: "GET", signal })).map(contactFromWire); }
   /** 添加联系方式；验证由后端异步挑战。Adds a contact; backend verification follows. */
-  public addContact(input: ContactCreate, proof: MutationProof) { return this.#request<Contact>("/v1/me/contacts", { method: "POST", body: input, ...proof }); }
+  public async addContact(input: ContactCreate, proof: MutationProof) { return contactFromWire(await this.#request<ContactWire>("/v1/me/contacts", { method: "POST", body: input, ...proof })); }
   /** 把联系方式设为主要联系方式。Makes one contact primary. */
-  public makePrimary(contactId: string, proof: MutationProof) { return this.#request<Contact>(`/v1/me/contacts/${encodeURIComponent(contactId)}`, { method: "PATCH", body: { is_primary: true }, contentType: "application/merge-patch+json", ...proof }); }
+  public async makePrimary(contactId: string, proof: MutationProof) { return contactFromWire(await this.#request<ContactWire>(contactPath(contactId), { method: "PATCH", body: { is_primary: true }, contentType: "application/merge-patch+json", ...proof })); }
   /** 发送联系方式验证码。Sends a contact verification code. */
-  public startContactVerification(contactId: string, proof: MutationProof) { return this.#request<ContactVerificationTransaction>(`/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions`, { method: "POST", body: {}, ...proof }); }
+  public startContactVerification(contactId: string, proof: MutationProof) { return this.#request<ContactVerificationTransaction>(`${contactPath(contactId)}/verification-transactions`, { method: "POST", body: {}, ...proof }); }
   /** 完成联系方式验证。Completes contact verification. */
-  public completeContactVerification(contactId: string, transactionId: string, code: string, proof: MutationProof) { return this.#request<Contact>(`/v1/me/contacts/${encodeURIComponent(contactId)}/verification-transactions/${encodeURIComponent(transactionId)}/completion`, { method: "POST", body: { code }, ...proof }); }
+  public async completeContactVerification(contactId: string, transactionId: string, code: string, proof: MutationProof) { return contactFromWire(await this.#request<ContactWire>(`${contactPath(contactId)}/verification-transactions/${encodeURIComponent(transactionId)}/completion`, { method: "POST", body: { code }, ...proof })); }
   /** 删除联系方式。Deletes a contact. */
-  public deleteContact(contactId: string, proof: MutationProof) { return this.#request<void>(`/v1/me/contacts/${encodeURIComponent(contactId)}`, { method: "DELETE", ...proof }); }
+  public deleteContact(contactId: string, proof: MutationProof) { return this.#request<void>(contactPath(contactId), { method: "DELETE", ...proof }); }
   /** 读取安全能力摘要。Reads the security capability summary. */
   public getSecurity(signal?: AbortSignal) { return this.#request<SecuritySummary>("/v1/me/security", { method: "GET", signal }); }
   /** 读取账户界面偏好。Reads Account UI preferences. */

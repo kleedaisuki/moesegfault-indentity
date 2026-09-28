@@ -538,10 +538,27 @@ pub async fn userinfo(request: Request, context: RouteContext<()>) -> Result<Res
             &correlation,
         );
     };
+    let Some(client_id) = audience_one(&claims) else {
+        return bearer_error(
+            "invalid_token",
+            "Access token is invalid",
+            401,
+            &correlation,
+        );
+    };
+    if claims.get("client_id").and_then(Value::as_str) != Some(client_id) {
+        return bearer_error(
+            "invalid_token",
+            "Access token is invalid",
+            401,
+            &correlation,
+        );
+    }
     let mut output = json!({"sub":sub});
     if scope.split(' ').any(|v| v == "profile") {
-        if let Some(pid) = claims.get("pid").and_then(Value::as_str) {
-            if let Some(profile) = repository::principal(&context.d1("DB")?, pid).await? {
+        let db = context.d1("DB")?;
+        if let Some(pid) = repo::principal_for_client_subject(&db, client_id, sub).await? {
+            if let Some(profile) = repository::principal(&db, &pid).await? {
                 output["name"] = json!(profile.display_name);
                 output["preferred_username"] = json!(profile.username);
             }
@@ -614,7 +631,17 @@ async fn logout(
     if let Some(hint) = fields.get("id_token_hint") {
         if let Ok(claims) = verify_our_jwt(hint, &context.env, false).await {
             client_id = audience_one(&claims).map(str::to_owned);
-            sid = claims.get("sid").and_then(Value::as_str).map(str::to_owned);
+            if let (Some(client), Some(public_sid)) = (
+                client_id.as_deref(),
+                claims.get("sid").and_then(Value::as_str),
+            ) {
+                sid = repo::session_for_client_sid(&db, client, public_sid).await?;
+                // 旧 ID Token 的 sid 是原始 UUID；保留登出能力，不再签发此格式。
+                // Old ID Tokens contain raw UUIDs; retain logout support but never issue them again.
+                if sid.is_none() && Uuid::parse_str(public_sid).is_ok() {
+                    sid = Some(public_sid.to_owned());
+                }
+            }
         }
     }
     if sid.is_none() {
@@ -724,6 +751,14 @@ async fn exchange_code(
         now,
     )
     .await?;
+    let public_sid = repo::ensure_client_session_id(
+        db,
+        &grant.client_id,
+        &grant.identity_session_id,
+        &random_public_sid(),
+        now,
+    )
+    .await?;
     let refresh = if grant.scope.split(' ').any(|v| v == "offline_access") {
         let wire = random_secret();
         let pepper = secret(env, "REFRESH_TOKEN_PEPPER")?;
@@ -777,8 +812,7 @@ async fn exchange_code(
         issuer,
         &subject,
         &grant.client_id,
-        &grant.principal_id,
-        &grant.identity_session_id,
+        &public_sid,
         &grant.scope,
         Some(&grant.nonce),
         grant.authenticated_at,
@@ -825,17 +859,27 @@ async fn exchange_refresh(
         );
     };
     let now = now_seconds();
-    if grant.token_state != "active" {
-        repo::revoke_family_for_reuse(db, &grant.refresh_token_family_id, now).await?;
-        return oauth_problem(
-            "invalid_grant",
-            "Refresh-token reuse detected",
-            400,
-            correlation,
-        );
+    match classify_refresh_use(&grant.client_id, &client.client_id, &grant.token_state) {
+        RefreshUse::ForeignClient => {
+            return oauth_problem(
+                "invalid_grant",
+                "Refresh token is invalid",
+                400,
+                correlation,
+            );
+        }
+        RefreshUse::Reuse => {
+            repo::revoke_family_for_reuse(db, &grant.refresh_token_family_id, now).await?;
+            return oauth_problem(
+                "invalid_grant",
+                "Refresh-token reuse detected",
+                400,
+                correlation,
+            );
+        }
+        RefreshUse::Active => {}
     }
-    if grant.client_id != client.client_id
-        || grant.family_revoked_at.is_some()
+    if grant.family_revoked_at.is_some()
         || grant.token_expires_at <= now
         || grant.absolute_expires_at <= now
         || grant.session_revoked_at.is_some()
@@ -855,6 +899,14 @@ async fn exchange_refresh(
         &grant.sector_identifier,
         &grant.principal_id,
         grant.subject_salt_revision,
+        now,
+    )
+    .await?;
+    let public_sid = repo::ensure_client_session_id(
+        db,
+        &grant.client_id,
+        &grant.identity_session_id,
+        &random_public_sid(),
         now,
     )
     .await?;
@@ -899,8 +951,7 @@ async fn exchange_refresh(
         issuer,
         &subject,
         &grant.client_id,
-        &grant.principal_id,
-        &grant.identity_session_id,
+        &public_sid,
         &grant.scope,
         None,
         grant.authenticated_at,
@@ -915,12 +966,36 @@ async fn exchange_refresh(
     token_response(tokens, Some(new_wire), correlation)
 }
 
+/// 在任何重用副作用前判定 refresh token 的客户端归属。
+/// Classifies refresh-token client ownership before any reuse side effect.
+#[derive(Debug, PartialEq, Eq)]
+enum RefreshUse {
+    ForeignClient,
+    Reuse,
+    Active,
+}
+
+/// 跨客户端提交即使携带已轮换令牌，也不得撤销真正客户端的 family。
+/// A foreign client cannot revoke the rightful family, even with a rotated token.
+fn classify_refresh_use(grant_client: &str, request_client: &str, state: &str) -> RefreshUse {
+    if grant_client != request_client {
+        return RefreshUse::ForeignClient;
+    }
+    if state != "active" {
+        return RefreshUse::Reuse;
+    }
+    RefreshUse::Active
+}
+
+/// 已签名的短寿命令牌集合。/ Set of signed short-lived tokens.
 struct SignedTokens {
     access: String,
     id: String,
     scope: String,
     expires: i64,
 }
+/// 使用已解析的客户端专属 sid 签发令牌；不得传入内部 session ID。
+/// Signs tokens with an already resolved client-scoped sid, never an internal session ID.
 #[allow(clippy::too_many_arguments)]
 async fn sign_tokens(
     key: &str,
@@ -928,7 +1003,6 @@ async fn sign_tokens(
     issuer: &str,
     sub: &str,
     client: &str,
-    pid: &str,
     sid: &str,
     scope: &str,
     nonce: Option<&str>,
@@ -942,7 +1016,7 @@ async fn sign_tokens(
 ) -> Result<SignedTokens> {
     let exp = now + ttl;
     let amr: Value = serde_json::from_str(amr_json).unwrap_or(json!([]));
-    let access = json!({"iss":issuer,"sub":sub,"aud":client,"client_id":client,"pid":pid,"sid":sid,"scope":scope,"iat":now,"exp":exp,"jti":Uuid::new_v4().to_string(),"token_use":"access"});
+    let access = access_claims(issuer, sub, client, scope, now, exp);
     let mut id = json!({"iss":issuer,"sub":sub,"aud":client,"sid":sid,"iat":now,"exp":exp,"auth_time":auth_time,"amr":amr,"acr":acr,"token_use":"id"});
     if scope.split(' ').any(|value| value == "profile") {
         id["name"] = json!(name);
@@ -957,6 +1031,18 @@ async fn sign_tokens(
         scope: scope.to_owned(),
         expires: ttl,
     })
+}
+
+/// Access Token 只携带客户端作用域的 subject；内部 principal 与 session ID 不出现在可读 JWT 中。
+/// Access Tokens carry only the client-scoped subject, never internal principal or session IDs.
+fn access_claims(issuer: &str, sub: &str, client: &str, scope: &str, now: i64, exp: i64) -> Value {
+    json!({"iss":issuer,"sub":sub,"aud":client,"client_id":client,"scope":scope,"iat":now,"exp":exp,"jti":Uuid::new_v4().to_string(),"token_use":"access"})
+}
+
+/// 新 sid 使用带前缀的随机值，与旧版原始 UUID 明确区分。
+/// New session claims use prefixed random values, distinct from legacy raw UUIDs.
+fn random_public_sid() -> String {
+    format!("csid_{}", Uuid::new_v4())
 }
 fn token_response(
     tokens: SignedTokens,
@@ -1484,5 +1570,45 @@ mod tests {
     fn correlation_id_is_uuid_v7() {
         let parsed = Uuid::parse_str(&correlation_id_at(1_700_000_000_123)).unwrap();
         assert_eq!(parsed.get_version_num(), 7);
+    }
+
+    #[test]
+    fn access_claims_expose_no_global_identity_or_session_id() {
+        let claims = access_claims(
+            "https://id.example",
+            "sector-sub",
+            "app",
+            "openid profile",
+            10,
+            310,
+        );
+        assert_eq!(claims["sub"], "sector-sub");
+        assert_eq!(claims["aud"], "app");
+        assert!(claims.get("pid").is_none());
+        assert!(claims.get("sid").is_none());
+    }
+
+    #[test]
+    fn public_session_id_cannot_be_interpreted_as_legacy_raw_uuid() {
+        let sid = random_public_sid();
+        assert!(sid.starts_with("csid_"));
+        assert!(Uuid::parse_str(&sid).is_err());
+        assert_ne!(sid, random_public_sid());
+    }
+
+    #[test]
+    fn foreign_client_cannot_trigger_rotated_refresh_reuse_revocation() {
+        assert_eq!(
+            classify_refresh_use("client-a", "client-b", "rotated"),
+            RefreshUse::ForeignClient
+        );
+        assert_eq!(
+            classify_refresh_use("client-a", "client-a", "rotated"),
+            RefreshUse::Reuse
+        );
+        assert_eq!(
+            classify_refresh_use("client-a", "client-a", "active"),
+            RefreshUse::Active
+        );
     }
 }
