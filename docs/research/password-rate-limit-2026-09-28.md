@@ -1,0 +1,34 @@
+# Password guessing protection (2026-09-28)
+
+## Decision and scope
+
+`POST /v1/password/authentications` previously performed an Argon2id verification for every syntactically accepted request, including unknown identifiers, without a persisted attempt budget. A single caller could therefore make unbounded online guesses and burn Worker CPU/memory. This is an application-level defect independent of perimeter WAF configuration.
+
+The new D1 `password_auth_attempts` table stores a 32-byte HMAC bucket digest, count, next admission time, and inactivity expiry. A single conditional `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE ... RETURNING` reserves an attempt **before** Argon2 runs. The write is the concurrency boundary; a separate read only computes `Retry-After` for denied requests. Known verified username/email/mobile aliases resolve to one principal-wide budget. Unknown and unverified values receive opaque normalized-identifier buckets; raw contact data is never persisted. The HMAC key is `SESSION_PEPPER` with a distinct `password-auth:` input domain, avoiding an additional deployment secret. Rotating that pepper resets all budgets and must therefore be treated as a security-control change.
+
+The first five attempts are admitted. The fifth creates a one-second cooldown; each subsequent admitted attempt doubles the delay up to one hour. The 100th admitted attempt caps further attempts until the bucket has been inactive for 24 hours. Denied requests do not prolong this expiry. A successful password login deletes its bucket in the same D1 batch as session issuance. A five-minute cron deletes up to 500 expired rows per run through an expiry index. Malformed JSON, invalid browser proof, and passwords longer than the existing 128-character bound are rejected before the gate and do not invoke Argon2.
+
+## Authority and race safety
+
+The old login flow read `password_hash`, performed Argon2, then unconditionally inserted a session. Recovery could delete the password credential in between. The session insert now uses `INSERT ... SELECT` gated on the principal still being active and the **same hash and `password_version`** still existing in `password_credentials`; a dependent FK insert forces the whole batch to roll back if no session row was inserted. This closes the stale-credential-after-recovery race without a distributed lock. Password replacement must revoke older sessions in its own atomic operation; the login gate ensures either ordering of the two D1 batches has a coherent result.
+
+## Standards, production practice, and trade-offs
+
+- [NIST SP 800-63B-4, rate limiting](https://pages.nist.gov/800-63-4/sp800-63b.html#rate-limiting-throttling) requires a rate-limiting mechanism and no more than 100 consecutive failed attempts on one authenticator/account. It allows increasing wait periods and bot mitigation to reduce attacker-induced lockout. **This implementation is not a claim of full NIST conformance**: its 24-hour inactivity reset deliberately restores password access without rebind after 100 attempts, whereas the literal NIST maximum says to disable the authenticator and require rebind. A future password-recovery/rebind workflow can make that stricter policy usable.
+- [Cloudflare D1 batch documentation](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch) states batched statements execute sequentially in a transaction, aborting and rolling back on failure. [D1 prepared statements](https://developers.cloudflare.com/d1/worker-api/prepared-statements/#first) support returning one row. The application uses a single conditional write, not eventually consistent KV or an in-isolate map.
+- [Cloudflare WAF rate-limiting guidance](https://developers.cloudflare.com/waf/rate-limiting-rules/) explicitly positions edge rules for login brute-force protection but notes mitigation can lag by seconds and counters can be per-data-center; the WAF is an additional CPU shield, not the authoritative account budget. Configure a path-and-method rule for `POST /v1/password/authentications`, initially challenge/limit abusive source IP traffic based on observed legitimate peaks, and monitor 429/edge challenge rates. Cloudflare plan availability and the current deployed rule state have **not** been verified here. Avoid a low blanket per-IP cap that harms users behind carrier-grade NAT or campus networks.
+- [DALock research in PoPETs](https://doi.org/10.56553/popets-2022-0084) shows that distribution-aware password guessing budgets can reduce unwanted lockouts under modeled password distributions, but it requires calibrated probability estimates. The project has no such dataset or benchmark; an auditable fixed cap plus backoff is safer to deploy first. Research may inform adaptive controls once real abuse and legitimate-login telemetry exist.
+
+The principal-wide bucket prevents alias switching from multiplying guesses, but anyone who knows an account identifier can consume that account's budget; this is an inherent availability-vs-guessing trade-off. Uniform `429 rate_limited` semantics are used for known and unknown buckets, but cross-alias correlation can still leak linkage through throttling behavior under deliberate probing. The HMAC prevents D1 compromise from directly disclosing unknown input values, not from inferring that a bucket has traffic. Randomizing unknown login strings can create many rows and bypass their per-identifier budgets: edge rate limiting is operationally required to bound this aggregate Argon2 and D1 cost. The test does not prove WAF policy is deployed or load-qualified Argon2 performance on paid Workers.
+
+## Reproduction and observed evidence
+
+Run from the repository root:
+
+```sh
+node scripts/tests/password-rate-limit.mjs
+cargo test -p identity-worker --lib password
+cargo clippy -p identity-worker --all-targets -- -D warnings
+```
+
+The Node 26.8.2 test loads migration `0006`, extracts the actual Worker UPSERT SQL, and uses two synthetic HMAC buckets in repository-local `.temp`. It verifies immediate admission, increasing cooldown, exactly 100 maximum admitted attempts before inactivity expiry, denial not extending that expiry, reset on success, independent buckets, and schema rejection of count 101. It also applies the full migration chain and executes the actual guarded session SQL, verifying that deleted credentials, a newer version of the same hash, and an inactive principal cannot create a session. The Rust unit test verifies username and email aliases of the same resolved principal map to the same scope. On 2026-09-28 these focused tests and Clippy passed locally. This is deterministic SQL and unit evidence, not a live concurrent Worker/WAF penetration test. A preproduction follow-up should drive concurrent HTTP requests through Wrangler or staging, check the 100-admission invariant, and measure Argon2 latency/CPU under attack-shaped load.
