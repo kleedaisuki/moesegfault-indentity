@@ -127,3 +127,27 @@ test('generated SQL applies as an actual isolated local D1 migration', { timeout
   assert.match(audit, /identity\.oauth_client\.created/);
   assert.match(audit, /pending/);
 });
+
+test('environment streams register only their own native client in isolated D1', { timeout: 180_000 }, async () => {
+  const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+  for (const target of ['staging', 'production']) {
+    const prepared = spawnSync(process.execPath, ['scripts/prepare-migrations.mjs', target], { cwd: root, encoding: 'utf8' });
+    assert.equal(prepared.status, 0, `${prepared.stdout}\n${prepared.stderr}`);
+  }
+  const base = join(root, '.temp', `oauth-client-env-${randomUUID()}`);
+  for (const [target, id, other] of [
+    ['staging', 'amail-cli-staging', 'amail-cli'],
+    ['production', 'amail-cli', 'amail-cli-staging'],
+  ]) {
+    const database = `moesegfault-identity-${target}`;
+    const persist = join(base, target);
+    const env = target === 'production' ? ['--env', 'production'] : [];
+    const args = ['--local', `--persist-to=${persist}`, '--config', 'wrangler.identity.jsonc', ...env];
+    wrangler(['d1', 'migrations', 'apply', database, ...args]);
+    const rows = JSON.parse(wrangler(['d1', 'execute', database, ...args, '--command', 'SELECT client_id,client_type,token_endpoint_auth_method,sector_identifier FROM oauth_clients ORDER BY client_id', '--json']))[0].results;
+    assert.ok(rows.some((row) => row.client_id === id && row.client_type === 'native' && row.token_endpoint_auth_method === 'none'));
+    assert.ok(!rows.some((row) => row.client_id === other), `${target} contains ${other}`);
+    const redirects = JSON.parse(wrangler(['d1', 'execute', database, ...args, '--command', `SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id='${id}'`, '--json']))[0].results;
+    assert.deepEqual(redirects, [{ redirect_uri: 'http://127.0.0.1/callback', match_mode: 'native_loopback_any_port' }]);
+  }
+});

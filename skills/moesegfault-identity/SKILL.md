@@ -34,7 +34,7 @@ Architecture documents describe direction and rationale; they are not evidence t
 
 1. **Classify the caller.** Decide web BFF, native client, resource service, first-party frontend, or deployment control plane before writing code.
 2. **Declare the trust boundary.** Record the fixed issuer, client type, exact redirect and post-logout URIs, required scopes, token holder, local session boundary, and application user key.
-3. **Obtain registration.** Client provisioning is deployment-owned. Do not invent a client ID, wildcard redirect, secret, scope, or registration endpoint.
+3. **Obtain registration.** Client provisioning is deployment-owned. Review a non-secret manifest, generate create-only SQL, and apply it through the intended environment's migration stream. A generated manifest is not evidence that a D1 row exists. Do not invent a client ID, wildcard redirect, secret, scope, or registration endpoint.
 4. **Implement the smallest protocol surface.** Delegate human authentication to Identity. Business services own their roles and domain data; they do not collect Identity passwords or reproduce Login ceremonies.
 5. **Handle the complete lifecycle.** Cover login transaction expiry, callback validation, token refresh rotation, local-session expiry, logout/revocation, JWKS rotation, and observable protocol errors.
 6. **Test behavior, not just redirects.** Exercise success, state/nonce mismatch, expired or reused code, refresh concurrency, unknown signing key, wrong issuer/audience/scope, denied login, and local plus Identity logout.
