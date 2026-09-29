@@ -1,6 +1,6 @@
 # Password OAuth resume used the Login origin / 密码 OAuth 续接误用 Login 来源
 
-**Status / 状态:** fixed revision deployed to staging; native-client browser retest pending. 2026-09-29.
+**Status / 状态:** staging native-client login recovered; separate browser-origin and D1 transaction-state readbacks remain pending. 2026-09-29.
 
 ## Observed boundary / 观察到的边界
 
@@ -18,7 +18,7 @@ The focused regression is the existing isolated local-Worker password-security h
 
 1. **Done:** GitHub [quality and immutable-package run 36521409380](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/36521409380) passed for exact source revision `5bf9cb4a43d3122fe9f3ae8df363c5a12158cc67`, including Rust/WASM, Login and Account frontends, contracts, isolated real-Worker password/contact harnesses, and package checks.
 2. **Done:** GitHub [staging-only run 36521750319](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/36521750319) passed the same checks and live smoke. The production promotion job was skipped. Cloudflare's deployment readback showed the Identity, Login, and Account staging Workers each serving 100% from a version annotated with that exact source revision. Live discovery reported `https://identity-staging.moesegfault.dev` as issuer and authorization endpoint origin; health and D1 were `ok`, and both frontend roots served HTTP 200 HTML.
-3. **Pending:** Retry login using the **existing verified synthetic staging account**, a fresh OAuth transaction, and the native callback listener. Do not re-register or expose browser URL query material.
-4. **Pending:** Confirm a privacy-safe browser-origin classification (resume on Identity, not Login), transaction `completed`, and native callback/token success. If deployment and browser state are mixed during rollout, start a fresh authorization attempt after deployment rather than reusing an expired transaction.
+3. **Done:** A login-only native amail retry using the **existing verified synthetic staging account** completed in 14.9 seconds with exit code 0. The probe reported native PKCE login and Mail resource authorization success; a separate process confirmed durable CLI auth status and an authenticated Mail address-list request. No account was re-registered, and no credential, code, token, transaction handle, or complete authorization URL was emitted as evidence.
+4. **Not independently observed:** The successful native callback and resource request demonstrate that the client received usable tokens, but this run did not separately classify Chrome's resume-navigation origin or read back the authorization transaction's terminal D1 state. Do not report those narrower observations as performed. A privacy-safe browser-origin classification and bounded `completed` transaction readback remain follow-up checks if the incident needs protocol-level closure.
 
-The staging incident remains open until step 4 passes. Production promotion is a separate release decision under the normal Identity pipeline.
+The original native-login failure is fixed in staging by the end-to-end result above. Protocol-level incident closure remains open for the two explicit readbacks in step 4. Production promotion is a separate release decision under the normal Identity pipeline; it was not performed here.
