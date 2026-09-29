@@ -18,6 +18,7 @@ const shim = join(root, "crates", "identity-worker", "build", "worker", "shim.mj
 const origin = "http://localhost:5174";
 const sessionPepper = "test-only-session-pepper";
 const csrfPepper = "test-only-csrf-pepper";
+const transactionPepper = "test-only-transaction-pepper";
 const initialWire = "test-password-security-initial-session-secret";
 const stateRoot = join(root, ".temp");
 assert.ok(existsSync(wrangler), "Run npm ci first");
@@ -88,7 +89,8 @@ query(`INSERT INTO oauth_refresh_token_families(refresh_token_family_id,client_i
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const worker = spawn(process.execPath, [wrangler, "dev", "--local", "--config=wrangler.identity.jsonc", "--ip=127.0.0.1", `--port=${port}`, `--persist-to=${state}`,
-  "--var=LOGIN_ORIGIN:http://localhost:5173", `--var=ACCOUNT_ORIGIN:${origin}`, `--var=SESSION_PEPPER:${sessionPepper}`, `--var=CSRF_PEPPER:${csrfPepper}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  "--var=LOGIN_ORIGIN:http://localhost:5173", `--var=ACCOUNT_ORIGIN:${origin}`, `--var=SESSION_PEPPER:${sessionPepper}`,
+  `--var=CSRF_PEPPER:${csrfPepper}`, `--var=TRANSACTION_PEPPER:${transactionPepper}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 let diagnostics = "";
 for (const stream of [worker.stdout, worker.stderr]) stream.on("data", (chunk) => { diagnostics = (diagnostics + chunk.toString()).slice(-4000); });
 
