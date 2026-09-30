@@ -33,6 +33,8 @@
     "test:recovery-authority": "node scripts/tests/recovery-authority.mjs",
     "test:password-rate-limit": "node scripts/tests/password-rate-limit.mjs",
     "test:password-security": "node scripts/tests/password-security.mjs",
+    "test:session-performance": "node crates/identity-worker/tests/session-performance.mjs",
+    "test:http-latency": "node --test scripts/tests/http-latency.mjs",
     "package:identity": "wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc",
     "dry-run:identity": "npm run build:identity && npm run package:identity",
     "dry-run:login": "wrangler deploy --dry-run --outdir=dist/dry-run/login --env production --config wrangler.login.jsonc",
