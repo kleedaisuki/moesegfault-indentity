@@ -86,6 +86,12 @@ After deployment, run the manually dispatched [`Inspect OAuth client registratio
 
 For native apps, use the operating system's external browser, not an embedded WebView. For a BFF, allowlist the post-login return destination **inside the app**, and keep its session cookie separate from Identity's cookie. Do not add the new app origin to Identity's first-party `LOGIN_ORIGIN`/`ACCOUNT_ORIGIN` CORS list; this OAuth redirect flow does not need it.
 
+### Native completion experience
+
+Identity owns human authentication and the registered-client authorization mechanism; the native relying party owns the final browser result. Only the relying party can determine whether code exchange, ID-token validation, and protected local session persistence succeeded. Show an application-session success page only after those steps succeed, not when Login authenticates the human or the provider returns a code. Keep the registered redirect and PKCE flow unchanged: visual consistency can reuse the shared design language without adding an application-specific provider completion endpoint.
+
+For a loopback HTML result, bundle a static self-contained success/error page, avoid external resources and reflected callback/error fields, send `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and apply a restrictive Content Security Policy. Provide a clear return-to-application instruction; keep detailed diagnostics in the application's private diagnostic channel, never in a page URL. Existing Identity clients are not required to adopt a new redirect or completion API. Updating Identity does not replace a completion page embedded in an already-installed native binary.
+
 ## What is and is not available / 当前能力边界
 
 | Surface / 能力 | Implemented today / 当前实现 |
