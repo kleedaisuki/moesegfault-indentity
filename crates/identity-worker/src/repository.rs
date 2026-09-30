@@ -45,6 +45,22 @@ pub struct CurrentSession {
     pub principal_id: String,
 }
 
+/// Request-local authoritative session projection used to avoid no-op D1 writes.
+/// The activity timestamp stays internal and is never part of an HTTP response.
+#[derive(Debug, Deserialize)]
+pub(crate) struct SessionActivity<T> {
+    /// Authoritative authorization projection from the same primary-session query.
+    #[serde(flatten)]
+    pub session: T,
+    /// Last persisted session activity in Unix seconds; not an HTTP field.
+    pub last_seen_at: i64,
+}
+
+/// Matches the existing SQL renewal window without trusting cached session state.
+pub(crate) fn session_touch_due(last_seen_at: i64, now: i64) -> bool {
+    last_seen_at <= now.saturating_sub(300)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PrincipalView {
     pub principal_id: String,
@@ -571,14 +587,16 @@ pub async fn current_session(
 ) -> Result<Option<CurrentSession>> {
     let session = db
         .with_session_constraint(D1SessionConstraint::FirstPrimary)?
-        .prepare("SELECT s.session_id,s.principal_id FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id WHERE s.session_digest=?1 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'")
-        .bind(&[blob(digest),integer(now)])?.first::<CurrentSession>(None).await?;
+        .prepare("SELECT s.session_id,s.principal_id,s.last_seen_at FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id WHERE s.session_digest=?1 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'")
+        .bind(&[blob(digest),integer(now)])?.first::<SessionActivity<CurrentSession>>(None).await?;
     if let Some(session) = &session {
-        if let Err(error) = touch_session(db, &session.session_id, now).await {
+        if session_touch_due(session.last_seen_at, now)
+            && let Err(error) = touch_session(db, &session.session.session_id, now).await
+        {
             worker::console_error!("session_touch_failed error={error}");
         }
     }
-    Ok(session)
+    Ok(session.map(|activity| activity.session))
 }
 
 /// 节流推进活动 session 的空闲期限，但不越过绝对期限。
@@ -666,6 +684,26 @@ fn blob(value: &[u8]) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_touch_retains_existing_five_minute_boundary() {
+        assert!(!session_touch_due(1_000, 1_000));
+        assert!(!session_touch_due(1_000, 1_299));
+        assert!(session_touch_due(1_000, 1_300));
+        assert!(session_touch_due(1_000, 1_301));
+        assert!(!session_touch_due(1_001, 1_000));
+    }
+
+    #[test]
+    fn session_activity_decodes_without_changing_the_public_projection() {
+        let activity: SessionActivity<CurrentSession> = serde_json::from_value(
+            serde_json::json!({"session_id":"session","principal_id":"principal","last_seen_at":700}),
+        )
+        .expect("D1 activity projection must deserialize");
+        assert_eq!(activity.session.session_id, "session");
+        assert_eq!(activity.session.principal_id, "principal");
+        assert_eq!(activity.last_seen_at, 700);
+    }
     #[test]
     fn archive_key_uses_stable_day_bucket() {
         assert_eq!(day_bucket(172_800), "unix-day-2");

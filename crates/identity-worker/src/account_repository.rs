@@ -409,20 +409,23 @@ pub async fn current_session(
 ) -> Result<Option<AccountSession>> {
     let session = primary(db)?
         .prepare(
-            "SELECT s.session_id,s.principal_id,s.authenticator_id,s.auth_method,s.authenticated_at \
+            "SELECT s.session_id,s.principal_id,s.authenticator_id,s.auth_method,s.authenticated_at,s.last_seen_at \
              FROM identity_sessions s JOIN principals p ON p.principal_id=s.principal_id \
              WHERE s.session_digest=?1 AND s.revoked_at IS NULL AND s.idle_expires_at>?2 \
              AND s.absolute_expires_at>?2 AND p.lifecycle_state='active'",
         )
         .bind(&[blob(digest), integer(now)])?
-        .first::<AccountSession>(None)
+        .first::<repository::SessionActivity<AccountSession>>(None)
         .await?;
     if let Some(session) = &session {
-        if let Err(error) = repository::touch_session(db, &session.session_id, now).await {
+        if repository::session_touch_due(session.last_seen_at, now)
+            && let Err(error) =
+                repository::touch_session(db, &session.session.session_id, now).await
+        {
             worker::console_error!("session_touch_failed error={error}");
         }
     }
-    Ok(session)
+    Ok(session.map(|activity| activity.session))
 }
 
 /// 读取一个人类账户；不存在的 profile 不会被伪造成空资料。
