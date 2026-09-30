@@ -241,7 +241,7 @@ pub async fn authorize(request: Request, context: RouteContext<()>) -> Result<Re
     )
     .await?;
     let location = if reuse_session.is_some() {
-        format!("{issuer}/v1/oauth/authorization-transactions/{id}/resume")
+        authorization_resume_uri(&issuer, &id)
     } else {
         append_query(
             &format!("{}/login", login_origin(&context.env)),
@@ -1352,10 +1352,16 @@ fn secret(env: &Env, name: &str) -> Result<String> {
         .map(|v| v.to_string())
         .map_err(|_| Error::RustError(format!("missing secret binding: {name}")))
 }
-fn issuer(env: &Env) -> String {
+pub(crate) fn issuer(env: &Env) -> String {
     env.var("ISSUER")
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "https://identity.moesegfault.dev".into())
+}
+
+/// 由固定发行方构造浏览器 OAuth 续接地址，不依赖 Login 页面来源。
+/// Builds a browser OAuth resume URL from the fixed issuer, never the Login page origin.
+pub(crate) fn authorization_resume_uri(issuer: &str, id: &str) -> String {
+    format!("{issuer}/v1/oauth/authorization-transactions/{id}/resume")
 }
 fn login_origin(env: &Env) -> String {
     env.var("LOGIN_ORIGIN")
@@ -1485,6 +1491,20 @@ fn response_json<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authorization_resume_uses_configured_issuer_not_login_origin() {
+        let id = "018fc6b8-cb90-7000-8000-000000000001";
+        for issuer in [
+            "https://identity.moesegfault.dev",
+            "https://identity-staging.moesegfault.dev",
+        ] {
+            assert_eq!(
+                authorization_resume_uri(issuer, id),
+                format!("{issuer}/v1/oauth/authorization-transactions/{id}/resume")
+            );
+        }
+    }
     #[test]
     fn duplicated_protocol_parameters_are_rejected() {
         assert!(unique_fields("client_id=a&client_id=b", 10).is_err())

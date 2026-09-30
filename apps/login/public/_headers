@@ -6,5 +6,12 @@
   Cross-Origin-Opener-Policy: same-origin
   Permissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=(self)
 
-/assets/*
+# Only Vite's content-hashed entry bundles are immutable. Public SVG names remain mutable.
+# Matching rules append values, so detach the inherited no-store policy first.
+/assets/index-*.js
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/index-*.css
+  ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable

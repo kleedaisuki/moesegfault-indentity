@@ -135,6 +135,8 @@ jobs:
         run: npm run test:recovery-authority
       - name: Validate password-attempt policy / 验证密码尝试限速策略
         run: npm run test:password-rate-limit
+      - name: Validate safe HTTP diagnostics / 验证安全 HTTP 诊断工具
+        run: npm run test:http-latency
       - name: Validate scripts and JSONC / 验证脚本与 JSONC
         run: |
           shellcheck scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
@@ -169,6 +171,8 @@ jobs:
         run: npm run test:contact-verification
       - name: Verify password authority and session rotation / 验证密码权限与会话轮换
         run: npm run test:password-security
+      - name: Verify session activity RPC budget / 验证会话活动 RPC 预算
+        run: npm run test:session-performance
       - name: Dry-run every deployment unit / 演练所有发布单元
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc

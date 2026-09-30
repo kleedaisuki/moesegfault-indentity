@@ -120,7 +120,10 @@ try {
   assert.ok(ready, "Local Worker did not start within 20s");
   const cookie = `__Host-identity_session=${sessionWire}`;
   const csrf = createHmac("sha256", csrfPepper).update(sessionWire).digest("base64url");
-  const headers = { cookie, origin, "x-moesegfault-csrf": csrf };
+  // Wrangler CLI queries below pause the event loop while sharing the local D1 file.
+  // Close each test connection so Undici cannot reuse a socket closed during that pause.
+  // 后续 Wrangler CLI 查询会暂停事件循环并共享本地 D1；关闭测试连接以避免复用已断开的 socket。
+  const headers = { cookie, origin, connection: "close", "x-moesegfault-csrf": csrf };
   const email = "validator@example.invalid";
   const created = await jsonResponse(await fetch(`${base}/v1/me/contacts`, {
     method: "POST", headers: { ...headers, "content-type": "application/json", "idempotency-key": "test-contact-create-v1" },

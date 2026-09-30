@@ -51,6 +51,7 @@ Architecture documents describe direction and rationale; they are not evidence t
 - Treat application logout, Identity SSO logout, refresh revocation, account session revocation, and connected-app grant revocation as distinct operations.
 - Preserve `application/problem+json` machine fields and `x-moesegfault-correlation-id`. OAuth endpoints intentionally use OAuth error JSON instead; do not force both into one parser.
 - Keep production, staging, and local issuers, client registrations, keys, redirects, and frontend origins paired. Never let a fallback cross environments.
+- After first-party password or Passkey authentication with an OAuth transaction, navigate to the **absolute** `authorization_resume_uri` returned by Identity. The URI must be rooted at that environment's fixed issuer, not resolved against the Login page origin; Login does not manufacture the authorization callback.
 
 ## Expected output from an integration task
 
