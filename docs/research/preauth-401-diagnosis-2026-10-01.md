@@ -16,6 +16,7 @@ The smallest useful next step is **a passive, allowlisted browser support receip
 
 | Boundary | Source response | Meaning and limitation |
 | --- | --- | --- |
+| Declared Content-Length exceeds the body bound | 413 `invalid_request`, `Request body is too large` | Pre-handler size rejection before browser context or credential checks; distinct from 401. The guard checks the declared length when present and parseable, not a measured streamed-body size. |
 | Browser mutation/CSRF validation | 403 `invalid_request`, `Invalid browser request context` | Cookie/CSRF/origin context failure; not this handler's 401 credential response. Missing secret/infrastructure errors can instead reach 500. |
 | JSON parsing | 400 `invalid_request`, `Invalid JSON request` | Payload cannot be deserialized. |
 | Password exceeds 128 Unicode scalar values | 401 `authentication_failed` | Generic rejection before identifier lookup. Registration accepts 15–128 scalar values; not evidence this happened. |
@@ -72,7 +73,7 @@ Receipt alone cannot split the intentionally generic 401 branches. That is a del
 
 ### Hosted verification before exposure
 
-Extend the existing Login API and page tests in GitHub Actions, not locally. Inject synthetic Fetch outcomes with no real account or credentials: 401, 400, 403, 429, 500, malformed problem JSON, network rejection, abort, missing/malformed/oversized correlation headers, unknown problem type, and synthetic secret markers in `detail`, URL, exception text and input fields. Assert the receipt includes only allowed fields, never markers, uses the correct operation, and never navigates/resubmits on rejection. Assert equal 401 receipt shape and generic copy for synthetic known/unknown-account cases. Also verify keyboard access and copy support failure do not erase the original error. No Worker deployment, account creation or live credential proof is necessary for this first discrimination layer.
+Extend the existing Login API and page tests in GitHub Actions, not locally. Inject synthetic Fetch outcomes with no real account or credentials: 401, 400, 403, 413, 429, 500, malformed problem JSON, network rejection, abort, missing/malformed/oversized correlation headers, unknown problem type, and synthetic secret markers in `detail`, URL, exception text and input fields. Assert the receipt includes only allowed fields, never markers, uses the correct operation, and never navigates/resubmits on rejection. Assert equal 401 receipt shape and generic copy for synthetic known/unknown-account cases. Also verify keyboard access and copy support failure do not erase the original error. No Worker deployment, account creation or live credential proof is necessary for this first discrimination layer.
 
 ## External grounding
 
