@@ -36,7 +36,7 @@ The lookup joins `identifiers`, `principals`, and `password_credentials`, permit
 - `scripts/tests/password-security.mjs`: existing hosted isolated real-Worker harness seeds synthetic authority, validates password/session rotation and issuer-rooted OAuth continuation. `scripts/tests/password-rate-limit.mjs` exercises actual throttle and session authority SQL. These do not replay the user's failure.
 - `apps/login/src/api/client.ts::ApiError` already preserves status, problem type and `x-moesegfault-correlation-id`; `lib.rs::finalize_response` exposes that response header to trusted browser origins.
 - `apps/login/src/ui/dom.ts::errorMessage` projects an Error to only `message`; the screen therefore loses a useful correlation ID that already exists in the typed client. This is a confirmed supportability gap, not proof of bad authentication logic.
-- Production PR #19 deployment monitoring is recorded separately in `docs/research/pr19-production-rollout-2026-10-01.md`; deployment success is not successful original-user password proof.
+- Production PR #19 deployment monitoring is recorded in [main-push Actions run 36793808744](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/36793808744). The companion `docs/research/pr19-production-rollout-2026-10-01.md` is added by the separate PR #20 integration and is not present in this diagnosis branch at its base revision. Deployment success is not successful original-user password proof.
 
 ## One proposed discriminator: passive failure support receipt
 
@@ -51,7 +51,7 @@ On a naturally occurring Login failure, add a collapsible `Support details / Cop
 - transport class (`http_problem`, `network_or_cors`, `aborted`, `unexpected`);
 - HTTP status when available;
 - problem code mapped through a finite allowlist, with all others `unknown`;
-- server-generated correlation ID only if bounded and UUID-valid, otherwise omit;
+- server-generated correlation ID only if it matches the current UUID-simple form of exactly 32 hexadecimal characters, or the canonical 36-character hyphenated UUID form; reject every other value and any value longer than 36 characters before parsing. Preserve the accepted value exactly for server correlation, otherwise omit;
 - observation time, rounded to the minute.
 
 No password, identifier, account/principal ID, contact verification state, existence flag, cookie, CSRF value, idempotency key, OAuth transaction/code/token/state/nonce, query/fragment, complete URL, raw response, raw exception message, or high-resolution timing belongs in the receipt. Do not upload it automatically or store it in analytics by default. Correlation IDs are not bearer credentials but still link an interaction: keep them in the user's opt-in copy and restricted incident handling, not public issues. Do not introduce an anonymous diagnostic lookup endpoint.
