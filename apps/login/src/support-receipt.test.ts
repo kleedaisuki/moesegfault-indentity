@@ -50,6 +50,10 @@ describe("allowlisted failure support receipts", () => {
     expect(JSON.stringify(receipt(new Error("sentinel-password")))).not.toContain("sentinel");
   });
 
+  it.each(["a".repeat(40) + "\n", "a".repeat(40) + "\r\n", "a".repeat(39), "a".repeat(41)])("rejects non-exact build revision %s", (value) => {
+    expect(failureReceipt(new Error("secret"), "browser_context", "login.moesegfault.dev", value, now).revision).toBe("unknown");
+  });
+
   it("maps only controlled hosts and immutable revisions", () => {
     expect(supportRealm("login.moesegfault.dev")).toBe("production");
     expect(supportRealm("login-staging.moesegfault.dev")).toBe("staging");

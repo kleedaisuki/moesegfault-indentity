@@ -45,7 +45,7 @@ export function failureReceipt(error: unknown, operation: SupportOperation, host
     : api?.status === 0 || error instanceof TypeError ? "network_or_cors" : "unexpected";
   const correlation = supportCorrelation(api?.correlationId);
   return {
-    schema: 1, revision: /^[0-9a-f]{40}$/i.test(revision) ? revision : "unknown",
+    schema: 1, revision: revision.length === 40 && /^[0-9a-f]{40}$/i.test(revision) ? revision : "unknown",
     realm: supportRealm(hostname), operation, transport,
     ...(status !== undefined ? { status } : {}),
     problem: problemCodes.has(code) ? code : "unknown",
