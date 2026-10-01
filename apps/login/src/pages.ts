@@ -11,6 +11,8 @@ import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
 import { resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
 import { avatarFilePicker } from "./ui/file-picker";
+import { failureReceipt, type SupportOperation } from "./support-receipt";
+import { supportDetails } from "./ui/support-details";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -44,22 +46,31 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); setButtonBusy(submit, true, t("signingIn"));
+    let operation: SupportOperation = "browser_context";
     try {
       const data = new FormData(form);
-      const result = await api.authenticateWithPassword({ login: String(data.get("login") ?? "").trim(), password: String(data.get("password") ?? ""), ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, await requireBrowserCsrf(api, signal), signal);
+      const csrf = await requireBrowserCsrf(api, signal);
+      operation = "password_authentication";
+      const result = await api.authenticateWithPassword({ login: String(data.get("login") ?? "").trim(), password: String(data.get("password") ?? ""), ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, csrf, signal);
+      operation = "oauth_resume";
       finishAuthentication(main, result, t, returnUri);
-    } catch (error) { replace(message, statePanel("error", t("loginFailed"), errorMessage(error))); setButtonBusy(submit, false); }
+    } catch (error) { replace(message, loginFailurePanel(error, operation, t)); setButtonBusy(submit, false); }
   });
 
   const passkey = el("button", { className: "button button--secondary button--wide", attrs: { type: "button", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("usePasskey")));
   passkey.addEventListener("click", async () => {
     setButtonBusy(passkey, true, t("waitingPasskey"));
+    let operation: SupportOperation = "browser_context";
     try {
-      const transaction = await api.startAuthentication({ purpose: "login", ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, await requireBrowserCsrf(api, signal), signal);
+      const csrf = await requireBrowserCsrf(api, signal);
+      operation = "passkey_start";
+      const transaction = await api.startAuthentication({ purpose: "login", ...(currentTransaction() ? { authorization_transaction_id: currentTransaction() } : {}) }, csrf, signal);
+      operation = "passkey_completion";
       const credential = await getPasskey(transaction.public_key, signal);
       const result = await api.completeAuthentication(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
+      operation = "oauth_resume";
       finishAuthentication(main, result, t, returnUri);
-    } catch (error) { replace(message, statePanel("error", t("loginFailed"), errorMessage(error))); setButtonBusy(passkey, false); }
+    } catch (error) { replace(message, loginFailurePanel(error, operation, t)); setButtonBusy(passkey, false); }
   });
 
   replace(main, pageHeading("IDENTITY_GATEWAY", t("welcome"), t("welcomeIntro")),
@@ -323,3 +334,13 @@ export async function uploadOptionalAvatar(api: IdentityApiClient, avatar: File 
 function rememberCsrf(token: string): void { sessionCsrfToken = token; }
 async function requireBrowserCsrf(api: IdentityApiClient, signal: AbortSignal): Promise<string> { if (!sessionCsrfToken) rememberCsrf((await api.getBrowserContext(signal)).csrf_token); return sessionCsrfToken as string; }
 function navigateToHttpUrl(value: string): void { const url = new URL(value, location.href); if (url.protocol !== "https:" && url.protocol !== "http:") throw new ApiError(0, { type: "urn:moesegfault:problem:invalid_navigation", title: "Invalid navigation", status: 0 }); location.assign(url.href); }
+
+/** Preserve existing generic failure copy; attach only a separate allowlisted receipt. */
+function loginFailurePanel(error: unknown, operation: SupportOperation, t: (key: MessageKey) => string): HTMLElement {
+  const receipt = failureReceipt(error, operation, location.hostname,
+    typeof __LOGIN_BUILD_REVISION__ === "string" ? __LOGIN_BUILD_REVISION__ : "unknown");
+  return statePanel("error", t("loginFailed"), errorMessage(error), supportDetails(receipt, {
+    summary: t("supportSummary"), privacy: t("supportPrivacy"), copy: t("supportCopy"),
+    copied: t("supportCopied"), failed: t("supportCopyFailed"),
+  }));
+}

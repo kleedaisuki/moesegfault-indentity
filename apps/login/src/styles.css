@@ -53,3 +53,9 @@
   @media(prefers-reduced-transparency:reduce){.moe-glass{background:var(--surface-solid);backdrop-filter:none}}
   @media(forced-colors:active){.moe-glass,.state{background:Canvas;border-color:CanvasText}.button{border-color:ButtonText}}
 }
+
+/* Keep opt-in support receipts readable without expanding the failure card. */
+.support-details { margin-top: 1rem; min-width: 0; }
+.support-details summary { cursor: pointer; }
+.support-details pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; }
+.support-details summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
