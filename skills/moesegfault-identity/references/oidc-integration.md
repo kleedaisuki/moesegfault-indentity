@@ -58,6 +58,8 @@ Use the same authorization-code and PKCE validation, but open the system browser
 - Desktop loopback redirects may use an ephemeral port only when the registered match mode permits it, and only on `127.0.0.1` or `[::1]`; do not substitute `localhost`.
 - Bind the listener only for the login attempt, validate state before accepting the code, and close it promptly.
 - Store refresh tokens only in platform-protected application storage.
+- The native client owns the final browser result: show application-session success only after code exchange, ID-token validation, and protected persistence succeed. Identity confirms human authentication, not local storage. Reuse the shared visual language without changing registered redirects or adding app-specific provider endpoints. A loopback page should be static, self-contained, non-cacheable, and must not reflect callback parameters or detailed errors; keep diagnostics in the app.
+- Diagnose visual rollout by the final page origin and artifact owner. A result on a loopback origin is bundled with the native application: deploying Login cannot update an already-installed binary. Verify the application revision and CI artifact separately from the provider's deployment; do not change OAuth registration or add a provider completion endpoint merely to distribute page styling.
 
 ## `private_key_jwt`
 
