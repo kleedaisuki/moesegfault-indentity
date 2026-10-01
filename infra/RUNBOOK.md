@@ -40,6 +40,34 @@ Rust + frontend matrix + contracts/migrations
 
 CI 对同一个制品做 staging 与 production 提升，不在环境间重建。`concurrency` 串行化每个环境，production job 还会拒绝覆盖更新的 `main`。质量门禁（quality gate）应设为 branch protection 的 required check。
 
+### Documentation-only delivery policy
+
+All pull requests run the existing quality, contract, package and required-gate jobs,
+including documentation and Skill updates. Only the `push` event on `main` has a
+narrow `paths-ignore` allowlist: Markdown under `docs/` and `skills/`, Skill agent
+YAML under `skills/**/agents/`, root `README.md` and `AGENTS.md`, and this runbook.
+When every changed path matches that list, no main-push workflow is created and
+neither environment is redeployed. Any other path, including a mixture of code
+and documentation, keeps normal package → staging → production promotion.
+
+This is not `skip-ci` and does not filter `pull_request`; required PR checks still
+report normally. A documentation-only merge therefore has PR evidence but no new
+main-push deployment evidence. Existing serving Worker versions remain unchanged.
+Manual `verify-only` and `staging-only` dispatches remain available; no manual
+production path is introduced. `scripts/tests/delivery-workflow.mjs` checks the
+actual workflow header, synthetic documentation/mixed/runtime cases and the
+unchanged package/staging/production dependencies in hosted CI.
+
+The allowlist is intentionally conservative: Markdown outside the named paths
+and unknown extensions still trigger delivery. GitHub's native path filtering has
+its documented diff limits (300 files, with large-push/timeout fallback), so this
+is an ordinary documentation-rollout optimization, not a security authorization
+boundary. Avoid combining huge documentation rewrites with runtime changes and
+review changed paths before promotion. The workflow-policy change itself touches
+`.github/workflows/ci.yml`, so merging it still runs the normal promotion once.
+
+Reference: [GitHub workflow path filters and diff limits](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore).
+
 ### 数据迁移规则 / Migration rules
 
 1. **Expand**：只增加 nullable column/table/index 或双写所需结构；旧 Worker 必须继续工作。
