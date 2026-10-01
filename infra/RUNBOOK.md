@@ -60,7 +60,7 @@ unchanged package/staging/production dependencies in hosted CI.
 
 The allowlist is intentionally conservative: Markdown outside the named paths
 and unknown extensions still trigger delivery. GitHub's native path filtering has
-its documented diff limits (300 files, with large-push/timeout fallback), so this
+its documented diff limits (including changed-file limits and large-push/timeout fallback), so this
 is an ordinary documentation-rollout optimization, not a security authorization
 boundary. Avoid combining huge documentation rewrites with runtime changes and
 review changed paths before promotion. The workflow-policy change itself touches
