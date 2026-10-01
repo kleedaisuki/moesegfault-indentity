@@ -9,6 +9,7 @@ export { normalizeLocale };
 
 const messages = {
   "zh-CN": {
+    supportSummary: "支持诊断信息", supportPrivacy: "只在你选择复制时提供；不会自动上传。关联编号请仅交给可信支持人员，不要公开发布。", supportCopy: "复制诊断信息", supportCopied: "诊断信息已复制。", supportCopyFailed: "复制失败；可手动选择上方文本。",
     brand: "moeSegFault 通行证", login: "登录", register: "创建账号", recovery: "恢复账号",
     welcome: "欢迎回来，旅人", welcomeIntro: "选择最顺手的方式，继续前往你的目的地。",
     newTitle: "创建你的同好身份", newIntro: "昵称是你在社区里的第一句自我介绍，认真一点，也可以可爱一点。",
@@ -38,6 +39,7 @@ const messages = {
     verifyEmailTitle: "验证你的邮箱", verifyEmailIntro: "账号已创建。请输入邮件中的 8 位验证码，然后再继续。", verificationCode: "8 位验证码", confirmEmail: "确认邮箱", resendCode: "重新发送", sendingCode: "正在发送验证码…", verifyingCode: "正在验证…", codeSent: "验证码已发送至", codeSendFailed: "验证码暂未发出，可以重试。", codeInvalid: "验证没有完成，请检查验证码或重新发送。", emailVerified: "邮箱已验证！",
   },
   en: {
+    supportSummary: "Support details", supportPrivacy: "Available only when you choose to copy; never uploaded automatically. Share correlation IDs only with trusted support, not public issues.", supportCopy: "Copy diagnostic", supportCopied: "Diagnostic copied.", supportCopyFailed: "Copy failed; select the text above manually.",
     brand: "moeSegFault Passport", login: "Sign in", register: "Create account", recovery: "Recover account",
     welcome: "Welcome back, traveler", welcomeIntro: "Choose the way that feels right and continue to your destination.",
     newTitle: "Create your fandom identity", newIntro: "Your nickname is your first hello to the community. Make it sincere—or delightfully cute.",
@@ -67,6 +69,7 @@ const messages = {
     verifyEmailTitle: "Verify your email", verifyEmailIntro: "Your account is ready. Enter the eight-digit code from the email before continuing.", verificationCode: "8-digit verification code", confirmEmail: "Verify email", resendCode: "Resend code", sendingCode: "Sending verification code…", verifyingCode: "Verifying…", codeSent: "Verification code sent to", codeSendFailed: "The code could not be sent yet. You can retry.", codeInvalid: "Verification wasn't completed. Check the code or send a new one.", emailVerified: "Email verified!",
   },
   ja: {
+    supportSummary: "サポート診断情報", supportPrivacy: "コピーを選択した場合のみ提供され、自動送信されません。相関 ID は信頼できるサポートにのみ共有し、公開しないでください。", supportCopy: "診断情報をコピー", supportCopied: "診断情報をコピーしました。", supportCopyFailed: "コピーできませんでした。上のテキストを手動で選択してください。",
     brand: "moeSegFault パスポート", login: "ログイン", register: "アカウント作成", recovery: "アカウント復旧",
     welcome: "おかえりなさい、旅人さん", welcomeIntro: "好きな方法を選んで、目的地へ進みましょう。",
     newTitle: "同好のための自分を作ろう", newIntro: "ニックネームはコミュニティへの最初の挨拶。真面目でも、かわいくても大丈夫。",
