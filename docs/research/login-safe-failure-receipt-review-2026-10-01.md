@@ -30,3 +30,7 @@ Further inexpensive hosted fixtures could cover Passkey start/HTTP completion an
 - MDN HTML details: native details/summary represents a disclosure widget. https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/details
 
 This small review does not need a speculative research-driven redesign: finite projection rather than error-object redaction is the concrete privacy boundary.
+
+## Narrow follow-up closure
+
+Reviewed fix `78b6af6` against `d682167` by source diff and `git diff --check`. The receipt now requires `revision.length === 40` before the 40-hex regex, closing the optional terminal-newline mismatch. New hosted regression cases cover LF, CRLF, 39-character and 41-character revisions. No additional substantive defect found; the earlier optional revision note is resolved. This is source-only closure, not a claim that these tests have executed. The GO remains limited to hosted source checks; original 401/live rollout remain outside this review.
