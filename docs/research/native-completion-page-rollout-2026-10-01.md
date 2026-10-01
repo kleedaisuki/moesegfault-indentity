@@ -10,8 +10,10 @@ revisions and observation time when reusing them.
 At documentation integration, fetched Identity main is
 `08576c0549c3ab8d6b8b90f0fb6591b59962f5dd`, containing the issuer-origin OAuth resume
 correction and preserved staging runtime. The earlier paragraph describing PR #19 as open
-therefore must not be read as current main status. This documentation pass did not inspect
-provider deployment state. Production password **401 before successful authentication remains
+therefore must not be read as current main status. This documentation pass did not independently inspect provider deployment state. The separate
+[production rollout report](pr19-production-rollout-2026-10-01.md) records main-run
+[36793808744](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/36793808744)
+with all eight hosted jobs successful and 19/19 anonymous HTTP checks per environment. Production password **401 before successful authentication remains
 unresolved** in the coordinating incident; the resume correction acts only after successful
 authentication and does not prove that rejection resolved. Consult
 [the production assessment](pr19-production-assessment-2026-10-01.md) for that failure-boundary
