@@ -20,6 +20,8 @@ Use Identity as an identity authority, not as a bag of endpoints. Select the cal
 
 For a new product, read [application onboarding](references/application-onboarding.md) first, then [OIDC integration](references/oidc-integration.md) for the chosen protocol path. Read [first-party clients](references/first-party-clients.md) only when changing Login, Account, or another explicitly trusted first-party frontend. Read [contact verification](references/contact-verification.md) only for first-party registration/account email-code work or a related incident; an external relying party does not verify contacts through Identity's cookie API.
 
+For a naturally occurring Login failure, read [safe failure support](references/login-failure-support.md): request only the opt-in receipt through private support, never credentials or browser-session data.
+
 ## Work from contracts, not assumptions
 
 1. Fix the expected issuer per environment. Never derive or accept an issuer from untrusted request or token data.

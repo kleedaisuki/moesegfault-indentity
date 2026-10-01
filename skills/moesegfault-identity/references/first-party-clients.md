@@ -78,15 +78,7 @@ Password and Passkey completions must use the **same absolute issuer-rooted URI 
 - Keep user cancellation, policy rejection, invalid input, authentication failure, rate limiting, and platform failure distinguishable.
 - Do not blindly retry mutations. Retry only when the operation is designed for it, using the original idempotency key and transaction context.
 
-### Distinguish authentication rejection from OAuth continuation failure
-
-The Login heading `Sign-in wasn't completed` is shared presentation, not a protocol diagnosis. Classify the failed operation using only its environment, endpoint path without handles/query, HTTP status, stable problem fields, and correlation ID; never collect passwords, request bodies, cookies, full authorization URLs, codes, or tokens.
-
-- `POST /v1/password/authentications` with `401 authentication_failed` is a rejection before a successful authentication response. Username login and verified email/mobile login are supported; an unknown/unverified identifier, inactive principal, password mismatch, or concurrent credential replacement can share this intentionally generic result. Establish the intended issuer and identifier kind without probing account existence or weakening verification policy. A production and staging account are not interchangeable.
-- An invalid or expired OAuth transaction at password authentication returns `400 invalid_request` with `Invalid authorization transaction`, not the generic password `401`.
-- A successful password response followed by a resume navigation on the Login origin is a continuation defect. The correction belongs in the issuer-rooted response contract, not in credential validation, client registration, CORS broadening, or relying-party password collection.
-
-Verify the deployed revision as well as source/CI: a staging fix does not imply production is serving it. Retrying a `401` blindly can trigger the password-attempt policy and cannot establish that a separate resume fix resolved the original rejection.
+For opt-in failure receipts and the distinction between a generic pre-authentication rejection, OAuth continuation, and a native CLI loopback page, read [safe failure support](login-failure-support.md). Do not assume a receipt or resume fix resolved an earlier credential rejection.
 
 ## Focused verification
 
