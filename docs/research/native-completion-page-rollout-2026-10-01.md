@@ -1,5 +1,25 @@
 # Native completion page ownership and rollout — 2026-10-01
 
+## Status and reading scope
+
+The ownership decision below remains current. The public Login, CI artifact, release-list,
+and PR-status observations are a **historical snapshot from approximately 07:35
+Asia/Singapore on 2026-10-01**, not a live deployment status page. Preserve their recorded
+revisions and observation time when reusing them.
+
+At documentation integration, fetched Identity main is
+`08576c0549c3ab8d6b8b90f0fb6591b59962f5dd`, containing the issuer-origin OAuth resume
+correction and preserved staging runtime. The earlier paragraph describing PR #19 as open
+therefore must not be read as current main status. This documentation pass did not inspect
+provider deployment state. Production password **401 before successful authentication remains
+unresolved** in the coordinating incident; the resume correction acts only after successful
+authentication and does not prove that rejection resolved. Consult
+[the production assessment](pr19-production-assessment-2026-10-01.md) for that failure-boundary
+distinction, while respecting its own historical deployment observations.
+
+Neither the main integration nor any Identity deployment delivers the embedded amail page to
+the Login origin. Installed-binary and authenticated-flow acceptance remain separate evidence.
+
 ## Decision
 
 The amail browser success/error page refinement `9cb410a7a4d05f60e76c2a5a8bed2681b87e8618`
@@ -10,7 +30,7 @@ listener; shared Identity visual language does not change that owner.
 
 Identity owns human authentication and authorization. The relying party alone can establish
 whether token exchange, ID-token validation, and protected session persistence succeeded.
-`docs/integrating-app.md` and the Identity skill already recorded this distinction in `08c690e`.
+Source-branch commit `08c690e` recorded this distinction in `docs/integrating-app.md` and the Identity skill; this does not imply that the earlier source-branch commit was merged into main. The Skill guidance is included in this documentation integration.
 No new Identity completion API, redirect registration, CORS permission, or authentication mechanism
 is required. Existing clients and redirects must remain compatible.
 
