@@ -67,3 +67,11 @@ therefore is itself outside the ignore list; its main merge can still trigger th
 existing automatic staging/production rollout. Record this distinction before
 merging. Later docs-only merges should have PR quality evidence without a new
 main-push delivery run; no provider mutation is needed to review this candidate.
+## Follow-up closure
+
+Inspected correction `6e403421d76e704a3c7e77be2962826c5d9e46e7`: its complete
+one-file diff replaces the outdated numeric limit in `infra/RUNBOOK.md` with a
+non-numeric changed-file-limit warning and retains the official GitHub link.
+The non-blocking recommendation above is **resolved**. No workflow, runtime,
+test, deployment condition or configuration changed in that correction. The
+previous source-check-only GO and hosted/live evidence limitations remain intact.
