@@ -4,6 +4,15 @@ on:
   pull_request:
   push:
     branches: [main]
+    # PR quality checks stay unconditional; documentation-only main pushes need no rollout.
+    # Keep this allowlist narrow: code, migrations, configuration and mixed changes still deploy.
+    paths-ignore:
+      - 'docs/**/*.md'
+      - 'skills/**/*.md'
+      - 'skills/**/agents/*.yaml'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'infra/RUNBOOK.md'
   workflow_dispatch:
     inputs:
       delivery:
@@ -135,6 +144,8 @@ jobs:
         run: npm run test:recovery-authority
       - name: Validate password-attempt policy / 验证密码尝试限速策略
         run: npm run test:password-rate-limit
+      - name: Validate delivery event contract
+        run: node --test scripts/tests/delivery-workflow.mjs
       - name: Validate safe HTTP diagnostics / 验证安全 HTTP 诊断工具
         run: npm run test:http-latency
       - name: Validate scripts and JSONC / 验证脚本与 JSONC
