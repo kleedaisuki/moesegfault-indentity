@@ -98,4 +98,3 @@ CREATE TABLE registration_email_outbox (
 
 CREATE INDEX idx_registration_email_outbox_due
     ON registration_email_outbox(state, next_attempt_at, lease_expires_at);
-
