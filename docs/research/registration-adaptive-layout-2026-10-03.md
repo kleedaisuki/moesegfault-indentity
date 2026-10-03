@@ -44,3 +44,16 @@ at least 44px high. Header controls move to a separate row on small phones.
 ## Delivery
 
 Staging-only delivery is recorded below after deployment. Production is not part of this request.
+
+### Delivered candidate
+
+- Revision: `d3e16b3` on `codex/registration-email-first-20261003`.
+- [Staging-only run 37134005840](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/37134005840): all required checks and staging deployment succeeded; production promotion skipped.
+- Smoke passed at `2026-10-03T15:43:52Z`.
+- Worker versions: Identity `aab22797-394b-4941-90f5-f71218ee5583`, Login `9cfa853c-bd7d-414e-867e-e1611770299e`, Account `30b83a1f-ea2c-4f61-b5af-88f174424a09`.
+- Live `/register` loaded the exact built `index-DAC2KgEZ.css`. At 390px viewport,
+  document width was 375px (vertical scrollbar excluded) and form width 342.67px;
+  at 1280px, document width was 1265px and form width 760px. No horizontal overflow.
+- Native screenshots inspected in English and Simplified Chinese; final Chinese
+  viewport screenshots saved as `.temp/signup-adaptive-staging-{mobile,desktop}.jpg`.
+- Preview: https://login-staging.moesegfault.dev/register
