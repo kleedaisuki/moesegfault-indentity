@@ -16,6 +16,7 @@ mod oauth;
 pub(crate) mod oauth_repository;
 mod password;
 mod problem;
+mod registration_email;
 mod repository;
 mod webauthn_wire;
 mod webcrypto;
@@ -70,6 +71,8 @@ async fn route_request(request: Request, env: Env) -> Result<Response> {
         .get_async("/v1/meta/capabilities", api::capabilities)
         .get_async("/v1/browser-context", api::browser_context)
         .get_async("/v1/registration-policy", api::registration_policy)
+        .post_async("/v1/registration-email-transactions", idempotent!(registration_email::start, CreateRegistrationEmail, Browser, Replayable))
+        .post_async("/v1/registration-email-transactions/:id/completion", idempotent!(registration_email::complete, CompleteRegistrationEmail, Browser, SecretResult))
         .options_async("/*path", api::preflight)
         .post_async(
             "/v1/registration-transactions",

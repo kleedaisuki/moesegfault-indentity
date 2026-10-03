@@ -10,6 +10,12 @@
 - `/sessions` — active Identity sessions
 - `/apps` — OAuth/OIDC grants
 
+The `/sessions` response includes active sessions and revoked sessions retained for 30 days.
+Account renders `revoked_at` as signed-out history with the revocation time, without another
+sign-out action. Active non-current sessions retain the sign-out action; the current session
+retains its current-device badge. An omitted or null `revoked_at` remains compatible with
+older responses. Successful mutations reread the authoritative server state.
+
 ## Runtime contract
 
 The SPA uses cookie-authenticated `/v1/me` APIs with `credentials: include`, `cache: no-store`, RFC 9457 errors, in-memory CSRF tokens, and idempotency keys on mutations. Passkey enrollment and recovery rotation perform top-level navigation to Login's `/passkey/enroll` and `/recovery-codes/rotate` ceremonies with a validated `return_uri`, instead of attempting cross-origin WebAuthn. Existing Passkey labels and revocations remain account-management operations here.

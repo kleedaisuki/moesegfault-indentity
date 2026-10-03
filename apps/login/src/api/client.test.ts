@@ -104,7 +104,7 @@ describe("IdentityApiClient", () => {
   it("uses the direct password registration contract with rich optional profile data", async () => {
     const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ account: {}, session: {}, csrf_token: "next", csrf_expires_at: "later" }), { status: 201, headers: { "content-type": "application/json" } }));
     const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
-    await client.registerWithPassword({ username: "klee", password: "correct horse battery", display_name: "Klee", email: "klee@example.com", mobile: { country_calling_code: "+86", national_number: "13800000000" }, profile: { favorite_character: "Klee", interests: ["Linux", "ACG"] } }, "csrf");
+    await client.registerWithPassword({ username: "klee", password: "correct horse battery", display_name: "Klee", email: "klee@example.com", email_verification_token: "fixture-proof", mobile: { country_calling_code: "+86", national_number: "13800000000" }, profile: { favorite_character: "Klee", interests: ["Linux", "ACG"] } }, "csrf");
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(String(url)).toBe("https://identity.moesegfault.dev/v1/password/registrations");
     expect(JSON.parse(String(init?.body))).toMatchObject({ email: "klee@example.com", mobile: { country_calling_code: "+86" }, profile: { interests: ["Linux", "ACG"] } });

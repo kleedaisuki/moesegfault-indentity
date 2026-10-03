@@ -29,6 +29,8 @@ struct PasswordRegistrationRequest {
     display_name: String,
     email: String,
     #[serde(default)]
+    email_verification_token: Option<String>,
+    #[serde(default)]
     mobile: Option<MobileInput>,
     #[serde(default = "default_locale")]
     locale: String,
@@ -183,6 +185,21 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
         );
     };
 
+    let Some(email_proof) = crate::registration_email::authorize(
+        &request,
+        &context.env,
+        &email,
+        input.email_verification_token.as_deref(),
+    )
+    .await?
+    else {
+        return problem::response(
+            "email_verification_required",
+            "Verify your email before creating an account",
+            403,
+            &correlation,
+        );
+    };
     let password_hash = hash_password(&input.password)?;
     let principal_id = PrincipalId::new_v4().to_string();
     let username_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -212,7 +229,7 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
         db.prepare("INSERT INTO account_preferences(principal_id,locale,created_at,updated_at) VALUES(?1,?2,?3,?3)")
             .bind(&[text(&principal_id), text(&input.locale), integer(now)])?,
         identifier_statement(&db, &username_id, &principal_id, "username", &username, &username, None, None, true, "verified", Some(now), now)?,
-        identifier_statement(&db, &email_id, &principal_id, "email", input.email.trim(), &email, None, None, true, "unverified", None, now)?,
+        identifier_statement(&db, &email_id, &principal_id, "email", input.email.trim(), &email, None, None, true, "verified", Some(now), now)?,
         db.prepare("INSERT INTO password_credentials(principal_id,password_hash,hash_algorithm,hash_parameters_json,password_version,created_at,updated_at) VALUES(?1,?2,'argon2id',?3,1,?4,?4)")
             .bind(&[text(&principal_id), text(&password_hash), text(PASSWORD_PARAMETERS), integer(now)])?,
         db.prepare("INSERT INTO identity_sessions(session_id,session_digest,principal_id,auth_method,amr_json,acr,authenticated_at,last_seen_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,'password','[\"password\"]','urn:moesegfault:acr:password',?4,?4,?5,?6)")
@@ -249,6 +266,7 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
                 .bind(&[text(capability_id), text(&transaction_id), text(&principal_id), blob(&transaction_digest), integer(now)])?,
         );
     }
+    statements.push(email_proof.consume(&db, &principal_id, now)?);
     if let Err(error) = db.batch(statements).await {
         if is_constraint_error(&error) {
             return problem::response(
@@ -594,7 +612,7 @@ fn account_json(
     let created_at = date_time(now);
     let mut identifiers = vec![
         serde_json::json!({"identifier_id":username_id,"kind":"username","value":username,"is_primary":true,"verification_state":"verified","verified_at":created_at,"created_at":created_at,"updated_at":created_at}),
-        serde_json::json!({"identifier_id":email_id,"kind":"email","value":email,"is_primary":true,"verification_state":"unverified","verified_at":null,"created_at":created_at,"updated_at":created_at}),
+        serde_json::json!({"identifier_id":email_id,"kind":"email","value":email,"is_primary":true,"verification_state":"verified","verified_at":created_at,"created_at":created_at,"updated_at":created_at}),
     ];
     if let Some((identifier_id, value)) = mobile {
         identifiers.push(serde_json::json!({"identifier_id":identifier_id,"kind":"mobile","value":value,"is_primary":true,"verification_state":"unverified","verified_at":null,"created_at":created_at,"updated_at":created_at}));

@@ -30,6 +30,8 @@ const PURGE_EXPIRED_SQL: &str = "DELETE FROM idempotency_records WHERE idempoten
 /// 受 Domain API 幂等契约覆盖的 OpenAPI operationId。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
+    CreateRegistrationEmail,
+    CompleteRegistrationEmail,
     PasswordRegistration,
     PasswordAuthentication,
     CreateContact,
@@ -65,6 +67,8 @@ impl Operation {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CreateRegistrationEmail => "createRegistrationEmail",
+            Self::CompleteRegistrationEmail => "completeRegistrationEmail",
             Self::PasswordRegistration => "registerWithPassword",
             Self::PasswordAuthentication => "authenticateWithPassword",
             Self::CreateContact => "createMyContact",

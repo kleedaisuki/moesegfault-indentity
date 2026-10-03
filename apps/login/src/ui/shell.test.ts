@@ -7,6 +7,13 @@ import { createShell } from "./shell";
 afterEach(() => document.body.replaceChildren());
 
 describe("login locale selector", () => {
+  it("projects the active route onto the main containing block and clears registration sizing on navigation", () => {
+    const shell = createShell({ locale: "en", theme: "system", accountOrigin: "https://account.example", onLocale: vi.fn(), onTheme: vi.fn() });
+    shell.setActiveRoute("/register");
+    expect(shell.main.dataset.route).toBe("/register");
+    shell.setActiveRoute("/login");
+    expect(shell.main.dataset.route).toBe("/login");
+  });
   it("renders the shared full autonyms and language metadata", () => {
     const onLocale = vi.fn();
     const shell = createShell({ locale: "ja", theme: "system", accountOrigin: "https://account.example", onLocale, onTheme: vi.fn() });

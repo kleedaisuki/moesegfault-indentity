@@ -15,6 +15,7 @@ function copy(locale: Locale): FilePickerCopy {
     label: translate(locale, "avatar"), choose: translate(locale, "chooseAvatar"), empty: translate(locale, "noAvatarSelected"),
     processing: translate(locale, "avatarProcessing"), ready: translate(locale, "avatarReady"), failed: translate(locale, "avatarProcessingFailed"),
     previewAlt: translate(locale, "avatarPreviewAlt"),
+    change: translate(locale, "changeAvatar"), remove: translate(locale, "removeAvatar"),
   };
 }
 
@@ -52,6 +53,39 @@ describe.each(locales)("avatar file picker in %s", (locale) => {
 });
 
 describe("processed avatar preview", () => {
+  it("discards a pending selection and releases its late preview without uploading it", async () => {
+    let resolve!: (value: ProcessedAvatar) => void;
+    const dispose = vi.fn();
+    const picker = avatarFilePicker(copy("zh-CN"), { process: () => new Promise(ok => { resolve = ok; }) });
+    choose(picker.querySelector<HTMLInputElement>("input")!, new File(["input"], "input.png", { type: "image/png" }));
+    const remove = picker.querySelector<HTMLButtonElement>("button")!;
+    expect(remove.hidden).toBe(false);
+    remove.click();
+    expect(remove.hidden).toBe(true);
+    await expect(picker.processedFile()).resolves.toBeUndefined();
+    resolve(processed("late.webp", "blob:late", dispose));
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledOnce());
+    expect(picker.querySelector("img")?.hidden).toBe(true);
+    picker.dispose();
+  });
+
+  it("locks both replace and discard actions while the exact preview is being submitted", async () => {
+    const dispose = vi.fn();
+    const picker = avatarFilePicker(copy("zh-CN"), { process: async () => processed("ready.webp", "blob:ready", dispose) });
+    choose(picker.querySelector<HTMLInputElement>("input")!, new File(["input"], "input.png", { type: "image/png" }));
+    await picker.processedFile();
+    expect(picker.querySelector(".file-picker__button")?.textContent).toBe("换一张");
+    picker.setDisabled(true);
+    const remove = picker.querySelector<HTMLButtonElement>("button")!;
+    expect(remove.disabled).toBe(true);
+    remove.click();
+    expect(dispose).not.toHaveBeenCalled();
+    picker.setDisabled(false);
+    remove.click();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(picker.querySelector('[role="status"]')?.textContent).toBe(copy("zh-CN").empty);
+    picker.dispose();
+  });
   it("previews and returns the exact processed image with dimensions and output size", async () => {
     const output = processed("klee.webp", "blob:exact-webp");
     const process = vi.fn(async () => output);
