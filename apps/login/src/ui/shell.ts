@@ -33,7 +33,11 @@ export function createShell(options: ShellOptions): AppShell {
       el("div", { className: "display-tools" }, icon("globe"), language, icon("moon"), theme)),
     options.inAppBrowser ? inAppNotice(options.inAppBrowser, t) : undefined, main,
     el("footer", { className: "site-footer" }, el("p", {}, t("privacy")), el("a", { attrs: { href: options.accountOrigin } }, t("accountLink"))));
-  return { root, main, setActiveRoute(route) { for (const link of links) link.toggleAttribute("aria-current", link.dataset.route === route); } };
+  return { root, main, setActiveRoute(route) {
+    // Size the route's containing block instead of translating an oversized child form.
+    main.dataset.route = route;
+    for (const link of links) link.toggleAttribute("aria-current", link.dataset.route === route);
+  } };
 }
 
 /** 创建页面标题区。Creates a page heading region. */
