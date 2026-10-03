@@ -104,6 +104,8 @@ export interface Session {
   authenticated_at: string;
   expires_at: string;
   is_current: boolean;
+  /** Revocation time for retained history; older responses may omit this field. */
+  revoked_at?: string | null;
 }
 
 /** 用户授权给第三方客户端的权限集合。Grant given by the user to a client application. */

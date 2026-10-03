@@ -5,7 +5,7 @@ import {
   type ProcessedAvatarMetadata,
 } from "@moesegfault/frontend-shared";
 import { ApiError, AccountApiClient } from "./api/client";
-import type { Account, AccountPreferences, Contact, Credential, MutationProof, SecuritySummary } from "./api/types";
+import type { Account, AccountPreferences, Contact, Credential, MutationProof, SecuritySummary, Session } from "./api/types";
 import { normalizeLocale, type Locale, type MessageKey } from "./i18n";
 import type { Route } from "./router";
 import { resolveRoute } from "./router";
@@ -227,12 +227,26 @@ function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
 /** 会话页面支持逐个退出但保留当前上下文。Sessions can be revoked individually while preserving the current context. */
 async function renderSessions(main: HTMLElement, c: PageContext): Promise<void> {
   const sessions = await c.api.listSessions(c.signal); if (c.signal.aborted) return;
-  const rows = sessions.items.map((session) => el("article", { className: "entity-row" },
-    icon("devices"),
-    el("div", {}, el("strong", {}, session.authentication_method === "password" ? c.t("password") : session.authentication_method === "passkey" ? c.t("passkeys") : c.t("federated")), el("p", { className: "muted" }, [session.amr.join(" + "), formatTime(session.last_seen_at, c.locale)].join(" · "))),
-    session.is_current ? badge(c.t("current"), "accent") : actionButton(c.t("revoke"), async (btn) => { await c.api.revokeSession(session.session_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c),
-  ));
+  const rows = sessions.items.map((session) => sessionRow(session, c));
   replace(main, heading(c.t("sessions"), c.t("devicesIntro")), el("section", { className: "card moe-glass" }, ...(rows.length ? rows : [empty(c.t("noSessions"))])));
+}
+
+/** Retained revoked sessions are history, not actionable devices; Identity remains authoritative. */
+function sessionRow(session: Session, c: PageContext): HTMLElement {
+  let control: HTMLElement;
+  if (session.revoked_at) control = el("span", { className: "badge good", attrs: { role: "status" } }, c.t("signedOut"));
+  else if (session.is_current) control = badge(c.t("current"), "accent");
+  else control = actionButton(c.t("revoke"), async (btn) => {
+    await c.api.revokeSession(session.session_id, proof(c));
+    await c.refresh();
+    busy(btn, false);
+  }, "danger", c);
+  const method = session.authentication_method === "password" ? "password" : session.authentication_method === "passkey" ? "passkeys" : "federated";
+  return el("article", { className: "entity-row" }, icon("devices"),
+    el("div", {}, el("strong", {}, c.t(method)),
+      el("p", { className: "muted" }, [session.amr.join(" + "), formatTime(session.last_seen_at, c.locale)].join(" · ")),
+      session.revoked_at ? el("p", { className: "muted" }, `${c.t("signedOut")} · ${formatTime(session.revoked_at, c.locale)}`) : null),
+    control);
 }
 
 /** 已连接应用清楚列出 scope 与最后使用时间。Connected apps expose scopes and last use. */

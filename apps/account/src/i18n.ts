@@ -6,6 +6,7 @@ export type { Locale };
 
 const messages = {
   "zh-CN": {
+    signedOut: "已退出",
     account: "账号中心", overview: "总览", profile: "个人资料", security: "安全中心", sessions: "登录设备", apps: "已连接应用",
     hello: "欢迎回来", subtitle: "你的数字身份、联系方式与安全设置，都在这里。", editProfile: "编辑个人资料", securityScore: "安全状态",
     displayName: "显示名称", bio: "自我介绍", locale: "界面语言", timezone: "时区", save: "保存更改", saved: "已保存", avatar: "头像", upload: "上传新头像", remove: "移除",
@@ -19,6 +20,7 @@ const messages = {
     avatarTooLarge: "头像不得超过 10 MiB", avatarFormats: "支持 AVIF、PNG、JPEG、WebP，不超过 10 MiB；确认前会裁剪并优先压缩为 WebP（浏览器不支持时使用 PNG）", avatarPreparing: "正在裁剪并优化头像…", avatarPrepared: "头像已准备好，请确认后上传。", avatarConfirm: "确认上传", avatarCancel: "取消预览", avatarReselect: "重新选择", avatarInvalidType: "请选择 AVIF、PNG、JPEG 或 WebP 图片。", avatarEmpty: "所选图片为空，请重新选择。", avatarProcessingFailed: "无法处理这张图片，请换一张后重试。", statusMessage: "状态", pronouns: "称谓", favoriteCharacter: "最喜欢的角色", interests: "兴趣标签", links: "链接", visibility: "可见范围", private: "仅自己", members: "站内成员", public: "公开", countryRegion: "国家或地区", mainlandChina: "中国大陆", japan: "日本", singapore: "新加坡", usCanada: "美国或加拿大", unitedKingdom: "英国", hongKong: "中国香港", currentPassword: "当前密码", newPassword: "新密码", errorTitle: "页面暂时出了点小故障", unexpectedError: "发生了未知错误", federated: "联合登录", rename: "重命名", passkeyLabel: "Passkey 名称", technicalMethods: "TOTP 与 WebAuthn", reauthenticationBody: "这项操作需要先再次确认你的身份。完成登录后回到此页重试即可。", reauthenticate: "前往 Login 确认身份",
   },
   en: {
+    signedOut: "Signed out",
     account: "Account", overview: "Overview", profile: "Profile", security: "Security", sessions: "Sessions", apps: "Connected apps",
     hello: "Welcome back", subtitle: "Your identity, contacts, and security settings—all in one place.", editProfile: "Edit profile", securityScore: "Security status",
     displayName: "Display name", bio: "About you", locale: "Interface language", timezone: "Time zone", save: "Save changes", saved: "Saved", avatar: "Avatar", upload: "Upload new avatar", remove: "Remove",
@@ -32,6 +34,7 @@ const messages = {
     avatarTooLarge: "Avatar must be 10 MiB or smaller", avatarFormats: "AVIF, PNG, JPEG or WebP, up to 10 MiB; cropped and compressed to WebP where supported (otherwise PNG) before confirmation", avatarPreparing: "Cropping and optimizing your avatar…", avatarPrepared: "Your avatar is ready. Confirm to upload it.", avatarConfirm: "Confirm upload", avatarCancel: "Cancel preview", avatarReselect: "Choose another", avatarInvalidType: "Choose an AVIF, PNG, JPEG, or WebP image.", avatarEmpty: "The selected image is empty. Choose another image.", avatarProcessingFailed: "This image could not be processed. Try another one.", statusMessage: "Status", pronouns: "Pronouns", favoriteCharacter: "Favorite character", interests: "Interests", links: "Links", visibility: "Visibility", private: "Only me", members: "Members", public: "Public", countryRegion: "Country or region", mainlandChina: "Mainland China", japan: "Japan", singapore: "Singapore", usCanada: "United States or Canada", unitedKingdom: "United Kingdom", hongKong: "Hong Kong", currentPassword: "Current password", newPassword: "New password", errorTitle: "This page had a tiny segfault", unexpectedError: "An unexpected error occurred", federated: "Federated sign-in", rename: "Rename", passkeyLabel: "Passkey label", technicalMethods: "TOTP and WebAuthn", reauthenticationBody: "Confirm your identity again before this action. Return here after signing in, then retry it.", reauthenticate: "Confirm at Login",
   },
   ja: {
+    signedOut: "ログアウト済み",
     account: "アカウント", overview: "概要", profile: "プロフィール", security: "セキュリティ", sessions: "ログイン端末", apps: "連携アプリ",
     hello: "おかえりなさい", subtitle: "デジタル ID、連絡先、セキュリティ設定をひとつの場所で。", editProfile: "プロフィール編集", securityScore: "セキュリティ状態",
     displayName: "表示名", bio: "自己紹介", locale: "表示言語", timezone: "タイムゾーン", save: "変更を保存", saved: "保存しました", avatar: "アバター", upload: "新しい画像をアップロード", remove: "削除",
