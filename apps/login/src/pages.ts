@@ -11,7 +11,7 @@ import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
 import { resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
 import { avatarFilePicker } from "./ui/file-picker";
-import { renderRegistrationEmailGate, type VerifiedRegistrationEmail } from "./registration-email";
+import { createRegistrationEmailVerifier } from "./registration-email";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -24,10 +24,7 @@ export async function renderPage(route: AppRoute, main: HTMLElement, api: Identi
   const t = (key: MessageKey) => translate(context.locale, key);
   replace(main, statePanel("loading", "…", t("signingIn")));
   try {
-    if (route === "/register") renderRegistrationEmailGate(main, api, signal, t, (proof) => {
-      rememberCsrf(proof.csrfToken);
-      renderRegister(main, api, signal, t, context.locale, proof);
-    });
+    if (route === "/register") renderRegister(main, api, signal, t, context.locale);
     else if (route === "/recovery") renderRecovery(main, api, signal, t);
     else if (route === "/passkey/enroll") await renderPasskeyEnrollment(main, api, signal, t);
     else if (route === "/recovery-codes/rotate") renderRecoveryCodeRotation(main, api, signal, t);
@@ -75,8 +72,9 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
 }
 
 /** 呈现包含社区资料、密码与可选 Passkey 的注册页。Renders registration with community profile, password, and optional passkey. */
-function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, locale: Locale, verifiedEmail: VerifiedRegistrationEmail): void {
+function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, locale: Locale): void {
   const message = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
+  const emailVerifier = createRegistrationEmailVerifier(api, signal, t);
   const passwordButton = el("button", { className: "button button--primary", attrs: { type: "submit", value: "password", name: "method" } }, iconLabel("lock", t("registerPassword")));
   const passkeyButton = el("button", { className: "button button--secondary", attrs: { type: "submit", value: "passkey", name: "method", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("registerPasskey")));
   const avatarPicker = avatarFilePicker({
@@ -89,8 +87,7 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     ...[["+86", "🇨🇳 +86"], ["+81", "🇯🇵 +81"], ["+1", "🇺🇸/🇨🇦 +1"], ["+44", "🇬🇧 +44"], ["+65", "🇸🇬 +65"], ["+852", "🇭🇰 +852"]].map(([value, label]) => el("option", { attrs: { value } }, label)));
   const form = el("form", { className: "moe-glass auth-card register-form" },
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
-    field(t("email"), "email", { required: true, autocomplete: "email", type: "email", value: verifiedEmail.email, readonly: true, icon: "mail" }),
-    el("p", { className: "hint" }, t("signupEmailVerified")),
+    emailVerifier.element,
     avatarPicker, el("p", { className: "hint" }, t("addAvatar")),
     el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: t("statusPlaceholder"), icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
     field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
@@ -100,16 +97,21 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; const method = submitter?.value === "passkey" ? "passkey" : "password";
     const data = new FormData(form); const password = String(data.get("password") ?? "");
-    if (Date.parse(verifiedEmail.expiresAt) <= Date.now()) {
-      avatarPicker.dispose();
-      renderRegistrationEmailGate(main, api, signal, t, (proof) => { rememberCsrf(proof.csrfToken); renderRegister(main, api, signal, t, locale, proof); });
-      return;
-    }
     if (method === "password" && [...password].length < 15) { replace(message, statePanel("error", t("registerFailed"), t("passwordHint"))); return; }
     if (method === "password" && password !== String(data.get("password_confirm") ?? "")) { replace(message, statePanel("error", t("registerFailed"), t("mismatch"))); return; }
+    let verifiedEmail = emailVerifier.verified();
+    if (!verifiedEmail) {
+      replace(message, statePanel("info", t("verifyEmailTitle"), t("signupVerifyBeforeCreate")));
+      await emailVerifier.requestVerification();
+      verifiedEmail = emailVerifier.verified();
+      if (!verifiedEmail) return;
+    }
+    rememberCsrf(verifiedEmail.csrfToken);
+    message.replaceChildren();
     setButtonBusy(submitter ?? passwordButton, true, method === "passkey" ? t("waitingPasskey") : t("registering"));
     passwordButton.disabled = true; passkeyButton.disabled = true;
     avatarPicker.setDisabled(true);
+    emailVerifier.setDisabled(true);
     const avatar = await avatarPicker.processedFile();
     const mobile = mobileFromForm(data);
     const profile = { ...(optionalString(data, "status_message") ? { status_message: optionalString(data, "status_message") } : {}), ...(optionalString(data, "favorite_character") ? { favorite_character: optionalString(data, "favorite_character") } : {}), ...(optionalString(data, "interests") ? { interests: optionalString(data, "interests")?.split(",").map((value) => value.trim()).filter(Boolean) } : {}) };
@@ -125,7 +127,7 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
       const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
       avatarPicker.dispose();
       if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
-    } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); passwordButton.disabled = false; passkeyButton.disabled = !isWebAuthnAvailable(); avatarPicker.setDisabled(false); }
+    } catch (error) { replace(message, statePanel("error", t("registerFailed"), errorMessage(error))); setButtonBusy(submitter ?? passwordButton, false); passwordButton.disabled = false; passkeyButton.disabled = !isWebAuthnAvailable(); avatarPicker.setDisabled(false); emailVerifier.setDisabled(false); }
   });
   replace(main, pageHeading("CREATE_PRINCIPAL", t("newTitle"), t("newIntro")), form, el("p", { className: "switcher" }, t("haveAccount"), " ", el("a", { attrs: { href: "/login" } }, t("login"))));
 }

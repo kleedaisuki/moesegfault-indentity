@@ -3,6 +3,16 @@
 /* Keep native visibility semantics even when component rules specify grid or flex. */
 [hidden] { display: none !important; }
 
+/* Inline mailbox verification remains part of the full profile form. */
+@layer components {
+  .registration-email { display: grid; gap: .65rem; }
+  .registration-email__address, .registration-email__code { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .65rem; }
+  .registration-email .inline-state:empty { display: none; }
+}
+@layer responsive {
+  @media (max-width: 420px) { .registration-email__address, .registration-email__code { grid-template-columns: 1fr; } }
+}
+
 @layer tokens {
   :root {
     --cream: #fffaf2; --cream-strong: #fff1e2; --surface: rgba(255,253,248,.82); --surface-solid: #fffdf8;

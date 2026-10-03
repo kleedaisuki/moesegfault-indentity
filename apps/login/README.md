@@ -26,7 +26,7 @@ Passkey enrollment keeps Passkey step-up as the primary recent-authentication pa
 
 The visual system derives its warm cream/coral/gold palette, glass treatment, brand SVG, typography stack, and spacing approach from the maintainer's `moesegfault-style` repository. All icons are local SVG; the login page makes no visual CDN requests.
 
-Registration begins with POST /v1/registration-email-transactions and its code completion. No account or credential exists before mailbox proof. Only then does the wizard show profile, optional avatar, and password/Passkey controls. Both registration commands require email_verification_token; proof consumption commits atomically with the account and verified primary email. Tokens remain in memory and expire after ten minutes. See ADR-0006 for the authority and rollout contract.
+The complete registration form is shown immediately: profile, optional avatar, email and password/Passkey controls. Mailbox verification runs inline through POST /v1/registration-email-transactions and its completion. No account or credential is created before proof and final submission. Resend, address correction and proof expiry retain draft fields and avatar preview. Both registration commands require email_verification_token; proof consumption commits atomically with the account and verified primary email. Tokens remain in memory and expire after ten minutes. See ADR-0006 for the authority and rollout contract.
 
 Avatar selection previews the actual square prepared image; replace or skip actions do not upload. Selection and discard lock together during signup. Pending, replaced, discarded and uploaded previews release their object URLs.
 

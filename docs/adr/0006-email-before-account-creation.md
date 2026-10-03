@@ -8,12 +8,14 @@
 ## Decision
 
 The owner explicitly requires mailbox verification **before** account creation, not a
-pending account and not a client-only verification screen. Login now starts with an email
-challenge; profile, avatar, password, and Passkey controls appear only after verification.
+pending account and not a client-only verification screen. This is the **account creation
+ordering**, not the page ordering: Login displays the full profile, avatar and credential
+form immediately. Mailbox verification runs inline next to the email field. The owner's
+2026-10-03 feedback explicitly rejects a standalone verification-first landing screen.
 
 ```text
-email -> browser-bound challenge + encrypted mail job -> correct code
-      -> short-lived email proof -> profile + credential -> atomic account creation
+full registration form -> inline mailbox challenge + encrypted mail job -> correct code
+                       -> short-lived email proof -> final submit -> atomic account creation
 ```
 
 The challenge creates no principal, identifier, username reservation, password credential,
@@ -47,10 +49,13 @@ delivery engine, leases, provider adapter, retry policy, and Cron drain.
 
 ## UI and avatar behavior
 
-The email step has resend cooldown, correctable address, inline failure, and no credential
-controls before successful proof. The second step displays the immutable verified mailbox
-and its completion window. Expiry returns to email verification rather than attempting
-account creation with an invalid proof.
+One registration form contains all profile, avatar and credential controls from first render.
+The inline email controls provide resend cooldown, address correction and localized failures.
+Verification does not submit the profile or create an account. A final submission without a
+proof sends/focuses the inline challenge; if a code is already entered, it confirms that code
+before continuing with account creation. Expiry renews only the mailbox proof, without
+replacing draft controls or disposing the avatar preview. Changing the mailbox invalidates
+only its proof, not the rest of the form.
 
 The avatar is optional. Copy explains the input formats/10 MiB limit and center-square crop.
 Selection previews the actual prepared output. Users can replace it or discard it with
@@ -76,8 +81,9 @@ are separate checks, and local tests do not establish either.
 `scripts/tests/registration-email.mjs` executes the release Wasm Worker with real local D1.
 It verifies no-account-before-proof, missing proofs for both methods, correct/wrong codes,
 browser/email binding, parallel single-use registration, proof expiry, and guessing limits.
-Frontend tests cover gate ordering, unchanged verified destination, wrong-code recovery,
-cooldown, and avatar discard/locking. Existing contact and password suites remain regression
+Frontend tests cover immediate full-form rendering, inline verification, retained drafts and
+avatar nodes, explicit final submission, expiry renewal, wrong-code recovery, and cooldown
+locking. Existing contact and password suites remain regression
 gates for the shared delivery engine.
 
 The approach follows [OWASP's email verification guidance](https://cheatsheetseries.owasp.org/cheatsheets/Email_Validation_and_Verification_Cheat_Sheet.html)

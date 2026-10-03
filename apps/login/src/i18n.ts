@@ -9,7 +9,9 @@ export { normalizeLocale };
 
 const messages = {
   "zh-CN": {
-    signupEmailIntro: "先确认这个邮箱属于你，再填写资料并创建账号。验证前不会创建账号。",
+    signupEmailIntro: "请使用能收到邮件的邮箱，在这里完成验证后即可创建账号。",
+    signupProofExpired: "邮箱验证已过期，请重新验证。已填资料和头像预览会保留。",
+    signupVerifyBeforeCreate: "资料已保留，请在邮箱栏完成验证码确认，再点击创建账号。",
     sendSignupCode: "发送验证码", changeSignupEmail: "换一个邮箱", signupCodeHint: "验证码 10 分钟内有效，60 秒后可重发。",
     signupEmailVerified: "邮箱已验证。请在 10 分钟内完成注册。",
     signupWrongCode: "验证码不正确，请检查邮件中的 8 位数字后重试。", signupCodeExpired: "验证码已过期、已被替换或尝试次数过多，请重新发送。", signupRateLimited: "发送太频繁了，请稍等 60 秒再试。每小时最多发送 5 次。",
@@ -42,7 +44,9 @@ const messages = {
     verifyEmailTitle: "验证你的邮箱", verifyEmailIntro: "账号已创建。请输入邮件中的 8 位验证码，然后再继续。", verificationCode: "8 位验证码", confirmEmail: "确认邮箱", resendCode: "重新发送", sendingCode: "正在发送验证码…", verifyingCode: "正在验证…", codeSent: "验证码已发送至", codeSendFailed: "验证码暂未发出，可以重试。", codeInvalid: "验证没有完成，请检查验证码或重新发送。", emailVerified: "邮箱已验证！",
   },
   en: {
-    signupEmailIntro: "Verify your email first, then set up your profile and create your account. No account is created before verification.",
+    signupEmailIntro: "Use an email you can access and verify it here before creating your account.",
+    signupProofExpired: "Email verification expired. Verify again; your details and avatar preview are kept.",
+    signupVerifyBeforeCreate: "Your details are kept. Confirm the code in the email section, then create your account.",
     sendSignupCode: "Send verification code", changeSignupEmail: "Use another email", signupCodeHint: "Code expires in 10 minutes. Resend after 60 seconds.",
     signupEmailVerified: "Email verified. Complete signup within 10 minutes.",
     signupWrongCode: "Incorrect code. Check the 8 digits in your email and try again.", signupCodeExpired: "This code expired, was replaced, or reached the attempt limit. Request a new one.", signupRateLimited: "Please wait 60 seconds before retrying. Up to 5 codes per hour.",
@@ -75,7 +79,9 @@ const messages = {
     verifyEmailTitle: "Verify your email", verifyEmailIntro: "Your account is ready. Enter the eight-digit code from the email before continuing.", verificationCode: "8-digit verification code", confirmEmail: "Verify email", resendCode: "Resend code", sendingCode: "Sending verification code…", verifyingCode: "Verifying…", codeSent: "Verification code sent to", codeSendFailed: "The code could not be sent yet. You can retry.", codeInvalid: "Verification wasn't completed. Check the code or send a new one.", emailVerified: "Email verified!",
   },
   ja: {
-    signupEmailIntro: "まずメールアドレスを確認し、その後プロフィールとアカウントを作成します。確認前にアカウントは作成されません。",
+    signupEmailIntro: "受信できるメールアドレスを使い、この欄で確認してからアカウントを作成してください。",
+    signupProofExpired: "メール確認の期限が切れました。入力内容とアバタープレビューは保持されます。再確認してください。",
+    signupVerifyBeforeCreate: "入力内容は保持されています。メール欄でコードを確認してからアカウントを作成してください。",
     sendSignupCode: "確認コードを送信", changeSignupEmail: "別のメールを使う", signupCodeHint: "コードは10分間有効です。60秒後に再送できます。",
     signupEmailVerified: "メール確認済み。10分以内に登録を完了してください。",
     signupWrongCode: "コードが違います。メールの8桁の数字を確認してください。", signupCodeExpired: "期限切れ、更新済み、または試行上限に達しました。新しいコードを送信してください。", signupRateLimited: "60秒待ってから再試行してください。1時間に5回まで送信できます。",

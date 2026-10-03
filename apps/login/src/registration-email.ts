@@ -1,90 +1,122 @@
 import { IdentityApiClient, ApiError } from "./api/client";
 import type { MessageKey } from "./i18n";
-import { el, field, replace, setButtonBusy, statePanel } from "./ui/dom";
-import { pageHeading } from "./ui/shell";
+import { el, field, replace, statePanel } from "./ui/dom";
 
-/** In-memory proof for exactly one mailbox, issued before any account exists. */
+/** In-memory proof for one mailbox; verification alone never creates an account. */
 export interface VerifiedRegistrationEmail { email: string; token: string; expiresAt: string; csrfToken: string; }
 
-/** Renders the mandatory first signup step, keeping retries and address correction local. */
-export function renderRegistrationEmailGate(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal,
-  t: (key: MessageKey) => string, onVerified: (proof: VerifiedRegistrationEmail) => void): void {
+/** Inline email controls owned by the full registration form, never a separate wizard page. */
+export interface RegistrationEmailVerifier {
+  element: HTMLElement;
+  /** Returns a valid proof for the displayed mailbox, otherwise invalidates only email state. */
+  verified(): VerifiedRegistrationEmail | undefined;
+  /** Starts verification or focuses a pending challenge without replacing the form. */
+  requestVerification(): Promise<void>;
+  /** Locks mailbox changes together with final account creation. */
+  setDisabled(disabled: boolean): void;
+}
+
+/** Creates form-safe mailbox verification; profile/password/avatar nodes stay untouched. */
+export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: AbortSignal,
+  t: (key: MessageKey) => string): RegistrationEmailVerifier {
   const emailField = field(t("email"), "email", { required: true, type: "email", autocomplete: "email", icon: "mail" });
   const emailInput = emailField.querySelector<HTMLInputElement>("input")!;
-  const send = el("button", { className: "button button--primary button--wide", attrs: { type: "submit" } }, t("sendSignupCode"));
-  const addressForm = el("form", { className: "auth-form" }, emailField, send);
+  const send = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("sendSignupCode"));
+  const change = el("button", { className: "button button--secondary", attrs: { type: "button", hidden: true } }, t("changeSignupEmail"));
   const codeField = field(t("verificationCode"), "code", { required: true, autocomplete: "one-time-code", pattern: "[0-9]{8}", minlength: "8", icon: "lock" });
   const codeInput = codeField.querySelector<HTMLInputElement>("input")!;
   codeInput.inputMode = "numeric"; codeInput.maxLength = 8;
-  const confirm = el("button", { className: "button button--primary", attrs: { type: "submit" } }, t("confirmEmail"));
-  const resend = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("resendCode"));
-  const change = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("changeSignupEmail"));
-  const codeForm = el("form", { className: "auth-form", attrs: { hidden: true } }, codeField,
-    el("div", { className: "button-pair" }, confirm, resend), change);
+  const confirm = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("confirmEmail"));
+  const codePanel = el("div", { className: "registration-email__code", attrs: { hidden: true } }, codeField, confirm);
   const status = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
+  const element = el("section", { className: "registration-email", attrs: { "aria-label": t("email") } },
+    el("div", { className: "registration-email__address" }, emailField, el("div", { className: "button-pair" }, send, change)),
+    el("p", { className: "hint" }, t("signupEmailIntro")), codePanel, status);
   let transaction: Awaited<ReturnType<IdentityApiClient["startRegistrationEmail"]>> | undefined;
+  let proof: VerifiedRegistrationEmail | undefined;
+  let destination = "";
   let csrfToken = "";
-  let sending = false;
-  let confirming = false;
+  let busy: "sending" | "confirming" | undefined;
+  let locked = false;
+  let resendAt = 0;
   let cooldown: ReturnType<typeof setTimeout> | undefined;
 
-  /** Keeps resend timing tied to the server response and releases the timer on navigation. */
-  const waitToResend = (until: number): void => {
-    clearTimeout(cooldown);
-    resend.disabled = true;
-    cooldown = setTimeout(() => { if (!signal.aborted) resend.disabled = false; }, Math.max(0, until - Date.now()));
+  /** One projection prevents cooldown timers from unlocking an in-flight operation. */
+  const sync = (): void => {
+    emailInput.readOnly = Boolean(transaction || proof || busy);
+    emailInput.disabled = locked;
+    codeInput.disabled = locked || !transaction || Boolean(proof);
+    codePanel.hidden = !transaction || Boolean(proof);
+    change.hidden = !transaction && !proof;
+    change.disabled = locked || Boolean(busy);
+    send.hidden = Boolean(proof);
+    send.disabled = locked || Boolean(busy) || resendAt > Date.now();
+    send.textContent = busy === "sending" ? t("sendingCode") : transaction ? t("resendCode") : t("sendSignupCode");
+    confirm.disabled = locked || Boolean(busy);
+    confirm.textContent = busy === "confirming" ? t("verifyingCode") : t("confirmEmail");
   };
-  const showError = (error: unknown, title: MessageKey = "codeSendFailed"): void => {
+  const waitToResend = (until: number): void => {
+    clearTimeout(cooldown); resendAt = until;
+    cooldown = setTimeout(sync, Math.max(0, until - Date.now()));
+  };
+  const showError = (error: unknown, title: MessageKey): void => {
     const code = error instanceof ApiError ? error.problem?.error_code : undefined;
     const key = code === "verification_failed" ? "signupWrongCode" : code === "invalid_transaction" ? "signupCodeExpired" : code === "rate_limited" ? "signupRateLimited" : undefined;
-    const message = key ? t(key) : error instanceof ApiError ? error.problem?.detail ?? error.message : t("codeSendFailed");
+    const message = key ? t(key) : error instanceof ApiError ? error.problem?.detail ?? error.message : t(title);
     replace(status, statePanel("error", t(title), message));
   };
   const sendCode = async (): Promise<void> => {
-    if (sending || confirming || signal.aborted) return;
-    sending = true;
-    setButtonBusy(send, true, t("sendingCode"));
-    resend.disabled = true; change.disabled = true; confirm.disabled = true;
+    if (locked || busy || signal.aborted || resendAt > Date.now() || !emailInput.reportValidity()) return;
+    busy = "sending"; sync();
     try {
+      const nextDestination = emailInput.value.trim();
       csrfToken = (await api.getBrowserContext(signal)).csrf_token;
-      const next = await api.startRegistrationEmail(emailInput.value.trim(), csrfToken, signal);
+      const next = await api.startRegistrationEmail(nextDestination, csrfToken, signal);
       if (signal.aborted) return;
-      transaction = next;
-      emailInput.readOnly = true; send.hidden = true; codeForm.hidden = false; codeInput.value = "";
-      replace(status, statePanel("success", t("codeSent"), `${next.delivery_hint} · ${t("signupCodeHint")}`));
+      destination = nextDestination; transaction = next; proof = undefined; codeInput.value = "";
+      replace(status, statePanel("info", t("codeSent"), `${next.delivery_hint} · ${t("signupCodeHint")}`));
       waitToResend(Date.parse(next.resend_after));
-      codeInput.focus();
     } catch (error) {
-      if (!signal.aborted) { showError(error); waitToResend(Date.now() + 60_000); }
-    } finally {
-      sending = false; setButtonBusy(send, false); confirm.disabled = !transaction; change.disabled = false;
-    }
+      if (!signal.aborted) { showError(error, "codeSendFailed"); waitToResend(Date.now() + 60_000); }
+    } finally { busy = undefined; sync(); }
+    if (transaction && !signal.aborted) codeInput.focus();
   };
-  addressForm.addEventListener("submit", (event) => { event.preventDefault(); void sendCode(); });
-  resend.addEventListener("click", () => { void sendCode(); });
-  change.addEventListener("click", () => {
-    clearTimeout(cooldown); transaction = undefined; codeForm.hidden = true; send.hidden = false;
-    emailInput.readOnly = false; status.replaceChildren(); emailInput.focus();
-  });
-  codeForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!transaction || sending || confirming || signal.aborted) return;
-    confirming = true;
-    setButtonBusy(confirm, true, t("verifyingCode")); resend.disabled = true; change.disabled = true;
+  const confirmCode = async (): Promise<void> => {
+    if (!transaction || locked || busy || signal.aborted || !codeInput.reportValidity()) return;
+    busy = "confirming"; sync();
     try {
-      const proof = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal);
+      const result = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal);
       if (signal.aborted) return;
-      clearTimeout(cooldown);
-      onVerified({ email: emailInput.value.trim(), token: proof.email_verification_token, expiresAt: proof.expires_at, csrfToken });
-    } catch (error) {
-      if (!signal.aborted) {
-        showError(error, "codeInvalid");
-        waitToResend(Date.parse(transaction.resend_after));
-      }
-    } finally { confirming = false; setButtonBusy(confirm, false); change.disabled = false; }
+      proof = { email: destination, token: result.email_verification_token, expiresAt: result.expires_at, csrfToken };
+      replace(status, statePanel("success", t("emailVerified"), t("signupEmailVerified")));
+    } catch (error) { if (!signal.aborted) showError(error, "codeInvalid"); }
+    finally { busy = undefined; sync(); }
+  };
+  send.addEventListener("click", () => { void sendCode(); });
+  confirm.addEventListener("click", () => { void confirmCode(); });
+  codeInput.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void confirmCode(); } });
+  change.addEventListener("click", () => {
+    proof = undefined; transaction = undefined; codeInput.value = ""; status.replaceChildren(); sync(); emailInput.focus();
   });
-  signal.addEventListener("abort", () => clearTimeout(cooldown), { once: true });
-  replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("signupEmailIntro")),
-    el("section", { className: "moe-glass auth-card" }, addressForm, codeForm, status),
-    el("p", { className: "switcher" }, t("haveAccount"), " ", el("a", { attrs: { href: "/login" } }, t("login"))));
+  signal.addEventListener("abort", () => { clearTimeout(cooldown); proof = undefined; }, { once: true });
+  sync();
+  return {
+    element,
+    verified: () => {
+      if (proof && (Date.parse(proof.expiresAt) <= Date.now() || proof.email !== emailInput.value.trim())) {
+        proof = undefined; transaction = undefined;
+        replace(status, statePanel("info", t("verifyEmailTitle"), t("signupProofExpired"))); sync();
+      }
+      return proof;
+    },
+    requestVerification: async () => {
+      if (transaction && !proof) {
+        if (/^[0-9]{8}$/.test(codeInput.value.trim())) await confirmCode();
+        else codeInput.focus();
+        return;
+      }
+      await sendCode();
+    },
+    setDisabled: (disabled) => { locked = disabled; sync(); },
+  };
 }

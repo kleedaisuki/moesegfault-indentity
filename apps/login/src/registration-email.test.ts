@@ -2,88 +2,135 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IdentityApiClient, ApiError } from "./api/client";
 import { translate } from "./i18n";
-import { renderRegistrationEmailGate } from "./registration-email";
+import { createRegistrationEmailVerifier } from "./registration-email";
 import { renderPage } from "./pages";
 
 afterEach(() => { vi.useRealTimers(); });
 
-describe("email-first registration", () => {
-  it("shows no credential or profile controls before a successful email proof", async () => {
-    const fixture = setup();
-    await renderPage("/register", fixture.main, fixture.api, fixture.signal, { locale: "zh-CN" });
-    expect(fixture.main.querySelector('[name="password"]')).toBeNull();
-    expect(fixture.main.querySelector('[name="username"]')).toBeNull();
-    expect(fixture.main.textContent).toContain("验证前不会创建账号");
-    await send(fixture.main);
+describe("inline registration email verification", () => {
+  it("shows the full profile, avatar and credential form immediately without sending mail", async () => {
+    const fixture = await setup();
+    for (const name of ["display_name", "username", "password", "password_confirm", "email", "avatar"]) expect(fixture.main.querySelector(`[name="${name}"]`)).not.toBeNull();
+    expect(fixture.main.querySelectorAll("form")).toHaveLength(1);
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.disabled).toBe(true);
+    expect(fixture.start).not.toHaveBeenCalled();
     expect(fixture.register).not.toHaveBeenCalled();
-    expect(fixture.main.querySelector('[name="password"]')).toBeNull();
-
-    fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.value = "01234567";
-    fixture.main.querySelectorAll("form")[1]!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(fixture.main.querySelector('[name="username"]')).not.toBeNull());
-    const email = fixture.main.querySelector<HTMLInputElement>('[name="email"]')!;
-    expect(email.readOnly).toBe(true);
-    expect(email.value).toBe("klee@example.test");
-    fixture.main.querySelector<HTMLInputElement>('[name="username"]')!.value = "klee_test";
-    fixture.main.querySelector<HTMLInputElement>('[name="display_name"]')!.value = "Klee";
-    for (const name of ["password", "password_confirm"]) fixture.main.querySelector<HTMLInputElement>(`[name="${name}"]`)!.value = "fixture-only-long-password";
-    // A modified readonly input cannot change the mailbox bound to the registration proof.
-    email.value = "tampered@example.test";
-    fixture.main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(fixture.register).toHaveBeenCalledOnce());
-    expect(fixture.register.mock.calls[0]?.[0]).toMatchObject({ email: "klee@example.test", email_verification_token: "fixture-proof" });
     fixture.abort.abort();
   });
 
-  it("does not advance on wrong codes and lets the user correct the mailbox", async () => {
-    const fixture = setup();
-    const verified = vi.fn();
+  it("starts verification on submission without creating an account or replacing any draft controls", async () => {
+    const fixture = await setup(); fillDraft(fixture.main);
+    const form = fixture.main.querySelector("form")!;
+    const avatar = fixture.main.querySelector(".file-picker");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.start).toHaveBeenCalledOnce());
+    expect(fixture.register).not.toHaveBeenCalled();
+    expect(fixture.main.querySelector("form")).toBe(form);
+    expect(fixture.main.querySelector(".file-picker")).toBe(avatar);
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="username"]')!.value).toBe("klee_test");
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="password"]')!.value).toBe("fixture-only-long-password");
+    fixture.abort.abort();
+  });
+
+  it("verifies in place and creates an account only on a subsequent explicit submit", async () => {
+    const fixture = await setup(); fillDraft(fixture.main);
+    const form = fixture.main.querySelector("form")!;
+    await send(fixture.main); await confirm(fixture.main);
+    expect(fixture.register).not.toHaveBeenCalled();
+    expect(fixture.main.querySelector("form")).toBe(form);
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="email"]')!.readOnly).toBe(true);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.register).toHaveBeenCalledOnce());
+    expect(fixture.register.mock.calls[0]?.[0]).toMatchObject({ username: "klee_test", email: "klee@example.test", email_verification_token: "fixture-proof" });
+    fixture.abort.abort();
+  });
+
+  it("keeps drafts and the avatar node across wrong codes and mailbox correction", async () => {
+    const fixture = await setup(); fillDraft(fixture.main);
+    const avatar = fixture.main.querySelector(".file-picker");
     fixture.complete.mockRejectedValueOnce(new ApiError(400, { type: "urn:test", title: "Wrong code", status: 400 }));
-    renderRegistrationEmailGate(fixture.main, fixture.api, fixture.signal, key => translate("zh-CN", key), verified);
     await send(fixture.main);
     fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.value = "11111111";
-    fixture.main.querySelectorAll("form")[1]!.dispatchEvent(new Event("submit", { cancelable: true }));
+    fixture.main.querySelector<HTMLButtonElement>(".registration-email__code button")!.click();
     await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toContain("Wrong code"));
-    expect(verified).not.toHaveBeenCalled();
-    const change = Array.from(fixture.main.querySelectorAll<HTMLButtonElement>("button")).find(btn => btn.textContent === "换一个邮箱")!;
-    change.click();
+    expect(fixture.register).not.toHaveBeenCalled();
+    Array.from(fixture.main.querySelectorAll<HTMLButtonElement>("button")).find(btn => btn.textContent === "换一个邮箱")!.click();
     expect(fixture.main.querySelector<HTMLInputElement>('[name="email"]')!.readOnly).toBe(false);
-    expect(fixture.main.querySelectorAll<HTMLFormElement>("form")[1]!.hidden).toBe(true);
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="username"]')!.value).toBe("klee_test");
+    expect(fixture.main.querySelector(".file-picker")).toBe(avatar);
     fixture.abort.abort();
   });
 
-  it("disables duplicate sends and holds resend until the server cooldown", async () => {
+  it("can confirm an entered code and create the account on the user's final submit", async () => {
+    const fixture = await setup(); fillDraft(fixture.main);
+    await send(fixture.main);
+    fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.value = "01234567";
+    fixture.main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.register).toHaveBeenCalledOnce());
+    expect(fixture.complete).toHaveBeenCalledOnce();
+    fixture.abort.abort();
+  });
+
+  it("renews an expired proof in the same form without discarding the profile or preview", async () => {
     vi.useFakeTimers();
-    const fixture = setup();
-    renderRegistrationEmailGate(fixture.main, fixture.api, fixture.signal, key => translate("en", key), vi.fn());
-    const email = fixture.main.querySelector<HTMLInputElement>('[name="email"]')!;
-    email.value = "klee@example.test";
+    const fixture = await setup(); fillDraft(fixture.main);
     const form = fixture.main.querySelector("form")!;
-    form.dispatchEvent(new Event("submit")); form.dispatchEvent(new Event("submit"));
-    await vi.advanceTimersByTimeAsync(0);
+    const avatar = fixture.main.querySelector(".file-picker");
+    await send(fixture.main); await confirm(fixture.main);
+    await vi.advanceTimersByTimeAsync(600_001);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.start).toHaveBeenCalledTimes(2));
+    expect(fixture.register).not.toHaveBeenCalled();
+    expect(fixture.main.querySelector("form")).toBe(form);
+    expect(fixture.main.querySelector(".file-picker")).toBe(avatar);
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="password"]')!.value).toBe("fixture-only-long-password");
+    fixture.abort.abort();
+  });
+
+  it("holds resend cooldown and never lets its timer unlock final account submission", async () => {
+    vi.useFakeTimers();
+    const fixture = await setup();
+    const verifier = createRegistrationEmailVerifier(fixture.api, fixture.signal, key => translate("en", key));
+    verifier.element.querySelector<HTMLInputElement>('[name="email"]')!.value = "klee@example.test";
+    const send = verifier.element.querySelector<HTMLButtonElement>("button")!;
+    send.click(); send.click(); await vi.advanceTimersByTimeAsync(0);
     expect(fixture.start).toHaveBeenCalledOnce();
-    const resend = Array.from(fixture.main.querySelectorAll<HTMLButtonElement>("button")).find(btn => btn.textContent === "Resend code")!;
-    expect(resend.disabled).toBe(true);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(resend.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    verifier.setDisabled(true); await vi.advanceTimersByTimeAsync(60_000);
+    expect(send.disabled).toBe(true);
+    verifier.setDisabled(false); expect(send.disabled).toBe(false);
     fixture.abort.abort();
   });
 });
 
-/** Creates a signup HTTP seam; no passwords or proofs persist outside this test realm. */
-function setup() {
+/** Creates a signup HTTP seam and renders the complete registration form. */
+async function setup() {
   const abort = new AbortController();
   const main = document.createElement("main");
   const start = vi.fn<IdentityApiClient["startRegistrationEmail"]>(async () => ({ transaction_id: "tx", expires_at: new Date(Date.now()+600_000).toISOString(), resend_after: new Date(Date.now()+60_000).toISOString(), delivery_hint: "k***@example.test" }));
   const complete = vi.fn<IdentityApiClient["completeRegistrationEmail"]>(async () => ({ email_verification_token: "fixture-proof", expires_at: new Date(Date.now()+600_000).toISOString() }));
   const register = vi.fn<IdentityApiClient["registerWithPassword"]>(async () => ({ account: { principal_id: "principal", lifecycle_state: "active", profile: { display_name: "Klee", locale: "zh-CN" }, identifiers: [], created_at: "now", updated_at: "now" }, session: {} as never, csrf_token: "session-csrf", csrf_expires_at: "later" }));
   const api = { getBrowserContext: vi.fn(async () => ({ csrf_token: "browser-csrf" })), startRegistrationEmail: start, completeRegistrationEmail: complete, registerWithPassword: register } as unknown as IdentityApiClient;
+  await renderPage("/register", main, api, abort.signal, { locale: "zh-CN" });
   return { main, api, start, complete, register, abort, signal: abort.signal };
 }
 
-/** Submits an email and waits for the server-accepted code form. */
+/** Fills a draft without performing any account-creation operation. */
+function fillDraft(main: HTMLElement): void {
+  const values = { username: "klee_test", display_name: "Klee", email: "klee@example.test", password: "fixture-only-long-password", password_confirm: "fixture-only-long-password" };
+  for (const [name, value] of Object.entries(values)) main.querySelector<HTMLInputElement>(`[name="${name}"]`)!.value = value;
+}
+
+/** Sends from the inline control without submitting the enclosing profile form. */
 async function send(main: HTMLElement): Promise<void> {
   main.querySelector<HTMLInputElement>('[name="email"]')!.value = "klee@example.test";
-  main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-  await vi.waitFor(() => expect(main.querySelectorAll<HTMLFormElement>("form")[1]!.hidden).toBe(false));
+  main.querySelector<HTMLButtonElement>(".registration-email button")!.click();
+  await vi.waitFor(() => expect(main.querySelector<HTMLElement>(".registration-email__code")!.hidden).toBe(false));
+}
+
+/** Confirms a code while retaining all draft nodes. */
+async function confirm(main: HTMLElement): Promise<void> {
+  main.querySelector<HTMLInputElement>('[name="code"]')!.value = "01234567";
+  main.querySelector<HTMLButtonElement>(".registration-email__code button")!.click();
+  await vi.waitFor(() => expect(main.querySelector<HTMLElement>(".registration-email__code")!.hidden).toBe(true));
 }
