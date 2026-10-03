@@ -78,6 +78,8 @@ Password and Passkey completions must use the **same absolute issuer-rooted URI 
 - Keep user cancellation, policy rejection, invalid input, authentication failure, rate limiting, and platform failure distinguishable.
 - Do not blindly retry mutations. Retry only when the operation is designed for it, using the original idempotency key and transaction context.
 
+For opt-in failure receipts and the distinction between a generic pre-authentication rejection, OAuth continuation, and a native CLI loopback page, read [safe failure support](login-failure-support.md). Do not assume a receipt or resume fix resolved an earlier credential rejection.
+
 ## Focused verification
 
 For a changed capability, cover the success path plus the boundary it relies on:
