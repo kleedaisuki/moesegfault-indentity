@@ -152,6 +152,64 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/RegistrationPolicy'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/registration-email-transactions:
+    post:
+      tags: [ceremonies]
+      operationId: createRegistrationEmail
+      summary: Verify a mailbox before creating any account
+      description: Sends an eight-digit code with a ten-minute lifetime. No principal, credential, session or username reservation is created. Resends are limited to one per minute and five per hour per mailbox and browser.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+      security: [{browser_cookie: [], csrf_header: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: {type: string, format: email, maxLength: 254}
+                registration_capability: {type: string, minLength: 20, maxLength: 512, writeOnly: true, description: Optional invitation for non-open registration policy}
+      responses:
+        '201':
+          description: Mailbox challenge and encrypted delivery job committed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RegistrationEmailChallenge'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/registration-email-transactions/{transaction_id}/completion:
+    post:
+      tags: [ceremonies]
+      operationId: completeRegistrationEmail
+      summary: Exchange an email code for a single-account registration proof
+      description: Browser-bound proof expires ten minutes after verification and is consumed atomically with password or Passkey account creation. It is never stored in browser persistence or a URL. A lost completion response can be retried with a new idempotency key and the same code without extending the proof lifetime.
+      parameters:
+        - {$ref: '#/components/parameters/TransactionId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/Origin'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+      security: [{browser_cookie: [], csrf_header: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: {type: string, pattern: '^[0-9]{8}$', writeOnly: true}
+      responses:
+        '200':
+          description: Verified mailbox proof; no account exists yet
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RegistrationEmailProof'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/registration-transactions:
     post:
       tags: [ceremonies]
@@ -1451,15 +1509,32 @@ components:
             properties:
               logged_out: {type: boolean, const: true}
   schemas:
+    RegistrationEmailChallenge:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, expires_at, resend_after, delivery_hint]
+      properties:
+        transaction_id: {$ref: '#/components/schemas/UuidV7'}
+        expires_at: {type: string, format: date-time}
+        resend_after: {type: string, format: date-time}
+        delivery_hint: {type: string, description: Masked mailbox destination}
+    RegistrationEmailProof:
+      type: object
+      additionalProperties: false
+      required: [email_verification_token, expires_at]
+      properties:
+        email_verification_token: {type: string, minLength: 64, maxLength: 128, description: In-memory proof bound to the normalized mailbox and anonymous browser cookie}
+        expires_at: {type: string, format: date-time}
     PasswordRegistrationRequest:
       type: object
       additionalProperties: false
-      required: [username, password, display_name, email]
+      required: [username, password, display_name, email, email_verification_token]
       properties:
         username: {$ref: '#/components/schemas/Username'}
         password: {type: string, minLength: 15, maxLength: 128, writeOnly: true, description: Unicode password measured in Unicode scalar values by the current policy.}
         display_name: {type: string, minLength: 1, maxLength: 80, examples: ['星屑 Klee']}
         email: {type: string, format: email, maxLength: 254, examples: ['klee@example.net']}
+        email_verification_token: {type: string, minLength: 64, maxLength: 128, writeOnly: true, description: Proof returned by completeRegistrationEmail; consumed only when account creation commits}
         mobile: {$ref: '#/components/schemas/MobileNumberInput'}
         locale: {type: string, minLength: 2, maxLength: 35, default: zh-CN, examples: [zh-CN, ja-JP, en]}
         registration_capability: {type: string, minLength: 20, maxLength: 512, writeOnly: true}
@@ -1469,6 +1544,7 @@ components:
           password: correct-horse-battery-anime
           display_name: 星屑 Klee
           email: klee@example.net
+          email_verification_token: '01a10232-f619-720f-b662-05a5e9307198.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
           mobile: {country_calling_code: '+86', national_number: '13800138000'}
           locale: zh-CN
           profile: {status_message: 今天也在和 segfault 和解！, interests: [Linux, 动画, 编译器]}
@@ -1760,12 +1836,13 @@ components:
     CreateAccountRegistrationRequest:
       type: object
       additionalProperties: false
-      required: [username, display_name, email, authenticator_label]
+      required: [username, display_name, email, authenticator_label, email_verification_token]
       description: Passkey registration creates the same account, primary email, optional mobile, preferences, and playful profile as password registration.
       properties:
         username: {$ref: '#/components/schemas/Username'}
         display_name: {type: string, minLength: 1, maxLength: 80}
         email: {type: string, format: email, maxLength: 254}
+        email_verification_token: {type: string, minLength: 64, maxLength: 128, writeOnly: true, description: Proof returned by completeRegistrationEmail; rechecked and consumed at ceremony completion}
         mobile: {$ref: '#/components/schemas/MobileNumberInput'}
         locale: {type: string, minLength: 2, maxLength: 35, default: zh-CN}
         profile: {$ref: '#/components/schemas/AccountRegistrationProfile'}

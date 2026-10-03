@@ -79,6 +79,8 @@ export interface CeremonyTransaction<TOptions> {
 
 /** 创建注册事务时的输入。Input used to begin registration. */
 export interface RegistrationStart {
+  /** Short-lived mailbox proof from the pre-account email challenge. */
+  email_verification_token: string;
   username: string;
   display_name: string;
   email: string;
@@ -103,6 +105,8 @@ export interface CommunityProfileInput {
 
 /** 密码注册输入；Passkey 仍是独立可选路径。Password registration input; passkey remains a separate optional path. */
 export interface PasswordRegistrationInput {
+  /** Short-lived mailbox proof from the pre-account email challenge. */
+  email_verification_token: string;
   username: string;
   password: string;
   display_name: string;

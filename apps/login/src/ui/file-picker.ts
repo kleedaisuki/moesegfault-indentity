@@ -16,6 +16,9 @@ export interface FilePickerCopy {
   ready: string;
   failed: string;
   previewAlt: string;
+  /** Actions for replacing or discarding the local, not-yet-uploaded preview. */
+  change: string;
+  remove: string;
 }
 
 /** 可注入的头像处理函数，供界面测试使用。Injectable avatar processor for UI tests. */
@@ -72,6 +75,8 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
     attrs: { alt: copy.previewAlt, hidden: true },
   });
   const metadata = el("span", { className: "file-picker__metadata", attrs: { hidden: true } });
+  const choose = el("label", { className: "file-picker__button", attrs: { for: inputId } }, copy.choose);
+  const remove = el("button", { className: "file-picker__button", attrs: { type: "button", hidden: true } }, copy.remove);
   const root = el("div", { className: "field file-picker" },
     el("label", { className: "field__label", attrs: { for: inputId } }, copy.label),
     el("div", { className: "file-picker__body" },
@@ -79,7 +84,7 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
       el("div", { className: "file-picker__details" },
         el("div", { className: "file-picker__control" },
           input,
-          el("label", { className: "file-picker__button", attrs: { for: inputId } }, copy.choose),
+          choose, remove,
           status,
         ),
         metadata,
@@ -100,18 +105,19 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
     preview.hidden = true;
     metadata.hidden = true;
     metadata.textContent = "";
+    choose.textContent = copy.choose;
+    remove.hidden = true;
   };
 
   const onChange = (): void => {
     const selected = input.files?.[0];
+    // Reset only the native selection so the same file can be selected again after an error.
+    input.value = "";
+    if (!selected) return;
     const selectedGeneration = ++generation;
     clearPrepared();
-    if (!selected) {
-      status.textContent = copy.empty;
-      pending = Promise.resolve();
-      return;
-    }
-
+    remove.hidden = false;
+    choose.textContent = copy.change;
     status.textContent = copy.processing;
     pending = processor(selected).then((result) => {
       if (disposed || selectedGeneration !== generation) {
@@ -128,6 +134,14 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
       if (!disposed && selectedGeneration === generation) status.textContent = copy.failed;
     });
   };
+
+  remove.addEventListener("click", () => {
+    generation += 1;
+    clearPrepared();
+    input.value = "";
+    status.textContent = copy.empty;
+    pending = Promise.resolve();
+  });
 
   const dispose = (): void => {
     if (disposed) return;
@@ -151,7 +165,7 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
     } while (observed !== pending);
     return prepared?.file;
   };
-  root.setDisabled = (disabled) => { input.disabled = disabled; };
+  root.setDisabled = (disabled) => { input.disabled = disabled; remove.disabled = disabled; };
   root.dispose = dispose;
   return root;
 }

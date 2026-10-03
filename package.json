@@ -29,6 +29,7 @@
     "migrate:local": "node scripts/prepare-migrations.mjs staging && wrangler d1 migrations apply moesegfault-identity-staging --local --persist-to=.wrangler/ci --config wrangler.identity.jsonc",
     "test:migrations": "node scripts/test-migrations.mjs",
     "test:contact-verification": "node scripts/tests/contact-verification.mjs",
+    "test:registration-email": "node scripts/tests/registration-email.mjs",
     "test:oauth-client-migration": "node --test scripts/tests/oauth-client-migration.mjs",
     "test:recovery-authority": "node scripts/tests/recovery-authority.mjs",
     "test:password-rate-limit": "node scripts/tests/password-rate-limit.mjs",

@@ -79,6 +79,19 @@ export class ApiError extends Error {
  * ```
  */
 export class IdentityApiClient {
+  /** Sends a mailbox challenge without creating or reserving an account. */
+  public startRegistrationEmail(email: string, csrfToken: string, signal?: AbortSignal) {
+    return this.#request<{ transaction_id: string; expires_at: string; resend_after: string; delivery_hint: string }>("/v1/registration-email-transactions", {
+      method: "POST", body: { email }, csrfToken, idempotencyKey: createIdempotencyKey(), signal,
+    });
+  }
+
+  /** Exchanges an email code for an in-memory, browser-bound signup proof. */
+  public completeRegistrationEmail(id: string, code: string, csrfToken: string, signal?: AbortSignal) {
+    return this.#request<{ email_verification_token: string; expires_at: string }>(`/v1/registration-email-transactions/${encodeURIComponent(id)}/completion`, {
+      method: "POST", body: { code }, csrfToken, idempotencyKey: createIdempotencyKey(), signal,
+    });
+  }
   readonly #origin: string;
   readonly #fetch: FetchLike;
 

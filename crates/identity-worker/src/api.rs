@@ -177,6 +177,8 @@ struct StartRegistrationRequest {
     display_name: String,
     email: String,
     #[serde(default)]
+    email_verification_token: Option<String>,
+    #[serde(default)]
     mobile: Option<RegistrationMobileInput>,
     #[serde(default)]
     profile: RegistrationProfileInput,
@@ -211,6 +213,8 @@ struct StoredRegistration {
     display_name: String,
     email: String,
     email_normalized: String,
+    #[serde(default)]
+    email_verification_token: Option<String>,
     mobile: Option<StoredMobile>,
     status_message: Option<String>,
     favorite_character: Option<String>,
@@ -298,6 +302,22 @@ pub async fn start_registration(
             );
         }
     };
+    if crate::registration_email::authorize(
+        &request,
+        &context.env,
+        &email_normalized,
+        input.email_verification_token.as_deref(),
+    )
+    .await?
+    .is_none()
+    {
+        return problem::response(
+            "email_verification_required",
+            "Verify your email before creating an account",
+            403,
+            &correlation,
+        );
+    }
     let mobile = match input.mobile {
         Some(value)
             if value.country_calling_code.starts_with('+')
@@ -420,6 +440,7 @@ pub async fn start_registration(
         display_name: display_name.to_owned(),
         email: input.email.trim().to_owned(),
         email_normalized,
+        email_verification_token: input.email_verification_token,
         mobile,
         status_message: input.profile.status_message,
         favorite_character: input.profile.favorite_character,
@@ -633,6 +654,21 @@ async fn finish_registration_inner(
         worker::Date::now().as_millis(),
     );
     let recovery_code_set_id = TransactionId::new_v7(worker::Date::now().as_millis()).to_string();
+    let Some(email_proof) = crate::registration_email::authorize(
+        request,
+        &context.env,
+        &stored.email_normalized,
+        stored.email_verification_token.as_deref(),
+    )
+    .await?
+    else {
+        return problem::response(
+            "email_verification_required",
+            "Email proof expired or was already used",
+            403,
+            &correlation,
+        );
+    };
     repository::commit_registration(
         &db,
         &tx,
@@ -646,6 +682,7 @@ async fn finish_registration_inner(
         &email_identifier_id,
         &stored.email,
         &stored.email_normalized,
+        &email_proof,
         mobile_identifier_id.as_deref(),
         stored
             .mobile
@@ -685,7 +722,7 @@ async fn finish_registration_inner(
                 "profile": {"display_name": stored.display_name, "locale": stored.locale},
                 "identifiers": [
                     {"identifier_id": identifier_id, "kind":"username", "value":stored.username,"is_primary":true,"verification_state":"verified","verified_at":created_at, "created_at":created_at, "updated_at":created_at},
-                    {"identifier_id": email_identifier_id, "kind":"email", "value":stored.email,"is_primary":true,"verification_state":"unverified","verified_at":null, "created_at":created_at, "updated_at":created_at}
+                    {"identifier_id": email_identifier_id, "kind":"email", "value":stored.email,"is_primary":true,"verification_state":"verified","verified_at":created_at, "created_at":created_at, "updated_at":created_at}
                 ],
                 "created_at": created_at, "updated_at": created_at
             },

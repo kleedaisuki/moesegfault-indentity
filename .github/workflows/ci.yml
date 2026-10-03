@@ -169,6 +169,8 @@ jobs:
         run: node scripts/tests/security-boundary.mjs
       - name: Verify contact creation and email-verification contract / 验证联系方式与邮箱验证契约
         run: npm run test:contact-verification
+      - name: Verify mailbox proof before account creation
+        run: npm run test:registration-email
       - name: Verify password authority and session rotation / 验证密码权限与会话轮换
         run: npm run test:password-security
       - name: Verify session activity RPC budget / 验证会话活动 RPC 预算

@@ -1,5 +1,5 @@
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
-import type { Account, Contact, ContactVerificationTransaction, Identifier, MobileNumberInput, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
+import type { Account, Identifier, MobileNumberInput, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
 import { currentTransaction } from "./transaction";
 import type { AppRoute } from "./router";
 import { createPasskey, getPasskey, isWebAuthnAvailable } from "./webauthn/ceremony";
@@ -11,6 +11,7 @@ import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
 import { resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
 import { avatarFilePicker } from "./ui/file-picker";
+import { renderRegistrationEmailGate, type VerifiedRegistrationEmail } from "./registration-email";
 
 /** 只驻留于当前页面 Realm 的 CSRF capability。CSRF capability held only in this page realm. */
 let sessionCsrfToken: string | undefined;
@@ -23,7 +24,10 @@ export async function renderPage(route: AppRoute, main: HTMLElement, api: Identi
   const t = (key: MessageKey) => translate(context.locale, key);
   replace(main, statePanel("loading", "…", t("signingIn")));
   try {
-    if (route === "/register") renderRegister(main, api, signal, t, context.locale);
+    if (route === "/register") renderRegistrationEmailGate(main, api, signal, t, (proof) => {
+      rememberCsrf(proof.csrfToken);
+      renderRegister(main, api, signal, t, context.locale, proof);
+    });
     else if (route === "/recovery") renderRecovery(main, api, signal, t);
     else if (route === "/passkey/enroll") await renderPasskeyEnrollment(main, api, signal, t);
     else if (route === "/recovery-codes/rotate") renderRecoveryCodeRotation(main, api, signal, t);
@@ -71,7 +75,7 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
 }
 
 /** 呈现包含社区资料、密码与可选 Passkey 的注册页。Renders registration with community profile, password, and optional passkey. */
-function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, locale: Locale): void {
+function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, locale: Locale, verifiedEmail: VerifiedRegistrationEmail): void {
   const message = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
   const passwordButton = el("button", { className: "button button--primary", attrs: { type: "submit", value: "password", name: "method" } }, iconLabel("lock", t("registerPassword")));
   const passkeyButton = el("button", { className: "button button--secondary", attrs: { type: "submit", value: "passkey", name: "method", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("registerPasskey")));
@@ -79,12 +83,14 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     label: t("avatar"), choose: t("chooseAvatar"), empty: t("noAvatarSelected"),
     processing: t("avatarProcessing"), ready: t("avatarReady"), failed: t("avatarProcessingFailed"),
     previewAlt: t("avatarPreviewAlt"),
+    change: t("changeAvatar"), remove: t("removeAvatar"),
   }, { signal });
   const callingCode = el("select", { attrs: { name: "calling_code", "aria-label": t("countryCode") } },
     ...[["+86", "🇨🇳 +86"], ["+81", "🇯🇵 +81"], ["+1", "🇺🇸/🇨🇦 +1"], ["+44", "🇬🇧 +44"], ["+65", "🇸🇬 +65"], ["+852", "🇭🇰 +852"]].map(([value, label]) => el("option", { attrs: { value } }, label)));
   const form = el("form", { className: "moe-glass auth-card register-form" },
     el("div", { className: "field-grid" }, field(t("displayName"), "display_name", { required: true, autocomplete: "name", placeholder: "Klee ✦", icon: "user" }), field(t("username"), "username", { required: true, autocomplete: "username", placeholder: "klee", icon: "user", pattern: "[a-zA-Z0-9_]{3,32}" })),
-    field(t("email"), "email", { required: true, autocomplete: "email", type: "email", placeholder: "klee@example.com", icon: "mail" }),
+    field(t("email"), "email", { required: true, autocomplete: "email", type: "email", value: verifiedEmail.email, readonly: true, icon: "mail" }),
+    el("p", { className: "hint" }, t("signupEmailVerified")),
     avatarPicker, el("p", { className: "hint" }, t("addAvatar")),
     el("div", { className: "field-grid" }, field(t("statusLabel"), "status_message", { placeholder: t("statusPlaceholder"), icon: "star" }), field(t("oshiLabel"), "favorite_character", { placeholder: "Klee", icon: "star" })),
     field(t("interestsLabel"), "interests", { placeholder: "ACG, Linux, VOCALOID", icon: "star" }),
@@ -94,6 +100,11 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
   form.addEventListener("submit", async (event) => {
     event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; const method = submitter?.value === "passkey" ? "passkey" : "password";
     const data = new FormData(form); const password = String(data.get("password") ?? "");
+    if (Date.parse(verifiedEmail.expiresAt) <= Date.now()) {
+      avatarPicker.dispose();
+      renderRegistrationEmailGate(main, api, signal, t, (proof) => { rememberCsrf(proof.csrfToken); renderRegister(main, api, signal, t, locale, proof); });
+      return;
+    }
     if (method === "password" && [...password].length < 15) { replace(message, statePanel("error", t("registerFailed"), t("passwordHint"))); return; }
     if (method === "password" && password !== String(data.get("password_confirm") ?? "")) { replace(message, statePanel("error", t("registerFailed"), t("mismatch"))); return; }
     setButtonBusy(submitter ?? passwordButton, true, method === "passkey" ? t("waitingPasskey") : t("registering"));
@@ -102,15 +113,15 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     const avatar = await avatarPicker.processedFile();
     const mobile = mobileFromForm(data);
     const profile = { ...(optionalString(data, "status_message") ? { status_message: optionalString(data, "status_message") } : {}), ...(optionalString(data, "favorite_character") ? { favorite_character: optionalString(data, "favorite_character") } : {}), ...(optionalString(data, "interests") ? { interests: optionalString(data, "interests")?.split(",").map((value) => value.trim()).filter(Boolean) } : {}) };
-    const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: String(data.get("email") ?? "").trim(), locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
+    const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: verifiedEmail.email, email_verification_token: verifiedEmail.token, locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
     try {
-      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishAuthentication(main, result, t)); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); avatarPicker.dispose(); if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
+      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); replace(main, statePanel("loading", t("registering"), t("avatarProcessing"))); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); avatarPicker.dispose(); if (!signal.aborted) finishAuthentication(main, result, t); if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
       const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel(t) };
       const transaction = await api.startRegistration(input, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(transaction.public_key, signal);
       const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });
-      // 验证步骤与恢复代码必须先于次要上传或导航呈现。Verification and recovery codes render before secondary uploads or navigation.
+      // Recovery codes must remain visible before secondary avatar uploads.
       rememberCsrf(result.csrf_token);
-      await renderRegistrationEmailVerification(main, api, result.account, result.csrf_token, signal, t, () => finishRegistration(main, result, t), result.recovery_codes, result.next_uri);
+      finishRegistration(main, result, t);
       const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
       avatarPicker.dispose();
       if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
@@ -222,68 +233,6 @@ export interface ContactVerificationCompletionAttempt {
 export function contactVerificationCompletionAttempt(previous: ContactVerificationCompletionAttempt | undefined, transactionId: string, code: string, createKey: () => string = createIdempotencyKey): ContactVerificationCompletionAttempt {
   if (previous?.transactionId === transactionId && previous.code === code) return previous;
   return { transactionId, code, idempotencyKey: createKey() };
-}
-
-/** 把注册后邮箱验证呈现为必经状态，重发失败时仍保留上一个有效事务和恢复代码。Renders post-registration email verification as a required state, retaining the prior transaction and recovery codes when resend fails. */
-async function renderRegistrationEmailVerification(main: HTMLElement, api: IdentityApiClient, account: Account, csrfToken: string, signal: AbortSignal, t: (key: MessageKey) => string, onVerified: () => void, recoveryCodes?: string[], nextUri?: string): Promise<void> {
-  let email: Pick<Identifier, "identifier_id" | "value" | "verification_state"> | Pick<Contact, "contact_id" | "value" | "verification_state"> | undefined = registrationEmailIdentifier(account);
-  if (!email) {
-    try {
-      const contacts = await api.listContacts(signal);
-      email = contacts.find((contact) => contact.kind === "email" && contact.is_primary) ?? contacts.find((contact) => contact.kind === "email");
-    } catch (error) {
-      replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), statePanel("error", t("codeSendFailed"), errorMessage(error), accountLink(t)), ...(recoveryCodes?.length ? [recoveryCodePanel(recoveryCodes, t, nextUri, false)] : []));
-      return;
-    }
-  }
-  if (!email) {
-    replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), statePanel("error", t("codeSendFailed"), t("codeInvalid"), accountLink(t)), ...(recoveryCodes?.length ? [recoveryCodePanel(recoveryCodes, t, nextUri, false)] : []));
-    return;
-  }
-  if (email.verification_state === "verified") { onVerified(); return; }
-  const contactId = "identifier_id" in email ? email.identifier_id : email.contact_id;
-  let transaction: ContactVerificationTransaction | undefined;
-  let completionAttempt: ContactVerificationCompletionAttempt | undefined;
-  const status = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
-  const confirm = el("button", { className: "button button--primary", attrs: { type: "submit", disabled: true } }, iconLabel("mail", t("confirmEmail")));
-  const resend = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("resendCode"));
-  const codeField = field(t("verificationCode"), "code", { required: true, autocomplete: "one-time-code", pattern: "[0-9]{8}", minlength: "8", placeholder: "12345678", icon: "lock" });
-  const codeInput = codeField.querySelector<HTMLInputElement>("input");
-  if (codeInput) { codeInput.inputMode = "numeric"; codeInput.maxLength = 8; }
-  const form = el("form", { className: "moe-glass auth-card verification-card" },
-    codeField,
-    el("div", { className: "button-pair" }, confirm, resend), status);
-  const recovery = recoveryCodes?.length ? recoveryCodePanel(recoveryCodes, t, nextUri, false) : undefined;
-  replace(main, pageHeading("VERIFY_EMAIL", t("verifyEmailTitle"), t("verifyEmailIntro")), el("div", { className: "verification-layout" }, form, recovery));
-
-  const send = async () => {
-    setButtonBusy(resend, true, t("sendingCode"));
-    try {
-      const next = await api.startContactVerification(contactId, { csrfToken, idempotencyKey: createIdempotencyKey(), signal });
-      if (transaction?.transaction_id !== next.transaction_id) completionAttempt = undefined;
-      transaction = next; confirm.disabled = false;
-      replace(status, statePanel("success", t("codeSent"), next.delivery_hint));
-    } catch (error) {
-      replace(status, statePanel("error", t("codeSendFailed"), errorMessage(error)));
-    } finally { setButtonBusy(resend, false); }
-  };
-  resend.addEventListener("click", () => { void send(); });
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!transaction) { await send(); return; }
-    setButtonBusy(confirm, true, t("verifyingCode"));
-    try {
-      const code = String(new FormData(form).get("code") ?? "").trim();
-      completionAttempt = contactVerificationCompletionAttempt(completionAttempt, transaction.transaction_id, code);
-      await api.completeContactVerification(contactId, transaction.transaction_id, code, { csrfToken, idempotencyKey: completionAttempt.idempotencyKey, signal });
-      if (!recoveryCodes?.length) { onVerified(); return; }
-      replace(main, pageHeading("EMAIL_VERIFIED", t("emailVerified"), t("codesIntro")), statePanel("success", t("emailVerified"), t("signedIn")), recoveryCodePanel(recoveryCodes, t, nextUri));
-    } catch (error) {
-      replace(status, statePanel("error", t("codeInvalid"), errorMessage(error)));
-      setButtonBusy(confirm, false);
-    }
-  });
-  await send();
 }
 
 /** 每个 API 客户端共享一个页面内再认证协调器。One in-page step-up coordinator is shared per API client. */

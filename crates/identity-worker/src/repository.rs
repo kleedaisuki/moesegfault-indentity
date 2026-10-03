@@ -343,6 +343,7 @@ pub async fn commit_registration(
     email_identifier_id: &str,
     email: &str,
     email_normalized: &str,
+    email_proof: &crate::registration_email::EmailProof,
     mobile_identifier_id: Option<&str>,
     mobile_calling_code: Option<&str>,
     mobile_national_number: Option<&str>,
@@ -378,7 +379,7 @@ pub async fn commit_registration(
             .bind(&[text(principal_id),text(locale),integer(now)])?,
         db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,verified_at,created_at,updated_at) VALUES(?1,?2,'username',?3,?3,1,'verified',?4,?4,?4)")
             .bind(&[text(identifier_id), text(principal_id), text(username), integer(now)])?,
-        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,created_at,updated_at) VALUES(?1,?2,'email',?3,?4,1,'unverified',?5,?5)")
+        db.prepare("INSERT INTO identifiers(identifier_id,principal_id,kind,value,normalized_value,is_primary,verification_state,verified_at,created_at,updated_at) VALUES(?1,?2,'email',?3,?4,1,'verified',?5,?5,?5)")
             .bind(&[text(email_identifier_id),text(principal_id),text(email),text(email_normalized),integer(now)])?,
         db.prepare("INSERT INTO authenticators(authenticator_id,principal_id,credential_id,public_key_cose,sign_count,aaguid,transports_json,backup_eligible,backup_state,label,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,0,0,?8,?9)")
             .bind(&[text(authenticator_id),text(principal_id),blob(credential_id),blob(public_key_cose),integer(counter as i64),blob(aaguid),text(transports_json),text(label),integer(now)])?,
@@ -412,6 +413,7 @@ pub async fn commit_registration(
                 .bind(&[text(&code.recovery_code_id),text(code_set_id),text(&code.public_id),blob(&code.secret_digest),integer(now)])?,
         );
     }
+    statements.push(email_proof.consume(db, principal_id, now)?);
     db.batch(statements).await?;
     Ok(())
 }

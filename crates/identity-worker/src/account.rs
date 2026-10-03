@@ -1104,11 +1104,34 @@ pub async fn complete_contact_verification(
 /// 投递有界数量的到期验证邮件；单条失败不会阻断其他条目。
 /// Delivers a bounded number of due verification emails without head-of-line blocking.
 pub(crate) async fn drain_email_verification_outbox(env: &Env, limit: usize) -> Result<()> {
+    drain_email_queue(env, limit, EmailQueue::CONTACT).await?;
+    drain_email_queue(env, limit, EmailQueue::REGISTRATION).await
+}
+
+/// Fixed internal SQL identifiers keep both mail workflows on the same delivery engine.
+#[derive(Clone, Copy)]
+pub(crate) struct EmailQueue {
+    outbox: &'static str,
+    transactions: &'static str,
+}
+
+impl EmailQueue {
+    pub(crate) const CONTACT: Self = Self {
+        outbox: "email_verification_outbox",
+        transactions: "identifier_verification_transactions",
+    };
+    pub(crate) const REGISTRATION: Self = Self {
+        outbox: "registration_email_outbox",
+        transactions: "registration_email_transactions",
+    };
+}
+
+async fn drain_email_queue(env: &Env, limit: usize, queue: EmailQueue) -> Result<()> {
     let db = env.d1("DB")?;
     let now = now_seconds();
-    retire_inactive_email_jobs(&db, now).await?;
+    retire_inactive_email_jobs(&db, now, queue).await?;
     let rows = db
-        .prepare("SELECT outbox_id FROM email_verification_outbox WHERE (state='pending' AND next_attempt_at<=?1) OR (state='sending' AND lease_expires_at<=?1) ORDER BY next_attempt_at,outbox_id LIMIT ?2")
+        .prepare(format!("SELECT outbox_id FROM {outbox} WHERE (state='pending' AND next_attempt_at<=?1) OR (state='sending' AND lease_expires_at<=?1) ORDER BY next_attempt_at,outbox_id LIMIT ?2",outbox=queue.outbox))
         .bind(&[JsValue::from_f64(now as f64),JsValue::from_f64(limit.min(50) as f64)])?
         .all()
         .await?
@@ -1116,7 +1139,7 @@ pub(crate) async fn drain_email_verification_outbox(env: &Env, limit: usize) -> 
     for row in rows {
         let correlation = format!("scheduled:{}", row.outbox_id);
         if let Err(error) =
-            drain_email_outbox_id(env, &row.outbox_id, now_seconds(), &correlation).await
+            drain_email_job(env, &row.outbox_id, now_seconds(), &correlation, queue).await
         {
             console_error!(
                 "email_verification_outbox_item_failed correlation_id={correlation} outbox_id={} error={error}",
@@ -1127,15 +1150,18 @@ pub(crate) async fn drain_email_verification_outbox(env: &Env, limit: usize) -> 
     Ok(())
 }
 
-async fn retire_inactive_email_jobs(db: &D1Database, now: i64) -> Result<()> {
-    db.batch(vec![
-        db.prepare("UPDATE identifier_verification_transactions SET state='expired',consumed_at=?1 WHERE state='pending' AND expires_at<=?1")
+async fn retire_inactive_email_jobs(db: &D1Database, now: i64, queue: EmailQueue) -> Result<()> {
+    let mut statements = vec![
+        db.prepare(format!("UPDATE {transactions} SET state='expired',consumed_at=?1 WHERE state='pending' AND expires_at<=?1",transactions=queue.transactions))
             .bind(&[JsValue::from_f64(now as f64)])?,
-        db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?1 WHERE verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=identifiers.identifier_id AND state='pending')")
-            .bind(&[JsValue::from_f64(now as f64)])?,
-        db.prepare("UPDATE email_verification_outbox SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code='transaction_inactive' WHERE state IN ('pending','sending') AND (attempt_count>=10 OR NOT EXISTS(SELECT 1 FROM identifier_verification_transactions t WHERE t.transaction_id=email_verification_outbox.transaction_id AND t.state='pending' AND t.expires_at>?1))")
-            .bind(&[JsValue::from_f64(now as f64)])?,
-    ]).await?;
+    ];
+    if queue.outbox == EmailQueue::CONTACT.outbox {
+        statements.push(db.prepare("UPDATE identifiers SET verification_state='unverified',updated_at=?1 WHERE verification_state='pending' AND NOT EXISTS(SELECT 1 FROM identifier_verification_transactions WHERE identifier_id=identifiers.identifier_id AND state='pending')")
+            .bind(&[JsValue::from_f64(now as f64)])?);
+    }
+    statements.push(db.prepare(format!("UPDATE {outbox} SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code='transaction_inactive' WHERE state IN ('pending','sending') AND (attempt_count>=10 OR NOT EXISTS(SELECT 1 FROM {transactions} t WHERE t.transaction_id={outbox}.transaction_id AND t.state='pending' AND t.expires_at>?1))",outbox=queue.outbox,transactions=queue.transactions))
+            .bind(&[JsValue::from_f64(now as f64)])?);
+    db.batch(statements).await?;
     Ok(())
 }
 
@@ -1145,15 +1171,26 @@ async fn drain_email_outbox_id(
     now: i64,
     correlation: &str,
 ) -> Result<()> {
+    drain_email_job(env, outbox_id, now, correlation, EmailQueue::CONTACT).await
+}
+
+/// Delivers a committed job using the same lease, retry, encryption, and provider contract.
+pub(crate) async fn drain_email_job(
+    env: &Env,
+    outbox_id: &str,
+    now: i64,
+    correlation: &str,
+    queue: EmailQueue,
+) -> Result<()> {
     let db = env.d1("DB")?;
-    retire_inactive_email_jobs(&db, now).await?;
+    retire_inactive_email_jobs(&db, now, queue).await?;
     let lease_expires_at = now + 60;
-    let claimed = db.prepare("UPDATE email_verification_outbox SET state='sending',attempt_count=attempt_count+1,lease_expires_at=?3 WHERE outbox_id=?1 AND attempt_count<10 AND ((state='pending' AND next_attempt_at<=?2) OR (state='sending' AND lease_expires_at<=?2)) AND EXISTS(SELECT 1 FROM identifier_verification_transactions t WHERE t.transaction_id=email_verification_outbox.transaction_id AND t.state='pending' AND t.expires_at>?2)")
+    let claimed = db.prepare(format!("UPDATE {outbox} SET state='sending',attempt_count=attempt_count+1,lease_expires_at=?3 WHERE outbox_id=?1 AND attempt_count<10 AND ((state='pending' AND next_attempt_at<=?2) OR (state='sending' AND lease_expires_at<=?2)) AND EXISTS(SELECT 1 FROM {transactions} t WHERE t.transaction_id={outbox}.transaction_id AND t.state='pending' AND t.expires_at>?2)",outbox=queue.outbox,transactions=queue.transactions))
         .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(now as f64),JsValue::from_f64(lease_expires_at as f64)])?.run().await?;
     if !d1_result_changed(&claimed)? {
         return Ok(());
     }
-    let Some(row) = db.prepare("SELECT o.transaction_id,o.payload_ciphertext,o.payload_nonce,o.attempt_count,t.expires_at FROM email_verification_outbox o JOIN identifier_verification_transactions t ON t.transaction_id=o.transaction_id WHERE o.outbox_id=?1 AND o.state='sending' AND o.lease_expires_at=?2")
+    let Some(row) = db.prepare(format!("SELECT o.transaction_id,o.payload_ciphertext,o.payload_nonce,o.attempt_count,t.expires_at FROM {outbox} o JOIN {transactions} t ON t.transaction_id=o.transaction_id WHERE o.outbox_id=?1 AND o.state='sending' AND o.lease_expires_at=?2",outbox=queue.outbox,transactions=queue.transactions))
         .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64)])?.first::<ClaimedEmailOutboxRow>(None).await? else {
         return Ok(());
     };
@@ -1174,10 +1211,10 @@ async fn drain_email_outbox_id(
                 &db,
                 outbox_id,
                 lease_expires_at,
-                row.attempt_count,
-                row.expires_at,
+                &row,
                 now,
                 "payload_unavailable",
+                queue,
             )
             .await?;
             return Err(error);
@@ -1195,10 +1232,10 @@ async fn drain_email_outbox_id(
                 &db,
                 outbox_id,
                 lease_expires_at,
-                row.attempt_count,
-                row.expires_at,
+                &row,
                 now,
                 "configuration_unavailable",
+                queue,
             )
             .await?;
             return Err(error);
@@ -1220,10 +1257,10 @@ async fn drain_email_outbox_id(
                 &db,
                 outbox_id,
                 lease_expires_at,
-                row.attempt_count,
-                row.expires_at,
+                &row,
                 now,
                 "configuration_unavailable",
+                queue,
             )
             .await?;
             return Err(error);
@@ -1231,7 +1268,7 @@ async fn drain_email_outbox_id(
     };
     match email.send_with_builder(&message).await {
         Ok(_) => {
-            db.prepare("UPDATE email_verification_outbox SET state='delivered',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,delivered_at=?3,last_error_code=NULL WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+            db.prepare(format!("UPDATE {outbox} SET state='delivered',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,delivered_at=?3,last_error_code=NULL WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2",outbox=queue.outbox))
                 .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_f64(now_seconds() as f64)])?.run().await?;
             console_log!(
                 "email_verification_delivery_succeeded correlation_id={correlation} outbox_id={outbox_id}"
@@ -1242,10 +1279,10 @@ async fn drain_email_outbox_id(
                 &db,
                 outbox_id,
                 lease_expires_at,
-                row.attempt_count,
-                row.expires_at,
+                &row,
                 now,
                 "provider_unavailable",
+                queue,
             )
             .await?;
             console_error!(
@@ -1260,20 +1297,22 @@ async fn reschedule_email_job(
     db: &D1Database,
     outbox_id: &str,
     lease_expires_at: i64,
-    attempt_count: i64,
-    transaction_expires_at: i64,
+    row: &ClaimedEmailOutboxRow,
     now: i64,
     error_code: &str,
+    queue: EmailQueue,
 ) -> Result<()> {
+    let attempt_count = row.attempt_count;
+    let transaction_expires_at = row.expires_at;
     if attempt_count >= 10 || transaction_expires_at <= now {
-        db.prepare("UPDATE email_verification_outbox SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code=?3 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+        db.prepare(format!("UPDATE {outbox} SET state='dead',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,last_error_code=?3 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2",outbox=queue.outbox))
             .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_str(error_code)])?.run().await?;
         return Ok(());
     }
     let exponent = u32::try_from((attempt_count - 1).clamp(0, 5)).unwrap_or(0);
     let delay = (15_i64 * 2_i64.pow(exponent)).min(300);
     let next_attempt_at = (now + delay).min(transaction_expires_at);
-    db.prepare("UPDATE email_verification_outbox SET state='pending',next_attempt_at=?3,lease_expires_at=NULL,last_error_code=?4 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2")
+    db.prepare(format!("UPDATE {outbox} SET state='pending',next_attempt_at=?3,lease_expires_at=NULL,last_error_code=?4 WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2",outbox=queue.outbox))
         .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_f64(next_attempt_at as f64),JsValue::from_str(error_code)])?.run().await?;
     Ok(())
 }
