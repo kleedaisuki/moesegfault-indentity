@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LOCALES } from "@moesegfault/frontend-shared";
 import { translator } from "../i18n";
 import type { AccountSession } from "../session";
@@ -16,7 +16,7 @@ const authenticated: AccountSession = {
 
 describe("Account shell authentication state", () => {
   it.each(["pending", "anonymous"] as const)("hides auth-only controls while %s but retains the public shell", (status) => {
-    const shell = createShell(translator("en"), true, "/logout");
+    const shell = createShell(translator("en"), true, async () => undefined);
     shell.setSession({ status });
     expect(shell.root.querySelector(".brand")).not.toBeNull();
     expect(shell.controls).toHaveLength(2);
@@ -25,8 +25,23 @@ describe("Account shell authentication state", () => {
     expect(shell.root.textContent).not.toContain("…");
   });
 
+  it("awaits the sign-out command and prevents duplicate clicks without navigating to an OIDC URL", async () => {
+    let complete!: () => void;
+    const command = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const shell = createShell(translator("en"), false, command);
+    shell.setSession(authenticated);
+    const button = shell.root.querySelector<HTMLButtonElement>(".user-chip")!;
+    expect(button.tagName).toBe("BUTTON");
+    expect(button.hasAttribute("href")).toBe(false);
+    button.click(); button.click();
+    expect(command).toHaveBeenCalledOnce();
+    expect(button.disabled).toBe(true);
+    complete();
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+  });
+
   it("reveals accessible navigation and a named user only after authentication", () => {
-    const shell = createShell(translator("en"), true, "/logout");
+    const shell = createShell(translator("en"), true, async () => undefined);
     shell.setSession(authenticated);
     for (const selector of [".side-nav", ".bottom-nav", ".user-chip", ".in-app-banner"]) expect(shell.root.querySelector(selector)?.hasAttribute("hidden")).toBe(false);
     expect(shell.root.querySelector(".side-nav")?.getAttribute("aria-label")).toBe("Account");

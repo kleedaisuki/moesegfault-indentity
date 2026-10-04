@@ -9,6 +9,7 @@ import { el, icon, replace } from "./ui/dom";
 import { createShell } from "./ui/shell";
 import { localeOptions } from "./ui/locale-select";
 import { createAnonymousLanding } from "./ui/anonymous-landing";
+import { signOutCurrentSession } from "./sign-out";
 import { authenticatedSession, type AccountSession } from "./session";
 
 const mount = document.querySelector<HTMLElement>("#app");
@@ -22,7 +23,7 @@ let t = translator(locale);
 applyTheme(theme, document.documentElement, media);
 document.documentElement.lang = locale;
 
-const shell = createShell(t, isInAppBrowser(navigator.userAgent), logoutUrl());
+const shell = createShell(t, isInAppBrowser(navigator.userAgent), signOut);
 shell.root.dataset.session = "pending";
 let session: AccountSession = { status: "pending" };
 let active: AbortController | undefined;
@@ -101,8 +102,18 @@ export function loginUrl(route: ReturnType<typeof resolveRoute> = resolveRoute(l
   return accountLoginUrl(location, route);
 }
 
-/** 退出端点使用允许的账号站回跳 URI。Logout endpoint uses an allowlisted Account post-logout URI. */
-function logoutUrl(): string { const identity = resolveIdentityOrigin(location, import.meta.env.VITE_IDENTITY_API_ORIGIN); const login = new URL("/login", resolveLoginOrigin(location)).href; return `${identity}/v1/oidc/logout-requests?post_logout_redirect_uri=${encodeURIComponent(login)}`; }
+/** Revokes only this first-party Identity session before navigating to the paired Login page. */
+async function signOut(): Promise<void> {
+  if (session.status !== "authenticated") return;
+  const csrfToken = session.csrfToken;
+  try {
+    await signOutCurrentSession(api, csrfToken);
+    becomeAnonymous();
+    location.assign(new URL("/login", resolveLoginOrigin(location)).href);
+  } catch (error) {
+    renderFailure(error);
+  }
+}
 
 installRouter(() => void renderCurrent());
 void renderCurrent();

@@ -72,3 +72,14 @@ session as belonging to the new Account principal.
 
 Reference: [MDN CSP frame-src](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-src)
 distinguishes the parent's allowed frame destinations from the child's allowed ancestors.
+
+## First-party sign-out
+
+Account is not an OAuth relying party and does not possess an ID token. Its sign-out control
+therefore uses `listSelfSessions` followed by `revokeSelfSession` for the active `is_current`
+session, with the in-memory CSRF proof and a fresh idempotency key. The existing Identity
+handler clears its session cookie when that current session is revoked. Only after success
+(or `401`, meaning the session is already absent) does Account clear its local state and
+navigate to the paired Login page. Other-device sessions and Subscribe's independent BFF
+session are not revoked. Failures remain visible and retryable; missing current-session data
+never falls back to revoking every device. RP-initiated OIDC logout is not used by this client.

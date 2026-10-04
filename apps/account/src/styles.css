@@ -111,3 +111,7 @@ input, select, textarea { width: 100%; min-height: 2.85rem; padding: .62rem .75r
 /* The embedded subscription viewer owns its content; keep the containing page responsive. */
 .subscription-viewer { width: 100%; min-height: 38rem; border: 1px solid var(--border); border-radius: 1rem; margin-top: 1rem; background: var(--surface); }
 .subscription-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+
+/* The authenticated user chip is a command, not an OAuth navigation link. */
+button.user-chip { font: inherit; text-align: start; cursor: pointer; width: 100%; }
+button.user-chip:disabled { cursor: progress; }

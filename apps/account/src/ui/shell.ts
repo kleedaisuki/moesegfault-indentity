@@ -9,7 +9,7 @@ export interface Shell { root: HTMLElement; main: HTMLElement; controls: HTMLEle
 const nav: ReadonlyArray<[Route, MessageKey, string]> = [["/", "overview", "sparkle"], ["/profile", "profile", "user"], ["/security", "security", "shield"], ["/sessions", "sessions", "devices"], ["/apps", "apps", "apps"], ["/subscriptions", "subscriptions", "apps"]];
 
 /** 创建桌面侧栏与移动底栏共享语义的导航外壳。Creates a shell whose desktop rail and mobile bar share navigation semantics. */
-export function createShell(t: (key: MessageKey) => string, inApp: boolean, logoutUrl: string): Shell {
+export function createShell(t: (key: MessageKey) => string, inApp: boolean, signOut: () => Promise<void>): Shell {
   const links = nav.map(([href, label, iconName]) => el("a", { className: "nav-link", attrs: { href }, dataset: { route: href } }, icon(iconName), el("span", {}, t(label))));
   const userName = el("strong");
   const avatar = el("img", { className: "mini-avatar", attrs: { alt: "", src: "/icons/logo.svg" } });
@@ -17,7 +17,14 @@ export function createShell(t: (key: MessageKey) => string, inApp: boolean, logo
   const mobileControls = el("div", { className: "header-controls" });
   const desktopControls = el("div", { className: "header-controls desktop-controls" });
   const sideNav = el("nav", { className: "side-nav", attrs: { "aria-label": t("account"), hidden: true } }, ...links);
-  const userChip = el("a", { className: "user-chip", attrs: { href: logoutUrl, hidden: true } }, avatar, el("span", {}, userName, el("small", {}, t("signOut"))), icon("logout"));
+  const userChip = el("button", { className: "user-chip", attrs: { type: "button", hidden: true } }, avatar, el("span", {}, userName, el("small", {}, t("signOut"))), icon("logout"));
+  userChip.addEventListener("click", async () => {
+    if (userChip.disabled) return;
+    userChip.disabled = true;
+    userChip.setAttribute("aria-busy", "true");
+    try { await signOut(); }
+    finally { userChip.disabled = false; userChip.removeAttribute("aria-busy"); }
+  });
   const banner = inApp ? inAppBanner(t) : undefined;
   banner?.setAttribute("hidden", "");
   const bottomNav = el("nav", { className: "bottom-nav", attrs: { "aria-label": t("account"), hidden: true } }, ...links.map((link) => link.cloneNode(true) as HTMLAnchorElement));
