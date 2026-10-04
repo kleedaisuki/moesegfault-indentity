@@ -50,6 +50,8 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
   let csrfToken = "";
   let busy: "sending" | "confirming" | undefined;
   let locked = false;
+  // Expiry is terminal for this page's OAuth request; email retries must not revive it.
+  let authorizationExpired = false;
   let resendAt = 0;
   let cooldown: ReturnType<typeof setTimeout> | undefined;
 
@@ -57,14 +59,14 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
   const sync = (): void => {
     emailInput.readOnly = Boolean(transaction || proof || busy);
     emailInput.disabled = locked;
-    codeInput.disabled = locked || !transaction || Boolean(proof);
+    codeInput.disabled = locked || authorizationExpired || !transaction || Boolean(proof);
     codePanel.hidden = !transaction || Boolean(proof);
     change.hidden = !transaction && !proof;
-    change.disabled = locked || Boolean(busy);
+    change.disabled = locked || authorizationExpired || Boolean(busy);
     send.hidden = Boolean(proof);
-    send.disabled = locked || Boolean(busy) || resendAt > Date.now();
+    send.disabled = locked || authorizationExpired || Boolean(busy) || resendAt > Date.now();
     send.textContent = busy === "sending" ? t("sendingCode") : transaction ? t("resendCode") : t("sendSignupCode");
-    confirm.disabled = locked || Boolean(busy);
+    confirm.disabled = locked || authorizationExpired || Boolean(busy);
     confirm.textContent = busy === "confirming" ? t("verifyingCode") : t("confirmEmail");
   };
   const waitToResend = (until: number): void => {
@@ -73,12 +75,18 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
   };
   const showError = (error: unknown, title: MessageKey): void => {
     const code = error instanceof ApiError ? error.problem?.error_code : undefined;
+    if (code === "authorization_transaction_expired") {
+      authorizationExpired = true;
+      proof = undefined;
+      replace(status, statePanel("error", t("signupAuthorizationExpiredTitle"), t("signupAuthorizationExpired")));
+      return;
+    }
     const key = code === "verification_failed" ? "signupWrongCode" : code === "invalid_transaction" ? "signupCodeExpired" : code === "rate_limited" ? "signupRateLimited" : undefined;
     const message = key ? t(key) : error instanceof ApiError ? error.problem?.detail ?? error.message : t(title);
     replace(status, statePanel("error", t(title), message));
   };
   const sendCode = async (): Promise<void> => {
-    if (locked || busy || signal.aborted || resendAt > Date.now() || !emailInput.reportValidity()) return;
+    if (locked || authorizationExpired || busy || signal.aborted || resendAt > Date.now() || !emailInput.reportValidity()) return;
     busy = "sending"; sync();
     try {
       const nextDestination = emailInput.value.trim();
@@ -94,7 +102,7 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
     if (transaction && !signal.aborted) codeInput.focus();
   };
   const confirmCode = async (): Promise<void> => {
-    if (!transaction || locked || busy || signal.aborted || !codeInput.reportValidity()) return;
+    if (!transaction || locked || authorizationExpired || busy || signal.aborted || !codeInput.reportValidity()) return;
     busy = "confirming"; sync();
     try {
       const result = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal, authorizationContext());
@@ -108,6 +116,7 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
   confirm.addEventListener("click", () => { void confirmCode(); });
   codeInput.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void confirmCode(); } });
   change.addEventListener("click", () => {
+    if (authorizationExpired) return;
     proof = undefined; transaction = undefined; codeInput.value = ""; status.replaceChildren(); sync(); emailInput.focus();
   });
   signal.addEventListener("abort", () => { clearTimeout(cooldown); proof = undefined; }, { once: true });

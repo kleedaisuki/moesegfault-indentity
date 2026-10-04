@@ -10,6 +10,7 @@ export { normalizeLocale };
 const messages = {
   "zh-CN": {
     signupEmailIntro: "请使用能收到邮件的邮箱，在这里完成验证后即可创建账号。",
+    signupAuthorizationExpiredTitle: "登录请求已过期", signupAuthorizationExpired: "请返回发起登录的应用，重新开始登录或订阅。当前填写的资料会保留在此页面；重新发送验证码不能恢复这次请求。",
     signupProofExpired: "邮箱验证已过期，请重新验证。已填资料和头像预览会保留。",
     signupVerifyBeforeCreate: "资料已保留，请在邮箱栏完成验证码确认，再点击创建账号。",
     sendSignupCode: "发送验证码", changeSignupEmail: "换一个邮箱", signupCodeHint: "验证码 10 分钟内有效，60 秒后可重发。",
@@ -46,6 +47,7 @@ const messages = {
   },
   en: {
     signupEmailIntro: "Use an email you can access and verify it here before creating your account.",
+    signupAuthorizationExpiredTitle: "Sign-in request expired", signupAuthorizationExpired: "Return to the app and start sign-in or subscription again. Your entered details remain on this page; resending an email code cannot restore this request.",
     signupProofExpired: "Email verification expired. Verify again; your details and avatar preview are kept.",
     signupVerifyBeforeCreate: "Your details are kept. Confirm the code in the email section, then create your account.",
     sendSignupCode: "Send verification code", changeSignupEmail: "Use another email", signupCodeHint: "Code expires in 10 minutes. Resend after 60 seconds.",
@@ -81,6 +83,7 @@ const messages = {
     verifyEmailTitle: "Verify your email", verifyEmailIntro: "Your account is ready. Enter the eight-digit code from the email before continuing.", verificationCode: "8-digit verification code", confirmEmail: "Verify email", resendCode: "Resend code", sendingCode: "Sending verification code…", verifyingCode: "Verifying…", codeSent: "Verification code sent to", codeSendFailed: "The code could not be sent yet. You can retry.", codeInvalid: "Verification wasn't completed. Check the code or send a new one.", emailVerified: "Email verified!",
   },
   ja: {
+    signupAuthorizationExpiredTitle: "ログイン要求の期限が切れました", signupAuthorizationExpired: "元のアプリに戻り、ログインまたは購読をもう一度開始してください。入力内容はこのページに残っています。確認コードの再送信では、この要求を復元できません。",
     signupEmailIntro: "受信できるメールアドレスを使い、この欄で確認してからアカウントを作成してください。",
     signupProofExpired: "メール確認の期限が切れました。入力内容とアバタープレビューは保持されます。再確認してください。",
     signupVerifyBeforeCreate: "入力内容は保持されています。メール欄でコードを確認してからアカウントを作成してください。",

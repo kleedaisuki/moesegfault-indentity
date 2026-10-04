@@ -68,7 +68,7 @@ describe("inline registration email verification", () => {
   it.each(["start", "completion"] as const)("retains drafts and does not create an account when OAuth context expires at %s", async (operation) => {
     const fixture = await setup("expired-oauth");
     fillDraft(fixture.main);
-    const error = new ApiError(400, { type: "urn:test", title: "Expired transaction", status: 400, error_code: "invalid_transaction" });
+    const error = new ApiError(400, { type: "urn:test", title: "Expired transaction", status: 400, error_code: "authorization_transaction_expired" });
     if (operation === "start") {
       fixture.start.mockRejectedValueOnce(error);
       fixture.main.querySelector<HTMLButtonElement>(".registration-email__address button")!.click();
@@ -78,7 +78,10 @@ describe("inline registration email verification", () => {
       fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.value = "01234567";
       fixture.main.querySelector<HTMLButtonElement>(".registration-email__code button")!.click();
     }
-    await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toContain(translate("zh-CN", "signupCodeExpired")));
+    await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toContain(translate("zh-CN", "signupAuthorizationExpired")));
+    expect(fixture.main.querySelector<HTMLButtonElement>(".registration-email__address button")!.disabled).toBe(true);
+    expect(fixture.main.querySelector<HTMLButtonElement>(".registration-email__code button")!.disabled).toBe(true);
+    fixture.main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     expect(fixture.register).not.toHaveBeenCalled();
     expect(fixture.main.querySelector<HTMLInputElement>('[name="password"]')!.value).toBe("fixture-only-long-password");
     expect(fixture.main.querySelector<HTMLInputElement>('[name="username"]')!.value).toBe("klee_test");

@@ -1757,7 +1757,7 @@ components:
         instance: {type: string, format: uri-reference}
         error_code:
           type: string
-          enum: [invalid_request, authentication_failed, invalid_verification_code, password_policy_failed, invalid_transaction, transaction_expired, transaction_consumed, reauthentication_required, binding_conflict, identifier_conflict, idempotency_conflict, idempotency_in_progress, idempotency_result_unavailable, last_authenticator, last_authentication_method, invalid_redirect_uri, invalid_client, invalid_scope, registration_disabled, principal_suspended, rate_limited, not_found, internal_error, service_unavailable]
+          enum: [invalid_request, authentication_failed, invalid_verification_code, password_policy_failed, invalid_transaction, authorization_transaction_expired, transaction_expired, transaction_consumed, reauthentication_required, binding_conflict, identifier_conflict, idempotency_conflict, idempotency_in_progress, idempotency_result_unavailable, last_authenticator, last_authentication_method, invalid_redirect_uri, invalid_client, invalid_scope, registration_disabled, principal_suspended, rate_limited, not_found, internal_error, service_unavailable]
         correlation_id: {$ref: '#/components/schemas/UuidV7'}
         retry_after_seconds: {type: integer, minimum: 1}
         invalid_parameters:
