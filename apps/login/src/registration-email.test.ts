@@ -4,8 +4,9 @@ import { IdentityApiClient, ApiError } from "./api/client";
 import { translate } from "./i18n";
 import { createRegistrationEmailVerifier } from "./registration-email";
 import { renderPage } from "./pages";
+import { captureAndScrubTransaction } from "./transaction";
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("inline registration email verification", () => {
   it("shows the full profile, avatar and credential form immediately without sending mail", async () => {
@@ -42,6 +43,23 @@ describe("inline registration email verification", () => {
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(fixture.register).toHaveBeenCalledOnce());
     expect(fixture.register.mock.calls[0]?.[0]).toMatchObject({ username: "klee_test", email: "klee@example.test", email_verification_token: "fixture-proof" });
+    expect(fixture.register.mock.calls[0]?.[0]).not.toHaveProperty("authorization_transaction_id");
+    await vi.waitFor(() => expect(fixture.main.querySelector('[name="password"]')).toBeNull());
+    expect(fixture.main.textContent).toContain(translate("zh-CN", "signedIn"));
+    fixture.abort.abort();
+  });
+
+  it("continues OAuth password signup through the server's absolute issuer resume URI", async () => {
+    const resume = "https://identity-staging.moesegfault.dev/v1/oauth/authorization-transactions/oauth-fixture/resume";
+    const assign = vi.fn();
+    vi.stubGlobal("location", { hostname: "login-staging.moesegfault.dev", href: "https://login-staging.moesegfault.dev/register", assign });
+    const fixture = await setup("oauth-fixture", resume);
+    fillDraft(fixture.main);
+    await send(fixture.main); await confirm(fixture.main);
+    fixture.main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledWith(resume));
+    expect(fixture.register.mock.calls[0]?.[0]).toMatchObject({ authorization_transaction_id: "oauth-fixture", email_verification_token: "fixture-proof" });
+    expect(assign).toHaveBeenCalledOnce();
     fixture.abort.abort();
   });
 
@@ -104,12 +122,15 @@ describe("inline registration email verification", () => {
 });
 
 /** Creates a signup HTTP seam and renders the complete registration form. */
-async function setup() {
+async function setup(authorizationTransactionId?: string, authorizationResumeUri?: string) {
+  const url = new URL("https://login-staging.moesegfault.dev/login");
+  if (authorizationTransactionId) url.searchParams.set("tx", authorizationTransactionId);
+  captureAndScrubTransaction({ href: url.href, pathname: url.pathname, search: url.search, hash: "" } as Location, { state: null, replaceState: vi.fn() } as unknown as History);
   const abort = new AbortController();
   const main = document.createElement("main");
   const start = vi.fn<IdentityApiClient["startRegistrationEmail"]>(async () => ({ transaction_id: "tx", expires_at: new Date(Date.now()+600_000).toISOString(), resend_after: new Date(Date.now()+60_000).toISOString(), delivery_hint: "k***@example.test" }));
   const complete = vi.fn<IdentityApiClient["completeRegistrationEmail"]>(async () => ({ email_verification_token: "fixture-proof", expires_at: new Date(Date.now()+600_000).toISOString() }));
-  const register = vi.fn<IdentityApiClient["registerWithPassword"]>(async () => ({ account: { principal_id: "principal", lifecycle_state: "active", profile: { display_name: "Klee", locale: "zh-CN" }, identifiers: [], created_at: "now", updated_at: "now" }, session: {} as never, csrf_token: "session-csrf", csrf_expires_at: "later" }));
+  const register = vi.fn<IdentityApiClient["registerWithPassword"]>(async () => ({ account: { principal_id: "principal", lifecycle_state: "active", profile: { display_name: "Klee", locale: "zh-CN" }, identifiers: [], created_at: "now", updated_at: "now" }, session: {} as never, ...(authorizationResumeUri ? { authorization_resume_uri: authorizationResumeUri } : {}), csrf_token: "session-csrf", csrf_expires_at: "later" }));
   const api = { getBrowserContext: vi.fn(async () => ({ csrf_token: "browser-csrf" })), startRegistrationEmail: start, completeRegistrationEmail: complete, registerWithPassword: register } as unknown as IdentityApiClient;
   await renderPage("/register", main, api, abort.signal, { locale: "zh-CN" });
   return { main, api, start, complete, register, abort, signal: abort.signal };

@@ -128,7 +128,19 @@ function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: Abort
     const profile = { ...(optionalString(data, "status_message") ? { status_message: optionalString(data, "status_message") } : {}), ...(optionalString(data, "favorite_character") ? { favorite_character: optionalString(data, "favorite_character") } : {}), ...(optionalString(data, "interests") ? { interests: optionalString(data, "interests")?.split(",").map((value) => value.trim()).filter(Boolean) } : {}) };
     const common = { username: String(data.get("username") ?? "").trim(), display_name: String(data.get("display_name") ?? "").trim(), email: verifiedEmail.email, email_verification_token: verifiedEmail.token, locale, ...(mobile ? { mobile } : {}), ...(Object.keys(profile).length ? { profile } : {}) };
     try {
-      if (method === "password") { const result = await api.registerWithPassword({ ...common, password }, await requireBrowserCsrf(api, signal), signal); rememberCsrf(result.csrf_token); replace(main, statePanel("loading", t("registering"), t("avatarProcessing"))); const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal); avatarPicker.dispose(); if (!signal.aborted) finishAuthentication(main, result, t); if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed"))); return; }
+      if (method === "password") {
+        // Internal Login routing preserves this page-realm handle without putting it back in URLs.
+        // Passkey registration has a separate contract and does not accept this optional field.
+        const authorizationTransactionId = currentTransaction();
+        const result = await api.registerWithPassword({ ...common, password, ...(authorizationTransactionId ? { authorization_transaction_id: authorizationTransactionId } : {}) }, await requireBrowserCsrf(api, signal), signal);
+        rememberCsrf(result.csrf_token);
+        replace(main, statePanel("loading", t("registering"), t("avatarProcessing")));
+        const avatarOk = await uploadOptionalAvatar(api, avatar, result.csrf_token, signal);
+        avatarPicker.dispose();
+        if (!signal.aborted) finishAuthentication(main, result, t);
+        if (!avatarOk && !signal.aborted) main.append(statePanel("info", t("success"), t("avatarUploadFailed")));
+        return;
+      }
       const input: RegistrationStart = { ...common, authenticator_label: browserPasskeyLabel(t) };
       const transaction = await api.startRegistration(input, await requireBrowserCsrf(api, signal), signal); const credential = await createPasskey(transaction.public_key, signal);
       const result = await api.completeRegistration(transaction.transaction_id, credential, { csrfToken: transaction.csrf_token, idempotencyKey: createIdempotencyKey(), signal });

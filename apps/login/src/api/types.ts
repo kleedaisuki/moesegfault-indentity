@@ -107,6 +107,8 @@ export interface CommunityProfileInput {
 export interface PasswordRegistrationInput {
   /** Short-lived mailbox proof from the pre-account email challenge. */
   email_verification_token: string;
+  /** Existing browser-bound OAuth request to resume after account creation. */
+  authorization_transaction_id?: string;
   username: string;
   password: string;
   display_name: string;

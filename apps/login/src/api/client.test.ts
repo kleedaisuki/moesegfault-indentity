@@ -119,6 +119,15 @@ describe("IdentityApiClient", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ authorization_transaction_id: "oauth-1" });
   });
 
+  it("forwards optional OAuth context and preserves the issuer resume URI on password registration", async () => {
+    const resume = "https://identity-staging.moesegfault.dev/v1/oauth/authorization-transactions/oauth-1/resume";
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ authorization_resume_uri: resume, csrf_token: "next" }), { status: 201, headers: { "content-type": "application/json" } }));
+    const client = new IdentityApiClient("https://identity-staging.moesegfault.dev", fetchMock);
+    const result = await client.registerWithPassword({ username: "klee", password: "fixture-only-long-password", display_name: "Klee", email: "klee@example.test", email_verification_token: "fixture-proof", authorization_transaction_id: "oauth-1" }, "csrf");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ authorization_transaction_id: "oauth-1" });
+    expect(result.authorization_resume_uri).toBe(resume);
+  });
+
   it("uploads an optional avatar as multipart after registration", async () => {
     const uploadedAvatar = { avatar_id: "a1", url: "https://media.example/avatar.webp", media_type: "image/webp", width: 900, height: 900, updated_at: "2026-09-19T00:00:00Z" } as const;
     const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify(uploadedAvatar), { headers: { "content-type": "application/json" } }));

@@ -1530,6 +1530,9 @@ components:
       additionalProperties: false
       required: [username, password, display_name, email, email_verification_token]
       properties:
+        authorization_transaction_id:
+          $ref: '#/components/schemas/UuidV7'
+          description: Optional browser-bound OAuth transaction to resume after registration; omit for standalone account creation.
         username: {$ref: '#/components/schemas/Username'}
         password: {type: string, minLength: 15, maxLength: 128, writeOnly: true, description: Unicode password measured in Unicode scalar values by the current policy.}
         display_name: {type: string, minLength: 1, maxLength: 80, examples: ['星屑 Klee']}
