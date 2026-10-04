@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { frontendOrigins } from "./environment";
+import { ACCOUNT_ROUTES, frontendOrigins } from "./environment";
 
 describe("frontendOrigins", () => {
+  it("allows the dedicated subscriptions return path across Login and Account", () => {
+    expect(ACCOUNT_ROUTES).toContain("/subscriptions");
+  });
   it("keeps both application hostnames in one staging environment", () => {
     for (const hostname of ["login-staging.moesegfault.dev", "account-staging.moesegfault.dev"]) {
       expect(frontendOrigins(hostname)).toEqual({

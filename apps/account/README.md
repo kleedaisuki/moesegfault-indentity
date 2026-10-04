@@ -9,6 +9,7 @@
 - `/security` — password, passkeys, future MFA, and recovery posture
 - `/sessions` — active Identity sessions
 - `/apps` — OAuth/OIDC grants
+- `/subscriptions` — Subscribe-owned subscription status, expiry, and activation-code management
 
 The `/sessions` response includes active sessions and revoked sessions retained for 30 days.
 Account renders `revoked_at` as signed-out history with the revocation time, without another
@@ -46,3 +47,28 @@ npm run build --prefix apps/account
 ```
 
 Visuals follow the warm editorial tokens and official brand geometry from [`moesegfault-style`](https://github.com/kleedaisuki/moesegfault-style). All functional icons are local SVG symbols, so the account surface loads no third-party scripts or fonts.
+
+## Subscription integration boundary
+
+The dedicated subscription section embeds the fixed paired Subscribe `/account` viewer. Its
+session is owned by Subscribe, not by this Account SPA. Identity emits a pairwise OIDC `sub`;
+Account's `principal_id` is deliberately not sent or equated with that subject. The page asks
+users to check the subscription account displayed by the viewer. Reconnect starts a fresh
+top-level Subscribe Authorization Code transaction and offers the exact Account
+`/subscriptions` return destination. No OAuth token, Identity cookie, or CSRF proof is passed
+through iframe parameters or browser messages.
+
+The iframe receives only `embedded=1`, a supported locale, and the effective light/dark theme.
+Account CSP permits only the production and staging Subscribe origins; Subscribe must limit
+`frame-ancestors` to its paired Account origin. Sandbox permits scripts, the viewer's own
+origin/session, and user-activated top-level navigation, not arbitrary forms or popups.
+A persistent top-level manage link remains available if browser cookie/frame policy prevents
+loading the viewer. Account logout and Subscribe logout remain distinct.
+
+Staging acceptance: redeem a code in Subscribe, open Account `/subscriptions`, verify the
+viewer account label and activated plan/expiry, then exercise reconnect and the Account
+return link. Switching Identity accounts must never silently relabel a retained Subscribe
+session as belonging to the new Account principal.
+
+Reference: [MDN CSP frame-src](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-src)
+distinguishes the parent's allowed frame destinations from the child's allowed ancestors.

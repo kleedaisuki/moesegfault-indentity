@@ -6,7 +6,7 @@ import type { AccountSession } from "../session";
 /** 持久账号应用外壳。Persistent Account application shell. */
 export interface Shell { root: HTMLElement; main: HTMLElement; controls: HTMLElement[]; setRoute(route: Route): void; setSession(session: AccountSession): void; }
 
-const nav: ReadonlyArray<[Route, MessageKey, string]> = [["/", "overview", "sparkle"], ["/profile", "profile", "user"], ["/security", "security", "shield"], ["/sessions", "sessions", "devices"], ["/apps", "apps", "apps"]];
+const nav: ReadonlyArray<[Route, MessageKey, string]> = [["/", "overview", "sparkle"], ["/profile", "profile", "user"], ["/security", "security", "shield"], ["/sessions", "sessions", "devices"], ["/apps", "apps", "apps"], ["/subscriptions", "subscriptions", "apps"]];
 
 /** 创建桌面侧栏与移动底栏共享语义的导航外壳。Creates a shell whose desktop rail and mobile bar share navigation semantics. */
 export function createShell(t: (key: MessageKey) => string, inApp: boolean, logoutUrl: string): Shell {

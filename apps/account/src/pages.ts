@@ -11,6 +11,7 @@ import type { Route } from "./router";
 import { resolveRoute } from "./router";
 import { busy, el, formatTime, icon, replace } from "./ui/dom";
 import { resolveAccountOrigin, resolveLoginOrigin } from "./environment";
+import { renderSubscriptions } from "./ui/subscriptions";
 import { localeOptions } from "./ui/locale-select";
 
 /** 头像准备函数，允许 UI 测试替换浏览器 Canvas。Avatar preparer replaceable by UI tests without browser Canvas. */
@@ -27,6 +28,7 @@ export async function renderPage(route: Route, main: HTMLElement, context: PageC
   if (route === "/security") await renderSecurity(main, context);
   if (route === "/sessions") await renderSessions(main, context);
   if (route === "/apps") await renderApps(main, context);
+  if (route === "/subscriptions") renderSubscriptions(main, context);
 }
 
 /** 总览将最常用动作提升为卡片。Overview promotes common actions into cards. */
@@ -39,7 +41,7 @@ function renderOverview(main: HTMLElement, c: PageContext): void {
       el("a", { className: "button primary", attrs: { href: "/profile" }, dataset: { route: "/profile" } }, icon("user"), c.t("editProfile")),
     ),
     el("div", { className: "quick-grid" },
-      quick("shield", c.t("security"), c.t("securityScore"), "/security"), quick("devices", c.t("sessions"), c.t("devicesIntro"), "/sessions"), quick("apps", c.t("apps"), c.t("connectedIntro"), "/apps"),
+      quick("shield", c.t("security"), c.t("securityScore"), "/security"), quick("devices", c.t("sessions"), c.t("devicesIntro"), "/sessions"), quick("apps", c.t("apps"), c.t("connectedIntro"), "/apps"), quick("apps", c.t("subscriptions"), c.t("subscriptionsIntro"), "/subscriptions"),
     ),
   );
 }

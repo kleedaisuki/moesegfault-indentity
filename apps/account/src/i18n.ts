@@ -6,6 +6,7 @@ export type { Locale };
 
 const messages = {
   "zh-CN": {
+    subscriptions: "订阅", subscriptionsIntro: "查看套餐状态与有效期，或使用激活码。", subscriptionViewer: "订阅服务账号", subscriptionBoundary: "请核对下方订阅服务显示的账号。若与当前账号不同，请重新连接。", manageSubscriptions: "管理订阅", reconnectSubscriptions: "重新连接账号",
     signedOut: "已退出",
     account: "账号中心", overview: "总览", profile: "个人资料", security: "安全中心", sessions: "登录设备", apps: "已连接应用",
     hello: "欢迎回来", subtitle: "你的数字身份、联系方式与安全设置，都在这里。", editProfile: "编辑个人资料", securityScore: "安全状态",
@@ -20,6 +21,7 @@ const messages = {
     avatarTooLarge: "头像不得超过 10 MiB", avatarFormats: "支持 JPG、PNG、WebP、AVIF，最大 10 MiB。图片会居中裁成方形，上传前可先预览。", avatarPreparing: "正在生成头像预览…", avatarPrepared: "预览已准备好。确认后才会上传。", avatarConfirm: "确认上传", avatarCancel: "暂不更换", avatarReselect: "换一张", avatarInvalidType: "请选择 AVIF、PNG、JPEG 或 WebP 图片。", avatarEmpty: "所选图片为空，请换一张。", avatarProcessingFailed: "无法处理这张图片，请换一张后重试。", statusMessage: "状态", pronouns: "称谓", favoriteCharacter: "最喜欢的角色", interests: "兴趣标签", links: "链接", visibility: "可见范围", private: "仅自己", members: "站内成员", public: "公开", countryRegion: "国家或地区", mainlandChina: "中国大陆", japan: "日本", singapore: "新加坡", usCanada: "美国或加拿大", unitedKingdom: "英国", hongKong: "中国香港", currentPassword: "当前密码", newPassword: "新密码", errorTitle: "页面暂时出了点小故障", unexpectedError: "发生了未知错误", federated: "联合登录", rename: "重命名", passkeyLabel: "Passkey 名称", technicalMethods: "TOTP 与 WebAuthn", reauthenticationBody: "这项操作需要先再次确认你的身份。完成登录后回到此页重试即可。", reauthenticate: "前往 Login 确认身份",
   },
   en: {
+    subscriptions: "Subscriptions", subscriptionsIntro: "View plan status and expiry, or redeem a code.", subscriptionViewer: "Subscription service account", subscriptionBoundary: "Check the account shown by the subscription service below. If it differs from this account, reconnect.", manageSubscriptions: "Manage subscriptions", reconnectSubscriptions: "Reconnect account",
     signedOut: "Signed out",
     account: "Account", overview: "Overview", profile: "Profile", security: "Security", sessions: "Sessions", apps: "Connected apps",
     hello: "Welcome back", subtitle: "Your identity, contacts, and security settings—all in one place.", editProfile: "Edit profile", securityScore: "Security status",
@@ -34,6 +36,7 @@ const messages = {
     avatarTooLarge: "Avatar must be 10 MiB or smaller", avatarFormats: "JPG, PNG, WebP or AVIF, up to 10 MiB. Center-cropped to a square; preview before uploading.", avatarPreparing: "Preparing your avatar preview…", avatarPrepared: "Preview ready. Nothing is uploaded until you confirm.", avatarConfirm: "Confirm upload", avatarCancel: "Cancel preview", avatarReselect: "Choose another", avatarInvalidType: "Choose an AVIF, PNG, JPEG, or WebP image.", avatarEmpty: "The selected image is empty. Choose another image.", avatarProcessingFailed: "This image could not be processed. Try another one.", statusMessage: "Status", pronouns: "Pronouns", favoriteCharacter: "Favorite character", interests: "Interests", links: "Links", visibility: "Visibility", private: "Only me", members: "Members", public: "Public", countryRegion: "Country or region", mainlandChina: "Mainland China", japan: "Japan", singapore: "Singapore", usCanada: "United States or Canada", unitedKingdom: "United Kingdom", hongKong: "Hong Kong", currentPassword: "Current password", newPassword: "New password", errorTitle: "This page had a tiny segfault", unexpectedError: "An unexpected error occurred", federated: "Federated sign-in", rename: "Rename", passkeyLabel: "Passkey label", technicalMethods: "TOTP and WebAuthn", reauthenticationBody: "Confirm your identity again before this action. Return here after signing in, then retry it.", reauthenticate: "Confirm at Login",
   },
   ja: {
+    subscriptions: "サブスクリプション", subscriptionsIntro: "プランの状態と有効期限を確認し、コードを利用できます。", subscriptionViewer: "サブスクリプションのアカウント", subscriptionBoundary: "下のサービスに表示されるアカウントをご確認ください。このアカウントと異なる場合は再接続してください。", manageSubscriptions: "プランを管理", reconnectSubscriptions: "アカウントを再接続",
     signedOut: "ログアウト済み",
     account: "アカウント", overview: "概要", profile: "プロフィール", security: "セキュリティ", sessions: "ログイン端末", apps: "連携アプリ",
     hello: "おかえりなさい", subtitle: "デジタル ID、連絡先、セキュリティ設定をひとつの場所で。", editProfile: "プロフィール編集", securityScore: "セキュリティ状態",

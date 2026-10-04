@@ -13,6 +13,11 @@ describe("Account static cache policy", () => {
     expect(headers).not.toMatch(/^\/(?:icons\/\*|\*)\s*\n\s*(?:! Cache-Control\s*\n\s*)?Cache-Control:.*immutable/mu);
   });
 
+  it("permits only fixed Subscribe deployments while forbidding Account embedding", () => {
+    expect(headers).toContain("frame-src https://subscribe.moesegfault.dev https://subscribe-staging.moesegfault.dev;");
+    expect(headers).toContain("frame-ancestors 'none'");
+  });
+
   it("preserves the broad security policy while changing only cache headers", () => {
     const broad = headers.split("# Vite")[0];
     expect(broad).toContain("Content-Security-Policy:");

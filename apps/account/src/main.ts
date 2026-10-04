@@ -35,7 +35,7 @@ installPreferenceControls();
 async function renderCurrent(reloadSession = false): Promise<void> {
   active?.abort(); active = new AbortController(); const signal = active.signal;
   const route = resolveRoute(location.pathname); shell.setRoute(route);
-  document.title = `${t(route === "/" ? "overview" : route.slice(1) as "profile" | "security" | "sessions" | "apps")} · moeSegFault`;
+  document.title = `${t(route === "/" ? "overview" : route.slice(1) as "profile" | "security" | "sessions" | "apps" | "subscriptions")} · moeSegFault`;
   if (session.status === "anonymous") { renderAnonymous(); return; }
   replace(shell.main, el("div", { className: "loading", attrs: { role: "status" } }, icon("sparkle"), t("loading")));
   try {
