@@ -25,7 +25,7 @@ the original proof and remaining expiry, not another ten minutes.
 Registration-email start/completion accept an optional provider-issued OAuth ID.
 Only still-live `awaiting_authentication` transactions can be aligned with the
 mailbox deadline: expired, authenticated, completed and unknown IDs cannot renew.
-Migration 0009 stores the optional ID on the browser-bound challenge; completion
+Migration 0010 stores the optional ID on the browser-bound challenge; completion
 cannot substitute another ID or browser. Password signup checks contextual proofs
 against that ID and atomically binds the new principal/session with account,
 credential, mailbox-proof consumption and audit creation. A competing/expired
