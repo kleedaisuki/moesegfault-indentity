@@ -173,6 +173,7 @@ paths:
               required: [email]
               properties:
                 email: {type: string, format: email, maxLength: 254}
+                authorization_transaction_id: {$ref: '#/components/schemas/UuidV7', description: Optional pending browser-bound OAuth request associated with this challenge; renewed only through the challenge deadline and never revived after expiry.}
                 registration_capability: {type: string, minLength: 20, maxLength: 512, writeOnly: true, description: Optional invitation for non-open registration policy}
       responses:
         '201':
@@ -203,6 +204,7 @@ paths:
               required: [code]
               properties:
                 code: {type: string, pattern: '^[0-9]{8}$', writeOnly: true}
+                authorization_transaction_id: {$ref: '#/components/schemas/UuidV7', description: Must match the challenge-associated OAuth request when supplied; only a still-active request can be renewed through the proof deadline.}
       responses:
         '200':
           description: Verified mailbox proof; no account exists yet

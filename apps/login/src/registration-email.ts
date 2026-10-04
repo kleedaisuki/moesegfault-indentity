@@ -1,5 +1,6 @@
 import { IdentityApiClient, ApiError } from "./api/client";
 import type { MessageKey } from "./i18n";
+import type { RegistrationEmailAuthorizationContext } from "./api/types";
 import { el, field, replace, statePanel } from "./ui/dom";
 
 /** In-memory proof for one mailbox; verification alone never creates an account. */
@@ -16,9 +17,20 @@ export interface RegistrationEmailVerifier {
   setDisabled(disabled: boolean): void;
 }
 
+/** Supplies current page-realm OAuth context without persisting or synthesizing it. */
+export interface RegistrationEmailVerifierOptions {
+  /** Reads the pending OAuth handle; omit for standalone registration. */
+  authorizationTransactionId?: () => string | undefined;
+}
+
 /** Creates form-safe mailbox verification; profile/password/avatar nodes stay untouched. */
 export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: AbortSignal,
-  t: (key: MessageKey) => string): RegistrationEmailVerifier {
+  t: (key: MessageKey) => string, options: RegistrationEmailVerifierOptions = {}): RegistrationEmailVerifier {
+  /** Server-side validation, not this projection, decides whether renewal is permitted. */
+  const authorizationContext = (): RegistrationEmailAuthorizationContext => {
+    const id = options.authorizationTransactionId?.();
+    return id ? { authorization_transaction_id: id } : {};
+  };
   const emailField = field(t("email"), "email", { required: true, type: "email", autocomplete: "email", icon: "mail" });
   const emailInput = emailField.querySelector<HTMLInputElement>("input")!;
   const send = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("sendSignupCode"));
@@ -71,7 +83,7 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
     try {
       const nextDestination = emailInput.value.trim();
       csrfToken = (await api.getBrowserContext(signal)).csrf_token;
-      const next = await api.startRegistrationEmail(nextDestination, csrfToken, signal);
+      const next = await api.startRegistrationEmail(nextDestination, csrfToken, signal, authorizationContext());
       if (signal.aborted) return;
       destination = nextDestination; transaction = next; proof = undefined; codeInput.value = "";
       replace(status, statePanel("info", t("codeSent"), `${next.delivery_hint} · ${t("signupCodeHint")}`));
@@ -85,7 +97,7 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
     if (!transaction || locked || busy || signal.aborted || !codeInput.reportValidity()) return;
     busy = "confirming"; sync();
     try {
-      const result = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal);
+      const result = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal, authorizationContext());
       if (signal.aborted) return;
       proof = { email: destination, token: result.email_verification_token, expiresAt: result.expires_at, csrfToken };
       replace(status, statePanel("success", t("emailVerified"), t("signupEmailVerified")));

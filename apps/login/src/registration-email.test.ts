@@ -56,10 +56,32 @@ describe("inline registration email verification", () => {
     const fixture = await setup("oauth-fixture", resume);
     fillDraft(fixture.main);
     await send(fixture.main); await confirm(fixture.main);
+    expect(fixture.start.mock.calls[0]?.[3]).toEqual({ authorization_transaction_id: "oauth-fixture" });
+    expect(fixture.complete.mock.calls[0]?.[4]).toEqual({ authorization_transaction_id: "oauth-fixture" });
     fixture.main.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(assign).toHaveBeenCalledWith(resume));
     expect(fixture.register.mock.calls[0]?.[0]).toMatchObject({ authorization_transaction_id: "oauth-fixture", email_verification_token: "fixture-proof" });
     expect(assign).toHaveBeenCalledOnce();
+    fixture.abort.abort();
+  });
+
+  it.each(["start", "completion"] as const)("retains drafts and does not create an account when OAuth context expires at %s", async (operation) => {
+    const fixture = await setup("expired-oauth");
+    fillDraft(fixture.main);
+    const error = new ApiError(400, { type: "urn:test", title: "Expired transaction", status: 400, error_code: "invalid_transaction" });
+    if (operation === "start") {
+      fixture.start.mockRejectedValueOnce(error);
+      fixture.main.querySelector<HTMLButtonElement>(".registration-email__address button")!.click();
+    } else {
+      await send(fixture.main);
+      fixture.complete.mockRejectedValueOnce(error);
+      fixture.main.querySelector<HTMLInputElement>('[name="code"]')!.value = "01234567";
+      fixture.main.querySelector<HTMLButtonElement>(".registration-email__code button")!.click();
+    }
+    await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toContain(translate("zh-CN", "signupCodeExpired")));
+    expect(fixture.register).not.toHaveBeenCalled();
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="password"]')!.value).toBe("fixture-only-long-password");
+    expect(fixture.main.querySelector<HTMLInputElement>('[name="username"]')!.value).toBe("klee_test");
     fixture.abort.abort();
   });
 

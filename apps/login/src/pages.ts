@@ -85,7 +85,7 @@ function renderLogin(main: HTMLElement, api: IdentityApiClient, signal: AbortSig
 /** 呈现包含社区资料、密码与可选 Passkey 的注册页。Renders registration with community profile, password, and optional passkey. */
 function renderRegister(main: HTMLElement, api: IdentityApiClient, signal: AbortSignal, t: (key: MessageKey) => string, locale: Locale): void {
   const message = el("div", { className: "inline-state", attrs: { "aria-live": "polite" } });
-  const emailVerifier = createRegistrationEmailVerifier(api, signal, t);
+  const emailVerifier = createRegistrationEmailVerifier(api, signal, t, { authorizationTransactionId: currentTransaction });
   const passwordButton = el("button", { className: "button button--primary", attrs: { type: "submit", value: "password", name: "method" } }, iconLabel("lock", t("registerPassword")));
   const passkeyButton = el("button", { className: "button button--secondary", attrs: { type: "submit", value: "passkey", name: "method", disabled: !isWebAuthnAvailable() } }, iconLabel("key", t("registerPasskey")));
   const avatarPicker = avatarFilePicker({

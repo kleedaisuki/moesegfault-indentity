@@ -77,6 +77,12 @@ export interface CeremonyTransaction<TOptions> {
   public_key: TOptions;
 }
 
+/** Optional pending OAuth context for purpose-scoped signup email lifetime renewal. */
+export interface RegistrationEmailAuthorizationContext {
+  /** Must match the browser-bound OAuth request associated with the email challenge. */
+  authorization_transaction_id?: string;
+}
+
 /** 创建注册事务时的输入。Input used to begin registration. */
 export interface RegistrationStart {
   /** Short-lived mailbox proof from the pre-account email challenge. */
