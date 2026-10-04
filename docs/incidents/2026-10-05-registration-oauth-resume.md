@@ -62,6 +62,24 @@ These are reproducible local contract tests, not a claim of completed live user
 acceptance. Root subscription workstream owns the real browser + amail subscription
 and Account readback after the candidate staging Actions deployment.
 
+## Staging delivery
+
+- GitHub [staging-only run 37219121313](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/37219121313)
+  succeeded for `7b173e2b5df132644b6d5866f4ff58ee9fc8c6f9`. Rust, both frontend
+  workspaces, contracts/migrations, release Worker regression tests, immutable
+  packaging and staging smoke checks passed; production promotion was skipped.
+- The three staging units deployed in 44 seconds. The Identity deployment API
+  reports version `ddc6b4be-6d5c-4d9a-90ba-a6ff44a6b7d0` serving 100%, annotated
+  with that exact GitHub revision, at 2026-10-05 01:08 Asia/Singapore.
+- Non-secret remote D1 history readback confirms both unchanged
+  `0009_oauth_client_subscribe-staging.sql` and new
+  `0010_registration_oauth_context.sql`. Migration numbering was corrected before
+  any candidate deployment; no previously-applied migration was renamed or reset.
+- Actions read back enabled `subscribe-staging`, its exact callback
+  `https://subscribe-staging.moesegfault.dev/auth/callback`, and scopes.
+- Live browser acceptance remains the parent workstream's next operation: begin
+  a fresh Subscribe OAuth transaction, rather than reusing an expired pre-fix tab.
+
 ## References
 
 The fixed binding follows [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html):
