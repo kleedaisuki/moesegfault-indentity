@@ -72,7 +72,10 @@ try {
   await body(await post("/v1/registration-transactions", { ...registration, password: undefined, authenticator_label: "Fixture" }, first), 403);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 0);
 
-  const challenge = await body(await post("/v1/registration-email-transactions", { email: registration.email }, first), 201);
+  const challengeResponse = await post("/v1/registration-email-transactions", { email: registration.email }, first);
+  assert.ok(/Max-Age=(59\d|600)/.test(challengeResponse.headers.get("set-cookie")), "mail challenge retains its existing browser binding for the code lifetime");
+  assert.equal(challengeResponse.headers.get("set-cookie").split(";")[0], first.cookie);
+  const challenge = await body(challengeResponse, 201);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 0);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM identity_sessions").first("n"), 0);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM password_credentials").first("n"), 0);
@@ -129,5 +132,57 @@ try {
   await db.prepare("UPDATE registration_email_transactions SET created_at=created_at-61,expires_at=expires_at-61 WHERE transaction_id=?").bind(replaced.challenge.transaction_id).run();
   await body(await post("/v1/registration-email-transactions", { email: "corrected@example.test" }, sixth), 201);
   await body(await post("/v1/password/registrations", { ...registration, email: "replaced@example.test", email_verification_token: replaced.email_verification_token }, sixth), 403);
+
+  // Password signup can continue an OAuth flow, but the supplied transaction is
+  // never a redirect URL or substitute for the mailbox/browser-bound proof.
+  const seventh = await browser();
+  const oauthProof = await proof("oauth@example.test", seventh);
+  const oauthInput = { ...registration, email: "oauth@example.test", username: "oauth_signup", email_verification_token: oauthProof.email_verification_token };
+  await db.exec("INSERT INTO oauth_clients(client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,subject_salt_revision,created_at,updated_at) VALUES('signup-client','Signup client','native','none','example.test',1,unixepoch(),unixepoch());");
+  /** Seed a pending OAuth transaction without real keys or redirect material. */
+  async function authorization(id, remaining = 300) {
+    await db.prepare("INSERT INTO oauth_authorization_transactions(authorization_transaction_id,client_id,redirect_uri,response_type,scope,state_value,nonce,code_challenge,code_challenge_method,created_at,expires_at) VALUES(?,'signup-client','https://app.example.test/callback','code','openid','fixture-state','fixture-nonce','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','S256',unixepoch()-10,unixepoch()+?)").bind(id, remaining).run();
+  }
+  await authorization("expired-signup", -1);
+  await body(await post("/v1/password/registrations", { ...oauthInput, authorization_transaction_id: "expired-signup" }, seventh), 400);
+  await body(await post("/v1/password/registrations", { ...oauthInput, authorization_transaction_id: "unknown-signup" }, seventh), 400);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 2);
+  await authorization("race-signup");
+  // Simulate loss of OAuth authority *after* preflight, inside the same account
+  // batch. The assertion must undo the account, session, proof and trigger write.
+  await db.exec("CREATE TRIGGER signup_authority_race BEFORE INSERT ON principals BEGIN UPDATE oauth_authorization_transactions SET expires_at=unixepoch()-1 WHERE authorization_transaction_id='race-signup'; END;");
+  await body(await post("/v1/password/registrations", { ...oauthInput, authorization_transaction_id: "race-signup" }, seventh), 409);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 2);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM registration_email_consumptions WHERE transaction_id=?").bind(oauthProof.challenge.transaction_id).first("n"), 0);
+  await db.exec("DROP TRIGGER signup_authority_race;");
+  const oauthCreated = await body(await post("/v1/password/registrations", { ...oauthInput, authorization_transaction_id: "race-signup" }, seventh), 201);
+  assert.equal(oauthCreated.authorization_resume_uri, "https://identity.example.test/v1/oauth/authorization-transactions/race-signup/resume");
+  const bound = await db.prepare("SELECT state,principal_id,identity_session_id FROM oauth_authorization_transactions WHERE authorization_transaction_id='race-signup'").first();
+  assert.equal(bound.state, "authenticated");
+  assert.equal(bound.principal_id, oauthCreated.account.principal_id);
+  assert.equal(bound.identity_session_id, oauthCreated.session.session_id);
+
+  const eighth = await browser();
+  await authorization("mail-signup");
+  await authorization("other-mail-signup");
+  await body(await post("/v1/registration-email-transactions", { email: "context@example.test", authorization_transaction_id: "expired-signup" }, eighth), 400);
+  const contextualResponse = await post("/v1/registration-email-transactions", { email: "context@example.test", authorization_transaction_id: "mail-signup" }, eighth);
+  const contextual = await body(contextualResponse, 201);
+  assert.equal(await db.prepare("SELECT expires_at FROM oauth_authorization_transactions WHERE authorization_transaction_id='mail-signup'").first("expires_at"), Date.parse(contextual.expires_at) / 1000);
+  await knownCode(contextual.transaction_id);
+  const completePath = `/v1/registration-email-transactions/${contextual.transaction_id}/completion`;
+  await body(await post(completePath, { code: "01234567", authorization_transaction_id: "mail-signup" }, first), 400);
+  await body(await post(completePath, { code: "01234567", authorization_transaction_id: "other-mail-signup" }, eighth), 400);
+  await body(await post(completePath, { code: "01234567" }, eighth), 400);
+  const contextualProofResponse = await post(completePath, { code: "01234567", authorization_transaction_id: "mail-signup" }, eighth);
+  assert.equal(contextualProofResponse.headers.get("set-cookie").split(";")[0], eighth.cookie);
+  assert.ok(/Max-Age=(59\d|600)/.test(contextualProofResponse.headers.get("set-cookie")));
+  const contextualProof = await body(contextualProofResponse, 200);
+  assert.equal(await db.prepare("SELECT expires_at FROM oauth_authorization_transactions WHERE authorization_transaction_id='mail-signup'").first("expires_at"), Date.parse(contextualProof.expires_at) / 1000);
+  const contextualInput = { ...registration, email: "context@example.test", username: "context_signup", email_verification_token: contextualProof.email_verification_token };
+  await body(await post("/v1/password/registrations", { ...contextualInput, authorization_transaction_id: "other-mail-signup" }, eighth), 400);
+  await body(await post("/v1/password/registrations", { ...contextualInput, authorization_transaction_id: "mail-signup" }, eighth), 201);
+  await body(await post("/v1/registration-email-transactions", { email: "authenticated@example.test", authorization_transaction_id: "mail-signup" }, await browser()), 400);
+  assert.equal(await db.prepare("SELECT expires_at FROM oauth_authorization_transactions WHERE authorization_transaction_id='expired-signup'").first("expires_at") < Math.floor(Date.now()/1000), true, "expired transactions are never revived");
   console.log("registration email: no-account-before-proof, password/passkey bypass prevention, email/browser binding, atomic single-use race, expiry, and parallel guessing limits passed");
 } finally { await mf.dispose(); }

@@ -12,6 +12,8 @@ use crate::{account, email_verification as email, guard, problem};
 struct StartInput {
     email: String,
     #[serde(default)]
+    authorization_transaction_id: Option<String>,
+    #[serde(default)]
     registration_capability: Option<String>,
 }
 
@@ -19,6 +21,8 @@ struct StartInput {
 #[serde(deny_unknown_fields)]
 struct CompleteInput {
     code: String,
+    #[serde(default)]
+    authorization_transaction_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +39,7 @@ pub(crate) struct EmailProof {
     id: String,
     destination: Vec<u8>,
     browser: Vec<u8>,
+    authorization: Option<String>,
 }
 
 /// Creates no principal, identifier, password, session, or reserved username.
@@ -71,6 +76,14 @@ pub(crate) async fn start(mut request: Request, context: RouteContext<()>) -> Re
         }
     };
     let db = context.d1("DB")?;
+    if !authorization_pending(&db, input.authorization_transaction_id.as_deref()).await? {
+        return problem::response(
+            "authorization_transaction_expired",
+            "Restart sign-in to continue",
+            400,
+            &correlation,
+        );
+    }
     let registration_pepper = secret(&context.env, "REGISTRATION_PEPPER")?;
     let invite = input
         .registration_capability
@@ -114,8 +127,8 @@ pub(crate) async fn start(mut request: Request, context: RouteContext<()>) -> Re
     let result = db.batch(vec![
         db.prepare("UPDATE registration_email_transactions SET state='cancelled',consumed_at=?2 WHERE browser_digest=?1 AND state IN ('pending','verified')")
             .bind(&[blob(&browser_digest.0), integer(time)])?,
-        db.prepare("INSERT INTO registration_email_transactions(transaction_id,destination_digest,browser_digest,code_digest,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6)")
-            .bind(&[text(&transaction), blob(&destination_digest.0), blob(&browser_digest.0), blob(&code_digest.0), integer(time), integer(time+600)])?,
+        db.prepare("INSERT INTO registration_email_transactions(transaction_id,destination_digest,browser_digest,code_digest,created_at,expires_at,authorization_transaction_id) VALUES(?1,?2,?3,?4,?5,?6,?7)")
+            .bind(&[text(&transaction), blob(&destination_digest.0), blob(&browser_digest.0), blob(&code_digest.0), integer(time), integer(time+600), optional_text(input.authorization_transaction_id.as_deref())])?,
         db.prepare("INSERT INTO registration_email_outbox(outbox_id,transaction_id,payload_ciphertext,payload_nonce,next_attempt_at,created_at) VALUES(?1,?2,?3,?4,?5,?5)")
             .bind(&[text(&outbox), text(&transaction), blob(&payload.ciphertext), blob(&payload.nonce), integer(time)])?,
     ]).await;
@@ -135,6 +148,20 @@ pub(crate) async fn start(mut request: Request, context: RouteContext<()>) -> Re
         }
         return Err(error);
     }
+    if !renew_authorization(
+        &db,
+        input.authorization_transaction_id.as_deref(),
+        time + 600,
+    )
+    .await?
+    {
+        return problem::response(
+            "authorization_transaction_expired",
+            "Restart sign-in to continue",
+            400,
+            &correlation,
+        );
+    }
     if account::drain_email_job(
         &context.env,
         &outbox,
@@ -147,11 +174,13 @@ pub(crate) async fn start(mut request: Request, context: RouteContext<()>) -> Re
     {
         console_error!("registration_email_delivery_deferred correlation_id={correlation}");
     }
-    json(
+    let mut response = json(
         &serde_json::json!({"transaction_id":transaction,"expires_at":date(time+600),"resend_after":date(time+60),"delivery_hint":email::mask_email(input.email.trim())}),
         201,
         &correlation,
-    )
+    )?;
+    renew_browser(&mut response, &browser, time + 600)?;
+    Ok(response)
 }
 
 /// Bounds attempts and issues a short-lived, browser-bound proof after a correct code.
@@ -184,9 +213,17 @@ pub(crate) async fn complete(mut request: Request, context: RouteContext<()>) ->
     let binding = browser_digest(&pepper, &browser);
     let db = context.d1("DB")?;
     let time = now();
+    if !authorization_pending(&db, input.authorization_transaction_id.as_deref()).await? {
+        return problem::response(
+            "authorization_transaction_expired",
+            "Restart sign-in to continue",
+            400,
+            &correlation,
+        );
+    }
     // Claim an attempt before checking the code so parallel guessing cannot bypass the budget.
-    let Some(row) = db.prepare("UPDATE registration_email_transactions SET attempt_count=attempt_count+1 WHERE transaction_id=?1 AND browser_digest=?2 AND ((state='pending' AND expires_at>?3) OR (state='verified' AND proof_expires_at>?3)) AND attempt_count<10 AND NOT EXISTS(SELECT 1 FROM registration_email_consumptions c WHERE c.transaction_id=registration_email_transactions.transaction_id) RETURNING destination_digest,browser_digest,code_digest,state,proof_expires_at")
-        .bind(&[text(transaction),blob(&binding.0),integer(time)])?.first::<Challenge>(None).await? else {
+    let Some(row) = db.prepare("UPDATE registration_email_transactions SET attempt_count=attempt_count+1 WHERE transaction_id=?1 AND browser_digest=?2 AND authorization_transaction_id IS ?4 AND ((state='pending' AND expires_at>?3) OR (state='verified' AND proof_expires_at>?3)) AND attempt_count<10 AND NOT EXISTS(SELECT 1 FROM registration_email_consumptions c WHERE c.transaction_id=registration_email_transactions.transaction_id) RETURNING destination_digest,browser_digest,code_digest,state,proof_expires_at")
+        .bind(&[text(transaction),blob(&binding.0),integer(time),optional_text(input.authorization_transaction_id.as_deref())])?.first::<Challenge>(None).await? else {
         return problem::response("invalid_transaction", "Code expired, replaced, or attempt limit reached", 400, &correlation);
     };
     // Only the encrypted outbox contains the destination. Bind comparison to the stored destination
@@ -208,12 +245,27 @@ pub(crate) async fn complete(mut request: Request, context: RouteContext<()>) ->
         );
     }
     if row.state == "verified" {
+        if !renew_authorization(
+            &db,
+            input.authorization_transaction_id.as_deref(),
+            row.proof_expires_at.unwrap_or(time),
+        )
+        .await?
+        {
+            return problem::response(
+                "authorization_transaction_expired",
+                "Restart sign-in to continue",
+                400,
+                &correlation,
+            );
+        }
         return proof_response(
             &row,
             &pepper,
             transaction,
             row.proof_expires_at.unwrap_or(time),
             &correlation,
+            &browser,
         );
     }
     let result = db.prepare("UPDATE registration_email_transactions SET state='verified',consumed_at=?2,proof_expires_at=?3 WHERE transaction_id=?1 AND state='pending' AND expires_at>?2")
@@ -226,7 +278,56 @@ pub(crate) async fn complete(mut request: Request, context: RouteContext<()>) ->
             &correlation,
         );
     }
-    proof_response(&row, &pepper, transaction, time + 600, &correlation)
+    if !renew_authorization(
+        &db,
+        input.authorization_transaction_id.as_deref(),
+        time + 600,
+    )
+    .await?
+    {
+        return problem::response(
+            "authorization_transaction_expired",
+            "Restart sign-in to continue",
+            400,
+            &correlation,
+        );
+    }
+    proof_response(
+        &row,
+        &pepper,
+        transaction,
+        time + 600,
+        &correlation,
+        &browser,
+    )
+}
+
+/// Independent signup remains valid; contextual signup requires live pending authority.
+async fn authorization_pending(db: &D1Database, authorization: Option<&str>) -> Result<bool> {
+    let Some(authorization) = authorization else {
+        return Ok(true);
+    };
+    Ok(db.prepare("SELECT 1 AS found FROM oauth_authorization_transactions WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>unixepoch()")
+        .bind(&[text(authorization)])?.first::<i64>(Some("found")).await?.is_some())
+}
+
+/// Align a still-live pending transaction with mailbox state, never revive expired authority.
+/// Exact redirects, PKCE, state and nonce remain immutable; proof replay retains its deadline.
+async fn renew_authorization(
+    db: &D1Database,
+    authorization: Option<&str>,
+    expiry: i64,
+) -> Result<bool> {
+    let Some(authorization) = authorization else {
+        return Ok(true);
+    };
+    let result = db.prepare("UPDATE oauth_authorization_transactions SET expires_at=MAX(expires_at,?2) WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>unixepoch()")
+        .bind(&[text(authorization),integer(expiry)])?.run().await?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
+}
+
+fn optional_text(value: Option<&str>) -> JsValue {
+    value.map_or(JsValue::NULL, text)
 }
 
 /// Retrying a lost completion response recovers the same proof without extending its lifetime.
@@ -236,6 +337,7 @@ fn proof_response(
     transaction: &str,
     expiry: i64,
     correlation: &str,
+    browser: &str,
 ) -> Result<Response> {
     let token = proof_secret(
         pepper,
@@ -243,10 +345,21 @@ fn proof_response(
         &row.destination_digest,
         &row.browser_digest,
     );
-    json(
+    let mut response = json(
         &serde_json::json!({"email_verification_token":format!("{transaction}.{}",token.to_base64url()),"expires_at":date(expiry)}),
         200,
         correlation,
+    )?;
+    renew_browser(&mut response, browser, expiry)?;
+    Ok(response)
+}
+
+/// Keep the same CSRF/browser binding alive, never longer than the mailbox state.
+/// A replay does not extend proof expiry; expired or unvalidated requests never renew.
+fn renew_browser(response: &mut Response, browser: &str, expiry: i64) -> Result<()> {
+    response.headers_mut().append(
+        "set-cookie",
+        &guard::browser_cookie_for(browser, expiry - now()),
     )
 }
 
@@ -275,16 +388,26 @@ pub(crate) async fn authorize(
     if !proof_secret(&pepper, transaction, &destination.0, &browser.0).ct_eq(&SecretDigest(bytes)) {
         return Ok(None);
     }
-    let found = env.d1("DB")?.prepare("SELECT 1 AS found FROM registration_email_transactions t WHERE transaction_id=?1 AND destination_digest=?2 AND browser_digest=?3 AND state='verified' AND proof_expires_at>?4 AND NOT EXISTS(SELECT 1 FROM registration_email_consumptions c WHERE c.transaction_id=t.transaction_id)")
+    let found = env.d1("DB")?.prepare("SELECT authorization_transaction_id FROM registration_email_transactions t WHERE transaction_id=?1 AND destination_digest=?2 AND browser_digest=?3 AND state='verified' AND proof_expires_at>?4 AND NOT EXISTS(SELECT 1 FROM registration_email_consumptions c WHERE c.transaction_id=t.transaction_id)")
         .bind(&[text(transaction),blob(&destination.0),blob(&browser.0),integer(now())])?.first::<serde_json::Value>(None).await?;
-    Ok(found.map(|_| EmailProof {
+    Ok(found.map(|row| EmailProof {
         id: transaction.to_owned(),
         destination: destination.0.to_vec(),
         browser: browser.0.to_vec(),
+        authorization: row["authorization_transaction_id"]
+            .as_str()
+            .map(String::from),
     }))
 }
 
 impl EmailProof {
+    /// A contextual proof cannot be reassigned to a different OAuth transaction.
+    /// Unbound legacy proofs retain their previous optional-context behavior.
+    pub(crate) fn allows_authorization(&self, authorization: Option<&str>) -> bool {
+        self.authorization
+            .as_deref()
+            .is_none_or(|bound| Some(bound) == authorization)
+    }
     /// NULL/duplicate claims fail the whole batch, rolling back any account and session rows.
     pub(crate) fn consume(
         &self,

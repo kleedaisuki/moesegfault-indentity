@@ -101,7 +101,17 @@ pub fn cookie(request: &Request, name: &str) -> Option<String> {
 /// 事务浏览器绑定 Cookie。/ Transaction browser-binding cookie.
 #[must_use]
 pub fn browser_cookie(value: &str) -> String {
-    format!("{BROWSER_COOKIE}={value}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=300")
+    browser_cookie_for(value, 300)
+}
+
+/// Retains an already-validated browser binding for the remaining purpose lifetime.
+/// Callers must preserve the cookie value and enforce their own server-side expiry.
+#[must_use]
+pub(crate) fn browser_cookie_for(value: &str, remaining_seconds: i64) -> String {
+    let max_age = remaining_seconds.clamp(0, 600);
+    format!(
+        "{BROWSER_COOKIE}={value}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}"
+    )
 }
 
 /// Identity SSO 会话 Cookie。/ Identity SSO session cookie.
@@ -240,6 +250,16 @@ mod tests {
         let browser = browser_cookie("opaque");
         assert!(browser.contains("SameSite=Strict"));
         assert!(browser.contains("Max-Age=300"));
+    }
+
+    #[test]
+    fn purpose_renewal_is_bounded_and_preserves_cookie_security() {
+        let cookie = browser_cookie_for("opaque", 600);
+        assert!(cookie.contains("Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=600"));
+        assert!(browser_cookie_for("opaque", 900).ends_with("Max-Age=600"));
+        assert!(browser_cookie_for("opaque", 0).ends_with("Max-Age=0"));
+        assert!(browser_cookie_for("opaque", -1).ends_with("Max-Age=0"));
+        assert!(browser_cookie("opaque").ends_with("Max-Age=300"));
     }
 
     #[test]

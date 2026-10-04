@@ -30,6 +30,9 @@ struct PasswordRegistrationRequest {
     email: String,
     #[serde(default)]
     email_verification_token: Option<String>,
+    /// Optional OAuth transaction resumed by the new account's authenticated session.
+    #[serde(default)]
+    authorization_transaction_id: Option<String>,
     #[serde(default)]
     mobile: Option<MobileInput>,
     #[serde(default = "default_locale")]
@@ -169,6 +172,11 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
         });
     let db = context.d1("DB")?;
     let now = now_seconds();
+    if let Some(authorization_id) = input.authorization_transaction_id.as_deref()
+        && !registration_authorization_pending(&db, authorization_id, now).await?
+    {
+        return invalid_request("Invalid authorization transaction", &correlation);
+    }
     let Some(decision) = repository::registration_decision(
         &db,
         invite_public,
@@ -200,6 +208,9 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
             &correlation,
         );
     };
+    if !email_proof.allows_authorization(input.authorization_transaction_id.as_deref()) {
+        return invalid_request("Invalid authorization transaction", &correlation);
+    }
     let password_hash = hash_password(&input.password)?;
     let principal_id = PrincipalId::new_v4().to_string();
     let username_id = IdentifierId::new_v7(worker::Date::now().as_millis()).to_string();
@@ -267,8 +278,22 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
         );
     }
     statements.push(email_proof.consume(&db, &principal_id, now)?);
+    if let Some(authorization_id) = input.authorization_transaction_id.as_deref() {
+        statements.push(db.prepare("UPDATE oauth_authorization_transactions SET principal_id=?2,identity_session_id=?3,state='authenticated' WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>unixepoch()")
+            .bind(&[text(authorization_id), text(&principal_id), text(&session_id)])?);
+        // The existing sequence-1 row is an atomic assertion: a failed OAuth bind
+        // deliberately collides with it and rolls back the entire account batch.
+        // This covers expiry and competing authentication after the preflight read.
+        statements.push(db.prepare("INSERT INTO session_authentication_methods(session_id,sequence,method,authenticated_at) SELECT ?3,1,'password',?4 WHERE NOT EXISTS(SELECT 1 FROM oauth_authorization_transactions WHERE authorization_transaction_id=?1 AND state='authenticated' AND principal_id=?2 AND identity_session_id=?3 AND expires_at>unixepoch())")
+            .bind(&[text(authorization_id), text(&principal_id), text(&session_id), integer(now)])?);
+    }
     if let Err(error) = db.batch(statements).await {
         if is_constraint_error(&error) {
+            if let Some(authorization_id) = input.authorization_transaction_id.as_deref()
+                && !registration_authorization_pending(&db, authorization_id, now_seconds()).await?
+            {
+                return invalid_request("Invalid authorization transaction", &correlation);
+            }
             return problem::response(
                 "identifier_conflict",
                 "An account identifier is already in use",
@@ -300,9 +325,20 @@ pub async fn register(mut request: Request, context: RouteContext<()>) -> Result
             status: 201,
             correlation: &correlation,
             env: &context.env,
-            authorization_transaction_id: None,
+            authorization_transaction_id: input.authorization_transaction_id.as_deref(),
         },
     )
+}
+
+/// Reject expired or already-bound transactions before hashing; batch SQL rechecks authority.
+async fn registration_authorization_pending(
+    db: &worker::D1Database,
+    authorization_id: &str,
+    now: i64,
+) -> Result<bool> {
+    Ok(db.prepare("SELECT authorization_transaction_id FROM oauth_authorization_transactions WHERE authorization_transaction_id=?1 AND state='awaiting_authentication' AND expires_at>?2")
+        .bind(&[text(authorization_id), integer(now)])?
+        .first::<AuthorizationRow>(None).await?.is_some())
 }
 
 /// 使用 username 或已验证的 email/mobile 进行密码认证。
