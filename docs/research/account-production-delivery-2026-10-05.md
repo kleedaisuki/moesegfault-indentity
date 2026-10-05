@@ -43,6 +43,33 @@ coordinated source that includes `fe7eec4`. No independent Account Wrangler depl
 will run, avoiding duplicate promotion and artifact overwrite. Production Subscribe
 `/account` health must be ready before the overall rollout is accepted.
 
-Production deployment version/readback will be appended after deployment. Root owns
-browser-level production acceptance; this note does not claim a production user flow
-was exercised by this agent.
+## Production deployment and readback
+
+The coordinated main revision is `c91f7a8eb780f6731777eafd4d4a2cdd83231c1c`.
+The existing GitHub Actions release completed successfully:
+https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/37268599733
+
+Account production version: `e9348f12-5723-4778-bc0b-8ac037efc5e2`, deployed at 100%.
+The deployment owner read back creation at `2026-10-05T05:41:42.758847Z` (13:41:42
+Asia/Singapore), with `Production GitHub c91f7a8` annotations. Independent Wrangler
+version-list readback agrees with the version and exact coordinated revision.
+
+Response readback after the release:
+
+- `https://account.moesegfault.dev/subscriptions`: HTTP 200, entry
+  `/assets/index-CM7SzkwV.js`.
+- Served entry JS contains the fixed production Subscribe and Account origins,
+  `/subscriptions`, the native current-session revocation implementation, and the
+  independent subscription-account presentation. No new code was needed for production.
+- Served CSP contains `frame-src https://subscribe.moesegfault.dev
+  https://subscribe-staging.moesegfault.dev` and retains `frame-ancestors 'none'`.
+- Staging Account still serves `/assets/index-CM7SzkwV.js`; no independent staging or
+  production deployment was run by this Account workstream.
+
+At this readback, local requests to `https://subscribe.moesegfault.dev/account` failed
+TLS connection establishment. Root and the deployment owner were informed: Subscribe
+DNS/certificate/route readiness is a separate rollout gate, not a reason to redeploy
+Account. This observation is not presented as an Account iframe rendering failure.
+
+Root owns browser-level production acceptance; this note does not claim that this agent
+exercised production sign-in, activation, iframe rendering, or logout.

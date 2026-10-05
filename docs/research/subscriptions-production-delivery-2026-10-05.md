@@ -69,6 +69,38 @@ and legacy unbound proof contracts remain supported.
   packages checksummed immutable artifacts, deploys staging, then promotes the
   exact bundle to production. Account is not deployed separately or twice.
 
+## Completed production rollout and readback
+
+The existing [main release run 37268599733](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/37268599733)
+completed successfully for exact source
+`c91f7a8eb780f6731777eafd4d4a2cdd83231c1c`. Every Rust/frontend/contract,
+real-Worker security regression, immutable-package, staging and production job
+passed. Cached hosted Rust took 2m1s, release package 1m7s, staging deployment
+36s and production promotion 34s. No redundant local Rust build or second Account
+deployment was performed.
+
+Cloudflare deployment readback at 2026-10-05 13:41 Asia/Singapore confirmed all
+three production units serving 100% from that exact revision:
+
+| Unit | New production version |
+| --- | --- |
+| Identity | `ab243ca1-9a6b-4937-829a-900e642b1076` |
+| Login | `f241f26d-d624-4612-932b-ba7eb502f84e` |
+| Account | `e9348f12-5723-4778-bc0b-8ac037efc5e2` |
+
+Post-release primary D1 readback returned ten total applied migrations. Existing
+IDs 1–8 retained their original basenames; ID 9 is
+`0010_registration_oauth_context.sql` and ID 10 is
+`0011_oauth_client_subscribe.sql`. The query read ten rows, wrote zero and reported
+0.3845 ms SQL time. A separate zero-write primary query confirmed `subscribe`
+enabled, confidential/private_key_jwt, with its production sector. Earlier readback
+also verified exact callback/logout URIs, two scopes, and production public key ID.
+
+The parent workstream was notified immediately that Identity/Login/Account are
+ready for actual production subscription acceptance. Product-domain TLS/readiness
+and live authenticated iframe closure remain the subscriptions deployment/user
+acceptance workstream, not something inferred from Identity smoke checks.
+
 ## Rollback and remaining live acceptance
 
 Rollback uses the three recorded production version IDs through the existing
