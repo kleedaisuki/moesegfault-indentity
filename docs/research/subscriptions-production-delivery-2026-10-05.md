@@ -103,6 +103,26 @@ acceptance workstream, not something inferred from Identity smoke checks.
 
 ## Rollback and remaining live acceptance
 
+### Discovery dependency triage during live acceptance
+
+A production amail search briefly reported `Identity discovery must return JSON,
+not a login page`. This wording is **not evidence of HTML or a redirect**: the
+installed amail 0.1.2 source (`../moesegfault-amail/crates/amail/src/auth.rs`,
+`discover`/`identity_json`) attaches that same context to network send, HTTP-status
+and JSON-decoding failures. A repeated unchanged search subsequently succeeded.
+
+An unauthenticated no-redirect HTTP probe of the exact public production discovery
+URL returned 200, `application/json; charset=utf-8`, 1071 bytes, production issuer
+and matching authorization/token/JWKS origins, with no Location or challenge
+header. Staging separately returned its own correct JSON issuer. Deployment API
+still reported production Identity 100% at c91f7a8; CLI public configuration had
+the exact production issuer with no issuer override. Local proxy variables were
+configured, but this did not identify a specific transport root cause. No issuer
+fallback, realm switch, credential inspection or backend fix was performed.
+
+When this generic message recurs, classify the safe underlying dependency error
+and direct public endpoint status before proposing a provider route change.
+
 Rollback uses the three recorded production version IDs through the existing
 rollback workflow, restoring presentations before authority. Do not undo 0010 or
 delete 0011: nullable schema expansion and unused client metadata are compatible
