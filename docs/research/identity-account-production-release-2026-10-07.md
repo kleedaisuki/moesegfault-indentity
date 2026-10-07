@@ -87,6 +87,54 @@ by this reviewer. Final CI, release approval, operational prerequisites, version
 IDs, deployment results, and smoke outcomes belong in the release owner's
 separate Release section below.
 
+### Security dependency review — PR 26 follow-up
+
+PR 26 CI run `37642648349` exposed a new release blocker in the existing audit
+gate, not a reason to bypass it. Primary advisories identify patched versions
+[sharp 0.35.5](https://github.com/advisories/GHSA-wq5f-xc86-pv6w) and
+[source-map-js 1.2.2](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).
+The former updates the bundled librsvg; the latter fixes excessive indexed-map
+offset processing. No malicious-input exploitation was attempted in this review.
+
+Reviewed the isolated worktree's minimal remedy: a `miniflare`-scoped exact
+`sharp: 0.35.5` override and exact `source-map-js: 1.2.2` override. Wrangler
+remains `4.144.0`, Miniflare remains `5.20260926.1-alpha`, and workerd is
+unchanged. Do not use the audit tool's proposed ancient Wrangler downgrade.
+The lock changes exactly 28 existing package records: sharp, its platform/native
+libvips family, and source-map-js. No packages are added/removed; no authentication
+source, frontend source, migration, Worker config, release workflow, or policy is
+changed by this dependency repair. `git diff --check` passed.
+
+Independent checks under Node `24.18.0` on Windows:
+
+- `npm.cmd audit --audit-level=high`: **0 vulnerabilities**.
+- `npm.cmd ls sharp source-map-js wrangler miniflare`: patched exact versions,
+  scoped override active, Wrangler/Miniflare unchanged.
+- Actual local Miniflare Images binding, not merely importing sharp:
+  4×4 PNG `info` reports the correct dimensions; resize/output yields a decodable
+  2×2 PNG; a benign SVG input also yields a decodable 2×2 PNG.
+  Native versions are sharp `0.35.5`, librsvg `2.63.2`.
+  Reproduction: isolated worktree `.temp/review-patched-images.mjs`.
+- Ordinary and indexed source-map roundtrips match pre-update results. An initial
+  indexed-column-zero expectation failed identically on old/new versions;
+  this is not introduced by the repair. The corrected compatibility comparison
+  passed. The first Images probe similarly assumed SVG rejection incorrectly;
+  the Images binding supports SVG, unlike the separate `cf.image` local path.
+
+The distinction matters for security: rejecting SVG after `sharp.metadata()` in
+the separate local-fetch path would not prove SVG decoding unreachable. Updating
+the vulnerable native library is preferable to claiming such an exemption.
+
+**Review conclusion:** no concrete compatibility blocker found in the chosen
+patched dependency approach. These dependencies are Node tooling/emulator
+dependencies, not newly introduced production Worker runtime dependencies.
+The repair leaves production application source unchanged; this is not a claim
+that rebuilt artifacts are byte-identical. CI must rebuild and test the final
+lock on its Linux runner, including Worker harnesses, frontend builds and
+Wrangler production dry-runs, then promote that exact checksummed bundle.
+Local Windows native-image success cannot certify Linux binaries. The previously
+failed audit run remains failed until a new final-SHA CI run passes.
+
 ## Release
 
 ### Owner authorization and isolation
@@ -150,3 +198,79 @@ The GitHub production environment readback currently has no protection rules; ro
 does not add, remove or bypass them. The existing main-only workflow, quality gate,
 same-bundle staging promotion and stale-main check remain unchanged. Production is
 not reported complete until the exact merged SHA workflow and production smoke pass.
+
+### Publication and first hosted gate
+
+The normal Git transport repeatedly returned server500 and then a TLS handshake
+failure; certificate validation was never disabled. Root used the official GitHub
+Git database API to publish each of the six reviewed local commits. Every remote
+commit ID and every intermediate/final tree matched the local object exactly.
+Only the release ref was fast-forwarded; main and its checks were not bypassed.
+PR26 was created through the connected GitHub API after local GraphQL failures.
+
+PR26 initial head f448f5d15af9df9fc8030cc10936e1be82b1ae2b hosted run37642648349
+passed both frontend jobs and Rust quality/vendored/Wasm build. Contracts failed
+the mandatory npm high-severity audit, so immutable packaging and all deployment
+jobs correctly skipped. Root commissioned the bounded, reviewed dependency patch
+below rather than skipping audit or accepting the suggested ancient Wrangler
+downgrade. Production remained at the captured rollback versions throughout.
+
+## Dependency remediation (PR 26 quality gate)
+
+The first PR head f448f5d CI run37642648349 exposed two newly published high-severity
+transitive advisories: sharp<0.35.5 (librsvg CVE-2026-96889,
+https://github.com/advisories/GHSA-wq5f-xc86-pv6w) and source-map-js1.0.0..<1.2.2
+(indexed-source-map denial of service, https://github.com/advisories/GHSA-68fv-2mgg-jv7q).
+Do not use npm audit fix --force: its proposed Wrangler4.15.2 downgrade is unrelated to
+the intended supported runtime. Registry inspection found latest Wrangler4.148.0 still
+uses Miniflare5.20261006.0-alpha with vulnerable sharp0.35.4; a general upgrade would not
+solve this advisory and would expand scope.
+
+Only the isolated release checkout package.json/package-lock.json were changed. Preserve
+Wrangler4.144.0 and Miniflare5.20260926.1-alpha. Add exact scoped override
+`miniflare: { sharp: "0.35.5" }` and exact source-map-js1.2.2 override. Existing sharp was
+already0.35.4, so this is a patch release plus its matching native optional packages and
+libvips1.3.3→1.3.4, not a new sharp minor. sharp0.35.5 requires Node>=20.9 and is compatible
+with the project's Node24.18.0/npm11.16.0. The upstream patch changelog is
+https://sharp.pixelplumbing.com/changelog/v0.35.5/; the advisory identifies bundled
+librsvg2.63.2 as patched. Miniflare cf.image reads image metadata with sharp before SVG refusal,
+so local SVG rejection is not treated as an advisory exemption.
+
+Commands run only inside `.temp/identity-production-20261007/worktree`: package-lock-only
+install with ignored scripts; explicit `npm update source-map-js --package-lock-only
+--ignore-scripts` (the initial install retained its old locked node); clean `npm ci
+--ignore-scripts`; `npm audit --audit-level=high` reports zero vulnerabilities. No root
+node_modules/global dependencies/TLS settings are modified. Shared6files70tests,
+Login28files234tests, Account26files231tests and both TypeScript/Vite builds passed.
+Login index-y4d-xBqN.js and Account index-BcRIcomX.js remain the staging-accepted entries.
+
+Parent authorized copying source-equivalent original-root ignored Worker build artifacts
+into the isolated checkout solely for local compatibility tests; no .vars, secrets or
+.wrangler state were copied. Harnesses each create isolated local D1 fixtures, without
+remote operations. Contact full lifecycle and registration proof/profile roundtrip
+harnesses have passed; remaining sequential harness results and independent Miniflare
+Images-binding compatibility are recorded below when complete. The exact revised PR SHA
+must still pass hosted CI; these local results do not replace that publication gate.
+
+
+Sequential isolated compatibility results: contact verification lifecycle; registration
+email proof/single-use/atomic profile roundtrip; password security (stale challenge403,
+add/change204, issuer-rooted login resume, session/refresh-family revocation and replay
+rejection); password rate-limit/stale-credential SQL policy/migration/constraints; recovery
+authority SQL all passed. Independent reviewer exercised actual patched Miniflare Images
+binding: PNG info4x4, PNG transform2x2 and successful ordinary SVG→PNG2x2, with
+sharp0.35.5 and rsvg2.63.2. Its reproducible script is isolated-checkout
+`.temp/review-patched-images.mjs`. The first probe incorrectly assumed all SVG paths reject
+and its assertion failed; corrected probe passed (the cf.image path rejects SVG while
+Images binding supports it). No image policy or production code was changed. Lockfile
+review confirms only28 affected sharp-family/source-map-js records, no Wrangler/Miniflare
+upgrade. Final security-boundary/OpenAPI gates follow below.
+
+Final isolated gates also passed: actual Worker request security boundary (same-site/
+missing-metadata malformed JSON400 with one claim; cross-site/foreign or absent Origin/
+invalid or missing CSRF403 with zero claims), OpenAPI Redocly validation, shared TypeScript
+check and git diff --check. Patched audit JSON is saved at isolated `.temp/npm-audit-patched.json`
+with zero total/high vulnerabilities. Tracked isolated diff is exactly package.json and
+package-lock.json; no application/backend/migration/configuration changes. Worker artifacts
+used here were locally copied ignored source-equivalent builds, not a final-SHA hosted build.
+Root owns committing/publishing the patch and exact revised-SHA hosted CI before rollout.
