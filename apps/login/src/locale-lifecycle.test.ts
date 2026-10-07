@@ -237,5 +237,3 @@ describe("route-owned locale changes", () => {
     f.lifecycle.relocalize("en"); names.forEach(name => expect(f.input(name).value).toBe(`fixture-${name}`));
   });
 });
-
-

@@ -160,6 +160,3 @@ it("keeps saved Profile language consistent across current UI and authenticated 
   expect(headerLocale().value).toBe("ja");
   expect(form().querySelector("h2")?.textContent).toBe(translator("ja")("editProfile"));
 });
-
-
-
