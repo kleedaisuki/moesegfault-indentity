@@ -58,3 +58,4 @@ export * from "./avatar";
 export * from "./dom";
 export * from "./environment";
 export * from "./http";
+export * from "./mobile";
