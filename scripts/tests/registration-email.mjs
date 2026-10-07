@@ -16,7 +16,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: root, modules:
   { type: "ESModule", path: join(build, "index.js") },
   { type: "CompiledWasm", path: join(build, "index_bg.wasm") },
 ], compatibilityDate: "2026-09-15", bindings: {
-  ENVIRONMENT: "staging", LOGIN_ORIGIN: origin, ACCOUNT_ORIGIN: "https://account.example.test",
+  ENVIRONMENT: "staging", AVATAR_PUBLIC_ORIGIN: "https://avatars.example.test", LOGIN_ORIGIN: origin, ACCOUNT_ORIGIN: "https://account.example.test",
   ISSUER: "https://identity.example.test", OAUTH_ENABLED: "false",
   CSRF_PEPPER: "fixture-only-csrf", SESSION_PEPPER: "fixture-only-session",
   REGISTRATION_PEPPER: "fixture-only-registration", TRANSACTION_PEPPER: "fixture-only-transaction",
@@ -81,13 +81,25 @@ try {
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM password_credentials").first("n"), 0);
   await body(await post("/v1/registration-email-transactions", { email: registration.email }, first), 429);
   await knownCode(challenge.transaction_id);
-  await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, second), 400);
+  // Another Login tab's context initializer must retain the existing binding and
+  // never shorten its ten-minute mailbox challenge to the five-minute ceremony TTL.
+  const refreshResponse = await request("/v1/browser-context", { headers: { origin, cookie: first.cookie } });
+  assert.ok(refreshResponse.headers.get("set-cookie").endsWith("Max-Age=600"));
+  assert.equal(refreshResponse.headers.get("set-cookie").split(";")[0], first.cookie);
+  const refreshContext = await body(refreshResponse, 200);
+  assert.equal(refreshContext.csrf_token, first.csrf, "same binding must retain the same browser CSRF capability");
+  const refreshed = { cookie: first.cookie, csrf: refreshContext.csrf_token };
+  const stale = await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, { cookie: second.cookie, csrf: first.csrf }), 403);
+  assert.equal(stale.error_code, "invalid_request", "stale CSRF cannot authorize a changed browser binding");
+  const crossBrowser = await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, second), 400);
+  assert.equal(crossBrowser.error_code, "invalid_transaction", "fresh CSRF must not rebind another browser's challenge");
   await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "11111111" }, first), 400);
-  const verified = await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, first), 200);
+  const verified = await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, refreshed), 200);
   const recovered = await body(await post(`/v1/registration-email-transactions/${challenge.transaction_id}/completion`, { code: "01234567" }, first), 200);
   assert.deepEqual(recovered, verified, "lost responses recover the same proof without extending expiry");
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 0);
-  const input = { ...registration, email_verification_token: verified.email_verification_token };
+  const profile = { status_message: "Registration readback", favorite_character: "Klee", interests: ["Compilers", "Linux"] };
+  const input = { ...registration, profile, email_verification_token: verified.email_verification_token };
   await body(await post("/v1/password/registrations", { ...input, email: "other@example.test" }, first), 403);
   await body(await post("/v1/password/registrations", input, second), 403);
   const passkey = await body(await post("/v1/registration-transactions", { ...input, password: undefined, authenticator_label: "Fixture" }, first), 201);
@@ -100,11 +112,79 @@ try {
   ]);
   assert.equal(responses.filter(response => response.status === 201).length, 1);
   assert.ok(responses.every(response => [201, 403, 409].includes(response.status)));
-  const created = await responses.find(response => response.status === 201).json();
+  const createdResponse = responses.find(response => response.status === 201);
+  const sessionCookie = createdResponse.headers.get("set-cookie").split(";")[0];
+  const created = await createdResponse.json();
+  const me = () => request("/v1/me", { headers: { origin, cookie: sessionCookie } }).then(response => body(response, 200));
+  const registeredProfile = (await me()).account.profile;
+  for (const [key, value] of Object.entries(profile)) assert.deepEqual(registeredProfile[key], value, `registration persists ${key}`);
+  assert.equal(registeredProfile.bio, null);
+  assert.deepEqual(registeredProfile.links, []);
+  assert.equal(registeredProfile.profile_visibility, "members");
+  const edit = { bio: "Biography", status_message: "Edited", pronouns: "she/her", favorite_character: "Alice", interests: ["Rust"], links: ["https://example.test/profile"], profile_visibility: "private" };
+  const patch = async value => {
+    const current = await me();
+    return request("/v1/me", { method: "PATCH", headers: { origin, cookie: sessionCookie, "content-type": "application/merge-patch+json", "x-moesegfault-csrf": current.csrf_token, "idempotency-key": randomUUID() }, body: JSON.stringify(value) });
+  };
+  const edited = await body(await patch(edit), 200);
+  for (const [key, value] of Object.entries(edit)) assert.deepEqual(edited.profile[key], value);
+  for (const [key, value] of Object.entries(edit)) assert.deepEqual((await me()).account.profile[key], value, `reload retains ${key}`);
+  await body(await patch({ display_name: "Renamed" }), 200);
+  assert.equal((await me()).account.profile.bio, edit.bio, "omission preserves details");
+  await body(await patch({ bio: null, status_message: null, pronouns: null, favorite_character: null, interests: [], links: [] }), 200);
+  const cleared = (await me()).account.profile;
+  for (const key of ["bio", "status_message", "pronouns", "favorite_character"]) assert.equal(cleared[key], null);
+  assert.deepEqual(cleared.interests, []);
+  assert.deepEqual(cleared.links, []);
+  assert.equal(cleared.profile_visibility, "private");
+  for (const invalid of [{ interests: null }, { links: null }, { interests: ["same", "same"] }, { links: ["not a URL"] }, { profile_visibility: null }, { profile_visibility: "hidden" }, { bio: "x".repeat(501) }, { unknown: "field" }]) await body(await patch(invalid), 400);
+  const beforeInvalid = (await me()).account.profile;
+  for (const invalid of [{ bio: 42 }, { status_message: "x".repeat(101) }, { pronouns: "x".repeat(41) }, { favorite_character: "x".repeat(101) }, { interests: ["x".repeat(41)] }, { interests: Array.from({ length: 21 }, (_, i) => `item-${i}`) }, { links: Array(11).fill("https://example.test") }]) await body(await patch(invalid), 400);
+  assert.deepEqual((await me()).account.profile, beforeInvalid, "rejected patches leave all existing data intact");
+  await body(await patch({ bio: "可".repeat(500), status_message: "可".repeat(100) }), 200);
+  assert.equal((await me()).account.profile.bio.length, 500, "profile bounds count Unicode characters, not UTF-8 bytes");
+  // A details failure must also roll back human-profile and account timestamps.
+  const beforeFailure = (await me()).account;
+  await db.exec("CREATE TRIGGER fixture_profile_abort BEFORE UPDATE ON account_profile_details BEGIN SELECT RAISE(ABORT,'fixture atomic rollback'); END;");
+  await body(await patch({ display_name: "Must roll back", bio: "Must roll back" }), 500);
+  assert.deepEqual((await me()).account, beforeFailure, "all profile writes share the same D1 transaction");
+  await db.exec("DROP TRIGGER fixture_profile_abort;");
+  // Accounts created before optional details existed retain a complete default profile.
+  await db.prepare("DELETE FROM account_profile_details WHERE principal_id=?").bind(created.account.principal_id).run();
+  const legacy = (await me()).account.profile;
+  assert.equal(legacy.bio, null);
+  assert.deepEqual(legacy.interests, []);
+  assert.equal(legacy.profile_visibility, "members");
+  await body(await patch({ bio: "Restored optional row" }), 200);
+  assert.equal((await me()).account.profile.bio, "Restored optional row");
   assert.equal(created.account.identifiers.find(item => item.kind === "email").verification_state, "verified");
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 1);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM registration_email_consumptions").first("n"), 1);
   await body(await post("/v1/password/registrations", { ...input, username: "replay_fixture" }, first), 403);
+
+  // An older verified proof replay must not shorten a parallel WebAuthn ceremony.
+  const overlapBrowser = await browser();
+  const olderProof = await proof("overlap-old@example.test", overlapBrowser);
+  await db.prepare("UPDATE registration_email_transactions SET proof_expires_at=unixepoch()+100 WHERE transaction_id=?").bind(olderProof.challenge.transaction_id).run();
+  const parallelPasskey = await body(await post("/v1/registration-transactions", {
+    ...registration, username: "overlap_fixture", email: "overlap-old@example.test",
+    password: undefined, authenticator_label: "Fixture", email_verification_token: olderProof.email_verification_token,
+  }, overlapBrowser), 201);
+  assert.ok(Date.parse(parallelPasskey.expires_at) > Date.now() + 290_000);
+  const replayResponse = await post(`/v1/registration-email-transactions/${olderProof.challenge.transaction_id}/completion`, { code: "01234567" }, overlapBrowser);
+  assert.ok(replayResponse.headers.get("set-cookie").endsWith("Max-Age=600"), "old proof replay must not shorten another pending ceremony");
+  const replayProof = await body(replayResponse, 200);
+  assert.ok(Date.parse(replayProof.expires_at) < Date.now() + 110_000, "binding renewal must not extend old proof expiry");
+
+  // Refreshing a cookie does not revive the server-side mailbox deadline.
+  const expiryBrowser = await browser();
+  const expiryChallenge = await body(await post("/v1/registration-email-transactions", { email: "context-expiry@example.test" }, expiryBrowser), 201);
+  await knownCode(expiryChallenge.transaction_id);
+  await db.prepare("UPDATE registration_email_transactions SET created_at=unixepoch()-601,expires_at=unixepoch()-1 WHERE transaction_id=?").bind(expiryChallenge.transaction_id).run();
+  const expiryRefresh = await body(await request("/v1/browser-context", { headers: { origin, cookie: expiryBrowser.cookie } }), 200);
+  const expiredConfirmation = await body(await post(`/v1/registration-email-transactions/${expiryChallenge.transaction_id}/completion`, { code: "01234567" }, { cookie: expiryBrowser.cookie, csrf: expiryRefresh.csrf_token }), 400);
+  assert.equal(expiredConfirmation.error_code, "invalid_transaction");
+  assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 1);
 
   const third = await browser();
   const expired = await proof("expired@example.test", third);
@@ -184,5 +264,5 @@ try {
   await body(await post("/v1/password/registrations", { ...contextualInput, authorization_transaction_id: "mail-signup" }, eighth), 201);
   await body(await post("/v1/registration-email-transactions", { email: "authenticated@example.test", authorization_transaction_id: "mail-signup" }, await browser()), 400);
   assert.equal(await db.prepare("SELECT expires_at FROM oauth_authorization_transactions WHERE authorization_transaction_id='expired-signup'").first("expires_at") < Math.floor(Date.now()/1000), true, "expired transactions are never revived");
-  console.log("registration email: no-account-before-proof, password/passkey bypass prevention, email/browser binding, atomic single-use race, expiry, and parallel guessing limits passed");
+  console.log("registration email: no-account-before-proof, password/passkey bypass prevention, email/browser binding, atomic single-use race, expiry, parallel guessing limits, and full profile read/write/null/legacy roundtrip passed");
 } finally { await mf.dispose(); }

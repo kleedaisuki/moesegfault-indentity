@@ -39,3 +39,9 @@ export function validateAccountReturnUri(location: Pick<Location, "hostname" | "
 export function resolveAccountReturnUri(location: Pick<Location, "hostname" | "href">): string {
   return validateAccountReturnUri(location) ?? resolveAccountOrigin(location);
 }
+
+/** Build internal auth links carrying only the validated paired-Account destination, never secrets. */
+export function authRouteHref(route: "/login" | "/register" | "/recovery" | "/passkey/enroll", location?: Pick<Location, "hostname" | "href">): string {
+  const returnUri = location && validateAccountReturnUri(location);
+  return returnUri ? `${route}?${new URLSearchParams({ return_uri: returnUri })}` : route;
+}

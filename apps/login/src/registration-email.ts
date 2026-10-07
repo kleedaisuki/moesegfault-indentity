@@ -9,6 +9,8 @@ export interface VerifiedRegistrationEmail { email: string; token: string; expir
 /** Inline email controls owned by the full registration form, never a separate wizard page. */
 export interface RegistrationEmailVerifier {
   element: HTMLElement;
+  /** Updates copy without replacing controls, proof, pending challenge, or timers. */
+  relocalize(t: (key: MessageKey) => string): void;
   /** Returns a valid proof for the displayed mailbox, otherwise invalidates only email state. */
   verified(): VerifiedRegistrationEmail | undefined;
   /** Starts verification or focuses a pending challenge without replacing the form. */
@@ -19,6 +21,8 @@ export interface RegistrationEmailVerifier {
 
 /** Supplies current page-realm OAuth context without persisting or synthesizing it. */
 export interface RegistrationEmailVerifierOptions {
+  /** Keeps cosmetic rebuilds out of unresolved server mutations. */
+  hold?: () => () => void;
   /** Reads the pending OAuth handle; omit for standalone registration. */
   authorizationTransactionId?: () => string | undefined;
 }
@@ -65,28 +69,47 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
     change.disabled = locked || authorizationExpired || Boolean(busy);
     send.hidden = Boolean(proof);
     send.disabled = locked || authorizationExpired || Boolean(busy) || resendAt > Date.now();
-    send.textContent = busy === "sending" ? t("sendingCode") : transaction ? t("resendCode") : t("sendSignupCode");
+    const sendLabel = transaction ? t("resendCode") : t("sendSignupCode");
+    const secondsRemaining = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
+    send.textContent = busy === "sending" ? t("sendingCode") : secondsRemaining ? `${sendLabel} (${secondsRemaining}s)` : sendLabel;
     confirm.disabled = locked || authorizationExpired || Boolean(busy);
     confirm.textContent = busy === "confirming" ? t("verifyingCode") : t("confirmEmail");
   };
+  /** Refreshes visible server-imposed cooldown without announcing every tick. */
+  const tickCooldown = (): void => {
+    sync();
+    const remaining = resendAt - Date.now();
+    if (remaining > 0 && !signal.aborted) cooldown = setTimeout(tickCooldown, Math.min(1000, remaining));
+  };
   const waitToResend = (until: number): void => {
-    clearTimeout(cooldown); resendAt = until;
-    cooldown = setTimeout(sync, Math.max(0, until - Date.now()));
+    clearTimeout(cooldown);
+    resendAt = Number.isFinite(until) ? until : 0;
+    tickCooldown();
+  };
+  let projectStatus: (() => void) | undefined;
+  const showStatus = (kind: "error" | "info" | "success", title: MessageKey, detail: () => string): void => {
+    projectStatus = () => replace(status, statePanel(kind, t(title), detail()));
+    projectStatus();
   };
   const showError = (error: unknown, title: MessageKey): void => {
     const code = error instanceof ApiError ? error.problem?.error_code : undefined;
     if (code === "authorization_transaction_expired") {
       authorizationExpired = true;
       proof = undefined;
-      replace(status, statePanel("error", t("signupAuthorizationExpiredTitle"), t("signupAuthorizationExpired")));
+      showStatus("error", "signupAuthorizationExpiredTitle", () => t("signupAuthorizationExpired"));
+      return;
+    }
+    if (error instanceof ApiError && error.status === 403 && code === "invalid_request") {
+      showStatus("error", title, () => t("signupContextChanged"));
       return;
     }
     const key = code === "verification_failed" ? "signupWrongCode" : code === "invalid_transaction" ? "signupCodeExpired" : code === "rate_limited" ? "signupRateLimited" : undefined;
     const message = key ? t(key) : error instanceof ApiError ? error.problem?.detail ?? error.message : t(title);
-    replace(status, statePanel("error", t(title), message));
+    showStatus("error", title, () => key ? t(key) : message);
   };
   const sendCode = async (): Promise<void> => {
     if (locked || authorizationExpired || busy || signal.aborted || resendAt > Date.now() || !emailInput.reportValidity()) return;
+    const release = options.hold?.();
     busy = "sending"; sync();
     try {
       const nextDestination = emailInput.value.trim();
@@ -94,39 +117,67 @@ export function createRegistrationEmailVerifier(api: IdentityApiClient, signal: 
       const next = await api.startRegistrationEmail(nextDestination, csrfToken, signal, authorizationContext());
       if (signal.aborted) return;
       destination = nextDestination; transaction = next; proof = undefined; codeInput.value = "";
-      replace(status, statePanel("info", t("codeSent"), `${next.delivery_hint} · ${t("signupCodeHint")}`));
+      showStatus("info", "codeSent", () => `${next.delivery_hint} · ${t("signupCodeHint")}`);
       waitToResend(Date.parse(next.resend_after));
     } catch (error) {
-      if (!signal.aborted) { showError(error, "codeSendFailed"); waitToResend(Date.now() + 60_000); }
-    } finally { busy = undefined; sync(); }
+      if (!signal.aborted) {
+        showError(error, "codeSendFailed");
+        // Only an explicit rate limit justifies a new local cooldown; transient
+        // delivery/network failures remain retryable under server authority.
+        if (error instanceof ApiError && (error.status === 429 || error.problem?.error_code === "rate_limited")) waitToResend(Date.now() + 60_000);
+      }
+    } finally { busy = undefined; sync(); release?.(); }
     if (transaction && !signal.aborted) codeInput.focus();
   };
   const confirmCode = async (): Promise<void> => {
     if (!transaction || locked || authorizationExpired || busy || signal.aborted || !codeInput.reportValidity()) return;
+    // An expired local challenge needs a resend, not a stale-CSRF mutation or a new account.
+    if (Date.parse(transaction.expires_at) <= Date.now()) {
+      showStatus("error", "codeInvalid", () => t("signupCodeExpired"));
+      return;
+    }
+    const release = options.hold?.();
     busy = "confirming"; sync();
     try {
+      // Browser context is shared across tabs. Refresh its CSRF capability without
+      // resending mail, replacing the challenge, or automatically retrying a mutation.
+      csrfToken = (await api.getBrowserContext(signal)).csrf_token;
+      if (signal.aborted) return;
       const result = await api.completeRegistrationEmail(transaction.transaction_id, codeInput.value.trim(), csrfToken, signal, authorizationContext());
       if (signal.aborted) return;
       proof = { email: destination, token: result.email_verification_token, expiresAt: result.expires_at, csrfToken };
-      replace(status, statePanel("success", t("emailVerified"), t("signupEmailVerified")));
+      showStatus("success", "emailVerified", () => t("signupEmailVerified"));
     } catch (error) { if (!signal.aborted) showError(error, "codeInvalid"); }
-    finally { busy = undefined; sync(); }
+    finally { busy = undefined; sync(); release?.(); }
   };
   send.addEventListener("click", () => { void sendCode(); });
   confirm.addEventListener("click", () => { void confirmCode(); });
   codeInput.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void confirmCode(); } });
   change.addEventListener("click", () => {
     if (authorizationExpired) return;
-    proof = undefined; transaction = undefined; codeInput.value = ""; status.replaceChildren(); sync(); emailInput.focus();
+    proof = undefined; transaction = undefined; codeInput.value = ""; projectStatus = undefined; status.replaceChildren(); sync(); emailInput.focus();
   });
   signal.addEventListener("abort", () => { clearTimeout(cooldown); proof = undefined; }, { once: true });
   sync();
   return {
     element,
+    relocalize: (translate) => {
+      t = translate;
+      element.setAttribute("aria-label", t("email"));
+      emailField.querySelector(".field__label")!.textContent = t("email");
+      codeField.querySelector(".field__label")!.textContent = t("verificationCode");
+      change.textContent = t("changeSignupEmail");
+      element.querySelector(".hint")!.textContent = t("signupEmailIntro");
+      if (proof && Date.parse(proof.expiresAt) <= Date.now()) {
+        proof = undefined; transaction = undefined;
+        showStatus("info", "verifyEmailTitle", () => t("signupProofExpired"));
+      }
+      projectStatus?.(); sync();
+    },
     verified: () => {
       if (proof && (Date.parse(proof.expiresAt) <= Date.now() || proof.email !== emailInput.value.trim())) {
         proof = undefined; transaction = undefined;
-        replace(status, statePanel("info", t("verifyEmailTitle"), t("signupProofExpired"))); sync();
+        showStatus("info", "verifyEmailTitle", () => t("signupProofExpired")); sync();
       }
       return proof;
     },

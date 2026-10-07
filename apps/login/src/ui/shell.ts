@@ -1,3 +1,4 @@
+import { authRouteHref } from "../environment";
 import type { AppRoute } from "../router";
 import type { Locale, MessageKey } from "../i18n";
 import { translate } from "../i18n";
@@ -10,7 +11,10 @@ import { LOCALES } from "@moesegfault/frontend-shared";
 export interface AppShell { root: HTMLElement; main: HTMLElement; setActiveRoute(route: AppRoute): void }
 
 /** 外壳中的显示偏好与事件。Display preferences and events used by the shell. */
-export interface ShellOptions { locale: Locale; theme: Theme; accountOrigin: string; inAppBrowser?: string; onLocale(locale: Locale): void; onTheme(theme: Theme): void }
+export interface ShellOptions { locale: Locale; theme: Theme; accountOrigin: string;
+  /** Live route location used to preserve only validated Account return destinations. */
+  authLocation?: Pick<Location, "hostname" | "href">;
+  inAppBrowser?: string; onLocale(locale: Locale): void; onTheme(theme: Theme): void }
 
 /** 构建轻量、可本地化的登录外壳。Builds a lightweight, localizable login shell. */
 export function createShell(options: ShellOptions): AppShell {
@@ -25,10 +29,10 @@ export function createShell(options: ShellOptions): AppShell {
     ...(["system", "light", "dark"] as const).map((value) => el("option", { attrs: { value, selected: options.theme === value } }, t(value))));
   theme.addEventListener("change", () => options.onTheme(theme.value as Theme));
   const main = el("main", { attrs: { id: "main-content", tabindex: "-1" } });
-  const links = (["/login", "/register"] as AppRoute[]).map((href) => el("a", { attrs: { href }, dataset: { route: href } }, t(href === "/login" ? "login" : "register")));
+  const links = (["/login", "/register"] as const).map((href) => el("a", { attrs: { href: authRouteHref(href, options.authLocation) }, dataset: { route: href } }, t(href === "/login" ? "login" : "register")));
   const root = el("div", { className: "app-shell" },
     el("header", { className: "site-header" },
-      el("a", { className: "brand", attrs: { href: "/login", "aria-label": t("brand") } }, el("img", { attrs: { src: "/assets/brand.svg", alt: "", width: "38", height: "38" } }), el("span", {}, "moeSegFault", el("small", {}, "IDENTITY"))),
+      el("a", { className: "brand", attrs: { href: authRouteHref("/login", options.authLocation), "aria-label": t("brand") } }, el("img", { attrs: { src: "/assets/brand.svg", alt: "", width: "38", height: "38" } }), el("span", {}, "moeSegFault", el("small", {}, "IDENTITY"))),
       el("nav", { className: "top-nav", attrs: { "aria-label": t("brand") } }, ...links),
       el("div", { className: "display-tools" }, icon("globe"), language, icon("moon"), theme)),
     options.inAppBrowser ? inAppNotice(options.inAppBrowser, t) : undefined, main,
@@ -36,7 +40,11 @@ export function createShell(options: ShellOptions): AppShell {
   return { root, main, setActiveRoute(route) {
     // Size the route's containing block instead of translating an oversized child form.
     main.dataset.route = route;
-    for (const link of links) link.toggleAttribute("aria-current", link.dataset.route === route);
+    for (const link of links) {
+      link.toggleAttribute("aria-current", link.dataset.route === route);
+      link.setAttribute("href", authRouteHref(link.dataset.route as "/login" | "/register", options.authLocation));
+    }
+    root.querySelector<HTMLAnchorElement>(".brand")?.setAttribute("href", authRouteHref("/login", options.authLocation));
   } };
 }
 

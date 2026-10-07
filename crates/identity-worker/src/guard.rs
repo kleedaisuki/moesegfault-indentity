@@ -98,10 +98,12 @@ pub fn cookie(request: &Request, name: &str) -> Option<String> {
         })
 }
 
-/// 事务浏览器绑定 Cookie。/ Transaction browser-binding cookie.
+/// Retains the shared browser binding for the longest supported ceremony (600 seconds).
+/// Context refreshes must not shorten another tab's mailbox challenge. This cookie is
+/// not authorization: each transaction and CSRF proof retains its own validation/expiry.
 #[must_use]
 pub fn browser_cookie(value: &str) -> String {
-    browser_cookie_for(value, 300)
+    browser_cookie_for(value, 600)
 }
 
 /// Retains an already-validated browser binding for the remaining purpose lifetime.
@@ -249,7 +251,7 @@ mod tests {
         assert!(!session.to_ascii_lowercase().contains("domain="));
         let browser = browser_cookie("opaque");
         assert!(browser.contains("SameSite=Strict"));
-        assert!(browser.contains("Max-Age=300"));
+        assert!(browser.contains("Max-Age=600"));
     }
 
     #[test]
@@ -259,7 +261,7 @@ mod tests {
         assert!(browser_cookie_for("opaque", 900).ends_with("Max-Age=600"));
         assert!(browser_cookie_for("opaque", 0).ends_with("Max-Age=0"));
         assert!(browser_cookie_for("opaque", -1).ends_with("Max-Age=0"));
-        assert!(browser_cookie("opaque").ends_with("Max-Age=300"));
+        assert!(browser_cookie("opaque").ends_with("Max-Age=600"));
     }
 
     #[test]

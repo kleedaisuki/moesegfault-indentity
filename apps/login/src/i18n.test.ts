@@ -13,6 +13,12 @@ describe("display localization", () => {
     expect(new Set([translate("zh-CN", "welcome"), translate("en", "welcome"), translate("ja", "welcome")]).size).toBe(3);
   });
 
+  it("describes completed authentication without promising an automatic redirect", () => {
+    expect(translate("zh-CN", "signedIn")).toBe("身份已确认，可以继续了。");
+    expect(translate("en", "signedIn")).toBe("Your identity is confirmed. You're ready to continue.");
+    expect(translate("ja", "signedIn")).toBe("本人確認が完了しました。次の操作に進めます。");
+  });
+
   it("localizes the mandatory registration verification actions", () => {
     for (const locale of ["zh-CN", "en", "ja"] as const) {
       expect(translate(locale, "verifyEmailTitle")).toBeTruthy();

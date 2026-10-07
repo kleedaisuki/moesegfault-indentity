@@ -208,6 +208,21 @@ pub struct IdentifierView {
 /// 自助账户页面所需的主体、资料与标识符。/ Principal, profile, and identifiers needed by self-service account views.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AccountView {
+    /// Optional biography supplied by the account owner.
+    pub bio: Option<String>,
+    /// Optional short status supplied during registration or profile editing.
+    pub status_message: Option<String>,
+    /// Optional pronouns, never inferred from other account data.
+    pub pronouns: Option<String>,
+    /// Optional favorite character supplied by the account owner.
+    pub favorite_character: Option<String>,
+    /// Ordered interest labels from the persisted JSON array.
+    pub interests: Vec<String>,
+    /// Ordered public profile links from the persisted JSON array.
+    pub links: Vec<String>,
+    /// Existing visibility policy; accounts without a details row default to members.
+    pub profile_visibility: String,
+
     /// 稳定 principal ID。/ Stable principal ID.
     pub principal_id: String,
     /// 主体生命周期状态。/ Principal lifecycle state.
@@ -319,6 +334,13 @@ pub enum RevokeAuthenticatorOutcome {
 
 #[derive(Debug, Deserialize)]
 struct AccountRow {
+    bio: Option<String>,
+    status_message: Option<String>,
+    pronouns: Option<String>,
+    favorite_character: Option<String>,
+    interests_json: Option<String>,
+    links_json: Option<String>,
+    profile_visibility: Option<String>,
     principal_id: String,
     lifecycle_state: String,
     display_name: String,
@@ -433,11 +455,13 @@ pub async fn current_session(
 pub async fn account(db: &D1Database, principal_id: &str) -> Result<Option<AccountView>> {
     let row = primary(db)?
         .prepare(
-            "SELECT p.principal_id,p.lifecycle_state,h.display_name,h.avatar_r2_key,h.locale,\
+            "SELECT d.bio,d.status_message,d.pronouns,d.favorite_character,d.interests_json,d.links_json,d.profile_visibility,\
+             p.principal_id,p.lifecycle_state,h.display_name,h.avatar_r2_key,h.locale,\
              p.created_at,p.updated_at,i.identifier_id,i.kind AS identifier_kind,\
              i.value AS identifier_value,i.created_at AS identifier_created_at,\
              i.updated_at AS identifier_updated_at FROM principals p \
              JOIN human_profiles h ON h.principal_id=p.principal_id \
+             LEFT JOIN account_profile_details d ON d.principal_id=p.principal_id \
              LEFT JOIN identifiers i ON i.principal_id=p.principal_id AND i.kind='username' \
              WHERE p.principal_id=?1 AND p.kind='human'",
         )
@@ -451,12 +475,18 @@ pub async fn account(db: &D1Database, principal_id: &str) -> Result<Option<Accou
 }
 
 /// 更新 display name 和/或 locale，并同步主体的账户级更新时间。
-/// Updates the display name and/or locale and advances the account-level timestamp.
+/// Updates the display name, locale and validated details in one atomic batch.
+///
+/// `details_patch` must be a JSON object validated against UpdateAccountRequest.
+/// Omitted members preserve existing values; JSON null clears nullable text.
+/// Legacy profiles without a details row are initialized with established defaults.
+/// The human-profile update gates all writes to active human accounts.
 pub async fn update_account(
     db: &D1Database,
     principal_id: &str,
     display_name: Option<&str>,
     locale: Option<&str>,
+    details_patch: &str,
     now: i64,
 ) -> Result<Option<AccountView>> {
     let results = db
@@ -473,6 +503,21 @@ pub async fn update_account(
                 optional_text(locale),
                 integer(now),
             ])?,
+            // An optional details row is created only for an active human profile.
+            // JSON member presence preserves Merge Patch absent/null distinctions.
+            db.prepare(
+                "INSERT INTO account_profile_details(principal_id,bio,status_message,pronouns,favorite_character,interests_json,links_json,profile_visibility,created_at,updated_at) \
+                 SELECT ?1,json_extract(?2,'$.bio'),json_extract(?2,'$.status_message'),json_extract(?2,'$.pronouns'),json_extract(?2,'$.favorite_character'),COALESCE(json_extract(?2,'$.interests'),'[]'),COALESCE(json_extract(?2,'$.links'),'[]'),COALESCE(json_extract(?2,'$.profile_visibility'),'members'),?3,?3 \
+                 FROM principals p JOIN human_profiles h ON h.principal_id=p.principal_id \
+                 WHERE p.principal_id=?1 AND p.kind='human' AND p.lifecycle_state='active' \
+                 ON CONFLICT(principal_id) DO UPDATE SET bio=CASE WHEN json_type(?2,'$.bio') IS NULL THEN bio ELSE json_extract(?2,'$.bio') END,\
+                 status_message=CASE WHEN json_type(?2,'$.status_message') IS NULL THEN status_message ELSE json_extract(?2,'$.status_message') END,\
+                 pronouns=CASE WHEN json_type(?2,'$.pronouns') IS NULL THEN pronouns ELSE json_extract(?2,'$.pronouns') END,\
+                 favorite_character=CASE WHEN json_type(?2,'$.favorite_character') IS NULL THEN favorite_character ELSE json_extract(?2,'$.favorite_character') END,\
+                 interests_json=CASE WHEN json_type(?2,'$.interests') IS NULL THEN interests_json ELSE json_extract(?2,'$.interests') END,\
+                 links_json=CASE WHEN json_type(?2,'$.links') IS NULL THEN links_json ELSE json_extract(?2,'$.links') END,\
+                 profile_visibility=CASE WHEN json_type(?2,'$.profile_visibility') IS NULL THEN profile_visibility ELSE json_extract(?2,'$.profile_visibility') END,updated_at=?3",
+            ).bind(&[text(principal_id), text(details_patch), integer(now)])?,
             db.prepare(
                 "UPDATE principals SET updated_at=?2 WHERE principal_id=?1 AND kind='human' \
                  AND lifecycle_state='active' AND EXISTS(SELECT 1 FROM human_profiles \
@@ -1670,6 +1715,13 @@ fn account_from_row(row: AccountRow) -> Result<AccountView> {
         }
     };
     Ok(AccountView {
+        bio: row.bio,
+        status_message: row.status_message,
+        pronouns: row.pronouns,
+        favorite_character: row.favorite_character,
+        interests: serde_json::from_str(row.interests_json.as_deref().unwrap_or("[]"))?,
+        links: serde_json::from_str(row.links_json.as_deref().unwrap_or("[]"))?,
+        profile_visibility: row.profile_visibility.unwrap_or_else(|| "members".into()),
         principal_id: row.principal_id,
         lifecycle_state: row.lifecycle_state,
         display_name: row.display_name,
@@ -1828,6 +1880,13 @@ mod tests {
     #[test]
     fn account_projection_accepts_no_identifier() {
         let view = account_from_row(AccountRow {
+            bio: None,
+            status_message: None,
+            pronouns: None,
+            favorite_character: None,
+            interests_json: None,
+            links_json: None,
+            profile_visibility: None,
             principal_id: "principal".into(),
             lifecycle_state: "active".into(),
             display_name: "Klee".into(),
@@ -1848,6 +1907,13 @@ mod tests {
     #[test]
     fn account_projection_rejects_partial_identifier() {
         let result = account_from_row(AccountRow {
+            bio: None,
+            status_message: None,
+            pronouns: None,
+            favorite_character: None,
+            interests_json: None,
+            links_json: None,
+            profile_visibility: None,
             principal_id: "principal".into(),
             lifecycle_state: "active".into(),
             display_name: "Klee".into(),

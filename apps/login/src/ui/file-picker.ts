@@ -26,7 +26,9 @@ export type AvatarProcessor = (file: File) => Promise<ProcessedAvatar>;
 
 /** 拥有处理结果及其对象 URL 生命周期的头像选择器。Avatar picker that owns the processed result and its object-URL lifecycle. */
 export interface AvatarFilePicker extends HTMLElement {
-  /** 等待当前选择完成处理，并返回可上传图片；失败或未选择时返回 undefined。Waits for the current selection and returns its uploadable processed image, or undefined. */
+  /** Reprojects localized copy while preserving the selected bytes and URL owner. */
+  relocalize(copy: FilePickerCopy): void;
+  /** Waits for current preparation; returns exact upload bytes, or undefined without a selection. */
   processedFile(): Promise<File | undefined>;
   /** 锁定或解锁选择，确保预览与即将上传的文件一致。Locks or unlocks selection so preview and upload stay identical. */
   setDisabled(disabled: boolean): void;
@@ -97,6 +99,7 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
   let pending: Promise<void> = Promise.resolve();
   let generation = 0;
   let disposed = false;
+  let phase: "empty" | "processing" | "ready" | "failed" = "empty";
 
   const clearPrepared = (): void => {
     prepared?.dispose();
@@ -118,7 +121,7 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
     clearPrepared();
     remove.hidden = false;
     choose.textContent = copy.change;
-    status.textContent = copy.processing;
+    phase = "processing"; status.textContent = copy.processing;
     pending = processor(selected).then((result) => {
       if (disposed || selectedGeneration !== generation) {
         result.dispose();
@@ -129,9 +132,9 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
       preview.hidden = false;
       metadata.textContent = `${result.metadata.edge} × ${result.metadata.edge} px · ${formatBytes(result.metadata.outputBytes)}`;
       metadata.hidden = false;
-      status.textContent = copy.ready;
+      phase = "ready"; status.textContent = copy.ready;
     }).catch(() => {
-      if (!disposed && selectedGeneration === generation) status.textContent = copy.failed;
+      if (!disposed && selectedGeneration === generation) { phase = "failed"; status.textContent = copy.failed; }
     });
   };
 
@@ -139,7 +142,7 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
     generation += 1;
     clearPrepared();
     input.value = "";
-    status.textContent = copy.empty;
+    phase = "empty"; status.textContent = copy.empty;
     pending = Promise.resolve();
   });
 
@@ -155,6 +158,14 @@ export function avatarFilePicker(copy: FilePickerCopy, options: AvatarFilePicker
   input.addEventListener("change", onChange);
   options.signal?.addEventListener("abort", dispose, { once: true });
   if (options.signal?.aborted) dispose();
+  root.relocalize = (next) => {
+    copy = next;
+    root.querySelector(".field__label")!.textContent = copy.label;
+    choose.textContent = remove.hidden ? copy.choose : copy.change;
+    remove.textContent = copy.remove;
+    preview.alt = copy.previewAlt;
+    status.textContent = copy[phase];
+  };
   root.processedFile = async () => {
     // 选择可能在一次解码等待期间被替换；总是等待最新一代。
     // Selection may change while one decode is pending; always await the newest generation.

@@ -160,6 +160,15 @@ try {
   const completionUrl = `${base}/v1/me/contacts/${created.contact_id}/verification-transactions/${started.transaction_id}/completion`;
   const completionBody = JSON.stringify({ code });
   const completionHeaders = { ...headers, "content-type": "application/json", "idempotency-key": "test-contact-verify-complete-v1" };
+  // A wrong attempt must preserve the pending transaction for an immediate correct retry.
+  const wrong = await jsonResponse(await fetch(completionUrl, {
+    method: "POST", headers: { ...completionHeaders, "idempotency-key": "test-contact-verify-wrong-v1" },
+    body: JSON.stringify({ code: "00000000" }),
+  }), 400);
+  assert.equal(wrong.error_code, "invalid_verification_code");
+  assert.deepEqual(query(`SELECT state,attempt_count FROM identifier_verification_transactions WHERE transaction_id='${started.transaction_id}'`), [
+    { state: "pending", attempt_count: 1 },
+  ]);
   const completed = await jsonResponse(await fetch(completionUrl, {
     method: "POST", headers: completionHeaders, body: completionBody,
   }), 200);
@@ -178,7 +187,28 @@ try {
     { verification_state: "verified", has_verified_at: 1 },
   ]);
   assert.equal(query(`SELECT COUNT(*) AS n FROM identifier_verification_consumptions WHERE transaction_id='${started.transaction_id}'`)[0].n, 1);
-  console.log(`contact create/list/start/replay/cooldown/complete/replay/reuse: 201/200/201/201/429/200/200/410; contact_id=${created.contact_id}; one verification consumption`);
+  // Create a second channel to exercise a real primary switch, not an idempotent no-op.
+  const secondary = await jsonResponse(await fetch(`${base}/v1/me/contacts`, {
+    method: "POST", headers: { ...headers, "content-type": "application/json", "idempotency-key": "test-contact-create-secondary-v1" },
+    body: JSON.stringify({ kind: "email", email: "secondary@example.invalid", is_primary: true }),
+  }), 201);
+  const promoted = await jsonResponse(await fetch(`${base}/v1/me/contacts/${created.contact_id}`, {
+    method: "PATCH", headers: { ...headers, "content-type": "application/merge-patch+json", "idempotency-key": "test-contact-promote-v1" },
+    body: JSON.stringify({ is_primary: true }),
+  }), 200);
+  assert.equal(promoted.is_primary, true);
+  assert.equal(promoted.verification_state, "verified", "promotion must preserve verification");
+  const switched = await jsonResponse(await fetch(`${base}/v1/me/contacts`, { headers: { cookie, origin } }), 200);
+  assert.deepEqual(switched.filter((item) => item.is_primary).map((item) => item.contact_id), [created.contact_id]);
+  assert.equal(switched.find((item) => item.contact_id === secondary.contact_id)?.is_primary, false);
+  for (const contact of [secondary, created]) {
+    const removed = await fetch(`${base}/v1/me/contacts/${contact.contact_id}`, {
+      method: "DELETE", headers: { ...headers, "idempotency-key": `test-contact-remove-${contact.contact_id}` },
+    });
+    assert.equal(removed.status, 204, await removed.text());
+  }
+  assert.deepEqual(await jsonResponse(await fetch(`${base}/v1/me/contacts`, { headers: { cookie, origin } }), 200), []);
+  console.log("contact create/list/start/replay/cooldown/wrong/correct/replay/reuse/promote/remove: passed; one verification consumption");
 } finally {
   worker.kill();
   if (worker.exitCode === null) await new Promise((resolveClose) => worker.once("close", resolveClose));
