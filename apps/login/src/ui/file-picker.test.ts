@@ -143,3 +143,21 @@ describe("processed avatar preview", () => {
     expect(picker.querySelector("img")?.hidden).toBe(true);
   });
 });
+
+
+describe("avatar locale ownership", () => {
+  it("keeps the exact upload bytes and preview lease across language changes", async () => {
+    const dispose = vi.fn();
+    const result = processed("locale.webp", "blob:locale", dispose);
+    const controller = new AbortController();
+    const picker = avatarFilePicker(copy("zh-CN"), { process: async () => result, signal: controller.signal });
+    choose(picker.querySelector<HTMLInputElement>("input")!, new File(["input"], "input.png", { type: "image/png" }));
+    await expect(picker.processedFile()).resolves.toBe(result.file);
+    picker.relocalize(copy("en"));
+    expect(picker.querySelector("img")!.getAttribute("src")).toBe("blob:locale");
+    expect(picker.querySelector("img")!.alt).toBe(translate("en", "avatarPreviewAlt"));
+    await expect(picker.processedFile()).resolves.toBe(result.file);
+    expect(dispose).not.toHaveBeenCalled();
+    controller.abort(); picker.dispose(); expect(dispose).toHaveBeenCalledOnce();
+  });
+});

@@ -1,6 +1,7 @@
 import "./styles.css";
 import { IdentityApiClient } from "./api/client";
 import { resolveAccountOrigin, resolveIdentityOrigin } from "./environment";
+import { PageLifecycle } from "./page-lifecycle";
 import { renderPage } from "./pages";
 import { installRouter, resolveRoute } from "./router";
 import { captureAndScrubTransaction } from "./transaction";
@@ -19,6 +20,7 @@ const api = new IdentityApiClient(apiOrigin);
 const mount = document.querySelector<HTMLElement>("#app");
 if (!mount) throw new Error("缺少 #app 挂载点 / Missing #app mount point");
 
+let pageLifecycle: PageLifecycle;
 let activeRender: AbortController | undefined;
 let preferenceStorage: Storage | undefined;
 try { preferenceStorage = window.localStorage; } catch { preferenceStorage = undefined; }
@@ -30,10 +32,12 @@ let shell: ReturnType<typeof createShell>;
 function buildShell(): void {
   const skipLink = document.querySelector<HTMLAnchorElement>(".skip-link");
   if (skipLink) skipLink.textContent = translate(preferences.locale, "skipLink");
-  shell = createShell({ locale: preferences.locale, theme: preferences.theme, accountOrigin: resolveAccountOrigin(window.location), inAppBrowser: detectInAppBrowser(navigator.userAgent).name,
-    onLocale(locale) { preferences = { ...preferences, locale }; applyPreferences(preferences, preferenceStorage); buildShell(); renderCurrentRoute(); },
+  const previousMain = shell?.main;
+  shell = createShell({ locale: preferences.locale, theme: preferences.theme, accountOrigin: resolveAccountOrigin(window.location), authLocation: window.location, inAppBrowser: detectInAppBrowser(navigator.userAgent).name,
+    onLocale(locale) { preferences = { ...preferences, locale }; applyPreferences(preferences, preferenceStorage); buildShell(); document.title = `${routeTitle(resolveRoute(location.pathname), locale)} · moeSegFault Identity`; pageLifecycle.relocalize(locale); shell.root.querySelector<HTMLSelectElement>(".toolbar-select")?.focus({ preventScroll: true }); },
     onTheme(theme) { preferences = { ...preferences, theme }; applyPreferences(preferences, preferenceStorage); },
   });
+  if (previousMain) { shell.main.replaceWith(previousMain); shell.main = previousMain; }
   mount?.replaceChildren(shell.root);
 }
 buildShell();
@@ -41,12 +45,16 @@ buildShell();
 /** 取消旧页面请求并呈现当前路由。Cancels stale page requests and renders the current route. */
 function renderCurrentRoute(): void {
   activeRender?.abort();
-  activeRender = new AbortController();
+  const render = new AbortController();
+  activeRender = render;
   const route = resolveRoute(location.pathname);
+  pageLifecycle = new PageLifecycle(preferences.locale);
+  const renderedLocale = preferences.locale;
   shell.setActiveRoute(route);
   document.title = `${routeTitle(route, preferences.locale)} · moeSegFault Identity`;
-  void renderPage(route, shell.main, api, activeRender.signal, { locale: preferences.locale }).then(() => {
-    if (!activeRender?.signal.aborted) shell.main.focus({ preventScroll: true });
+  void renderPage(route, shell.main, api, render.signal, pageLifecycle).then(() => {
+    // A superseded render must not steal focus from the user's current page.
+    if (!render.signal.aborted && preferences.locale === renderedLocale) shell.main.focus({ preventScroll: true });
   });
 }
 

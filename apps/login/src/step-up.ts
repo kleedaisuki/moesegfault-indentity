@@ -1,6 +1,6 @@
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
 import type { MutationControls } from "./api/client";
-import type { PublicKeyCredentialJson, PublicKeyCredentialRequestOptionsJson } from "./api/types";
+import type { AuthenticationResult, PublicKeyCredentialJson, PublicKeyCredentialRequestOptionsJson } from "./api/types";
 import { getPasskey } from "./webauthn/ceremony";
 
 /** 高风险请求始终具有当前 CSRF、本次幂等键与取消信号。High-risk controls always carry current CSRF, an attempt key, and cancellation. */
@@ -22,6 +22,8 @@ export interface StepUpPorts {
   refreshSessionCsrf(signal: AbortSignal): Promise<string>;
   readBrowserCsrf(signal: AbortSignal): Promise<string>;
   rememberSessionCsrf(token: string): void;
+  /** Reject a session belonging to a different operation owner before any retry or token adoption. */
+  validateSessionResult?(result: AuthenticationResult): void;
   getAssertion?: AssertionProvider;
 }
 
@@ -68,6 +70,7 @@ export class InlineStepUpCoordinator {
   ): Promise<T> {
     const observedGeneration = this.#generation;
     const csrfToken = await this.#ports.readSessionCsrf(execution.signal);
+    execution.signal.throwIfAborted();
     let failure: unknown;
     try {
       return await operation(requestControls(csrfToken, execution.signal));
@@ -75,17 +78,21 @@ export class InlineStepUpCoordinator {
       failure = error;
     }
 
+    execution.signal.throwIfAborted();
+
     // Another tab may have rotated the shared HttpOnly session cookie while this
     // tab still holds the old per-tab CSRF value. Refresh and retry once before
     // deciding whether a passkey ceremony is required.
     if (isCsrfValidationFailed(failure)) {
       const refreshedCsrf = await this.#ports.refreshSessionCsrf(execution.signal);
+      execution.signal.throwIfAborted();
       try {
         return await operation(requestControls(refreshedCsrf, execution.signal));
       } catch (error) {
         failure = error;
       }
     }
+    execution.signal.throwIfAborted();
     if (!isReauthenticationRequired(failure)) throw failure;
 
     const needsCeremony = observedGeneration === this.#generation;
@@ -93,6 +100,7 @@ export class InlineStepUpCoordinator {
     const retryCsrf = needsCeremony
       ? await this.#stepUp(execution.signal)
       : await this.#ports.refreshSessionCsrf(execution.signal);
+    execution.signal.throwIfAborted();
     return operation(requestControls(retryCsrf, execution.signal));
   }
 
@@ -120,13 +128,18 @@ export class InlineStepUpCoordinator {
   /** 启动并完成与当前页面绑定的 assertion ceremony。Starts and completes the assertion ceremony bound to this page. */
   async #performStepUp(signal: AbortSignal): Promise<string> {
     const browserCsrf = await this.#ports.readBrowserCsrf(signal);
+    signal.throwIfAborted();
     const transaction = await this.#api.startAuthentication({ purpose: "step_up" }, browserCsrf, signal);
+    signal.throwIfAborted();
     const credential = await (this.#ports.getAssertion ?? getPasskey)(transaction.public_key, signal);
+    signal.throwIfAborted();
     const result = await this.#api.completeAuthentication(transaction.transaction_id, credential, {
       csrfToken: transaction.csrf_token,
       idempotencyKey: createIdempotencyKey(),
       signal,
     });
+    signal.throwIfAborted();
+    this.#ports.validateSessionResult?.(result);
     this.#ports.rememberSessionCsrf(result.csrf_token);
     this.#generation += 1;
     return result.csrf_token;
