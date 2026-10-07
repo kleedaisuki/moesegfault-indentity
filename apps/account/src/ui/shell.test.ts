@@ -21,7 +21,7 @@ describe("Account shell authentication state", () => {
     expect(shell.root.querySelector(".brand")).not.toBeNull();
     expect(shell.controls).toHaveLength(2);
     expect(shell.root.contains(shell.main)).toBe(true);
-    for (const selector of [".side-nav", ".bottom-nav", ".user-chip", ".in-app-banner"]) expect(shell.root.querySelector(selector)?.hasAttribute("hidden")).toBe(true);
+    for (const selector of [".side-nav", ".bottom-nav", ".user-chip", ".mobile-sign-out", ".in-app-banner"]) expect(shell.root.querySelector(selector)?.hasAttribute("hidden")).toBe(true);
     expect(shell.root.textContent).not.toContain("…");
   });
 
@@ -43,13 +43,52 @@ describe("Account shell authentication state", () => {
   it("reveals accessible navigation and a named user only after authentication", () => {
     const shell = createShell(translator("en"), true, async () => undefined);
     shell.setSession(authenticated);
-    for (const selector of [".side-nav", ".bottom-nav", ".user-chip", ".in-app-banner"]) expect(shell.root.querySelector(selector)?.hasAttribute("hidden")).toBe(false);
+    for (const selector of [".side-nav", ".bottom-nav", ".user-chip", ".mobile-sign-out", ".in-app-banner"]) expect(shell.root.querySelector(selector)?.hasAttribute("hidden")).toBe(false);
     expect(shell.root.querySelector(".side-nav")?.getAttribute("aria-label")).toBe("Account");
     expect(shell.root.querySelector(".user-chip")?.textContent).toContain("Klee");
+  });
+
+  it("keeps a labeled mobile sign-out command outside the hidden sidebar and preference replacement", async () => {
+    let complete!: () => void;
+    const command = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const shell = createShell(translator("en"), false, command);
+    shell.setSession(authenticated);
+    const mobile = shell.root.querySelector<HTMLButtonElement>(".mobile-header .mobile-sign-out")!;
+    const desktop = shell.root.querySelector<HTMLButtonElement>(".user-chip")!;
+    expect(mobile.getAttribute("aria-label")).toBe(translator("en")("signOut"));
+    expect(mobile.closest(".sidebar")).toBeNull();
+    for (const controls of shell.controls) controls.replaceChildren(document.createElement("select"));
+    expect(shell.root.contains(mobile)).toBe(true);
+    mobile.click(); desktop.click(); mobile.click();
+    expect(command).toHaveBeenCalledOnce();
+    expect(mobile.disabled).toBe(true);
+    expect(desktop.disabled).toBe(true);
+    complete();
+    await vi.waitFor(() => expect(mobile.disabled).toBe(false));
+    expect(desktop.disabled).toBe(false);
+    shell.setSession({ status: "anonymous" });
+    expect(mobile.hidden).toBe(true);
   });
 });
 
 describe("shared locale representation", () => {
+  it("relocalizes persistent shell labels without replacing focused commands or their locks", async () => {
+    let finish!: () => void;
+    const shell = createShell(translator("en"), true, () => new Promise<void>((resolve) => { finish = resolve; }));
+    document.body.append(shell.root); shell.setSession(authenticated);
+    const main = shell.main; const mobile = shell.root.querySelector<HTMLButtonElement>(".mobile-sign-out")!;
+    const nav = shell.root.querySelector<HTMLAnchorElement>('[data-route="/profile"]')!;
+    nav.focus(); shell.relocalize(translator("ja"));
+    expect(document.activeElement).toBe(nav); expect(shell.main).toBe(main);
+    expect(nav.querySelector("span")?.textContent).toBe(translator("ja")("profile"));
+    expect(mobile.getAttribute("aria-label")).toBe(translator("ja")("signOut"));
+    expect(shell.root.querySelector(".in-app-banner span")?.textContent).toBe(translator("ja")("inApp"));
+    mobile.click(); expect(mobile.disabled).toBe(true);
+    shell.relocalize(translator("zh-CN")); expect(mobile.disabled).toBe(true);
+    expect(shell.root.querySelector(".mobile-sign-out")).toBe(mobile);
+    finish(); await vi.waitFor(() => expect(mobile.disabled).toBe(false));
+    shell.root.remove();
+  });
   it("renders every full autonym with an option language", () => {
     const options = localeOptions("ja");
     expect(options.map((option) => ({ value: option.value, label: option.textContent, lang: option.lang }))).toEqual(

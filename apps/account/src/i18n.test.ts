@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { normalizeLocale, translator } from "./i18n";
 
 describe("i18n", () => {
+  it("localizes general network retry guidance separately from verification in every locale", () => { for (const locale of ["zh-CN", "en", "ja"] as const) { const t = translator(locale); expect(t("networkUnavailable").trim()).toBeTruthy(); expect(t("networkUnavailable")).not.toBe(t("verificationNetwork")); } });
+  it("describes each destructive draft exit explicitly in every locale", () => { for (const locale of ["zh-CN", "en", "ja"] as const) for (const key of ["unsavedChangesTitle", "continueEditing", "discardChanges", "discardAndLeave", "discardAndSignOut", "discardAndChangeLanguage"] as const) expect(translator(locale)(key).trim()).toBeTruthy(); });
   it("localizes signed-out session history in every locale", () => { for (const locale of ["zh-CN", "en", "ja"] as const) expect(translator(locale)("signedOut").trim()).toBeTruthy(); });
   it("normalizes regional variants", () => { expect(normalizeLocale("en-US")).toBe("en"); expect(normalizeLocale("ja-JP")).toBe("ja"); expect(normalizeLocale("zh-TW")).toBe("zh-CN"); });
   it("has translated navigation in every locale", () => { for (const locale of ["zh-CN", "en", "ja"] as const) { const t = translator(locale); for (const key of ["overview", "profile", "security", "sessions", "apps"] as const) expect(t(key)).toBeTruthy(); } });

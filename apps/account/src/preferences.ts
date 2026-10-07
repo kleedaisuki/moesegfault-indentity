@@ -19,6 +19,15 @@ export function safeStorage(resolve: () => Storage): Storage | undefined { try {
 /** 尽力保存非敏感偏好，存储失败不阻断界面。Best-effort persistence of non-sensitive preferences never blocks the UI. */
 export function writePreference(storage: Pick<Storage, "setItem"> | undefined, key: "locale" | "theme", value: string): void { try { storage?.setItem(`moe.account.${key}`, value); } catch { /* Private browsing or policy denial: current-page preference still works. */ } }
 
+/** Keeps the current selection until explicit consent; only an approved destination reaches commit. */
+export async function changeLocalePreference(select: Pick<HTMLSelectElement, "value">, current: Locale, canDiscard: () => boolean | Promise<boolean>, commit: (next: Locale) => void): Promise<void> {
+  const next = normalizeLocale(select.value);
+  if (next === current) return;
+  select.value = current;
+  if (!await canDiscard()) return;
+  commit(next);
+}
+
 /** 将主题投影为稳定 DOM 属性。Projects the theme preference to a stable DOM attribute. */
 export function applyTheme(theme: Theme, root: HTMLElement, media: Pick<MediaQueryList, "matches">): void {
   root.dataset.themePreference = theme;

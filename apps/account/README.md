@@ -17,6 +17,10 @@ sign-out action. Active non-current sessions retain the sign-out action; the cur
 retains its current-device badge. An omitted or null `revoked_at` remains compatible with
 older responses. Successful mutations reread the authoritative server state.
 
+Profile links are edited one URL per line in a native multiline control. Opening the
+profile form and saving an unrelated field must preserve every existing link; blank
+lines are ignored and clearing the field sends an empty list.
+
 ## Runtime contract
 
 The SPA uses cookie-authenticated `/v1/me` APIs with `credentials: include`, `cache: no-store`, RFC 9457 errors, in-memory CSRF tokens, and idempotency keys on mutations. Passkey enrollment and recovery rotation perform top-level navigation to Login's `/passkey/enroll` and `/recovery-codes/rotate` ceremonies with a validated `return_uri`, instead of attempting cross-origin WebAuthn. Existing Passkey labels and revocations remain account-management operations here.
@@ -83,3 +87,103 @@ handler clears its session cookie when that current session is revoked. Only aft
 navigate to the paired Login page. Other-device sessions and Subscribe's independent BFF
 session are not revoked. Failures remain visible and retryable; missing current-session data
 never falls back to revoking every device. RP-initiated OIDC logout is not used by this client.
+
+Sign-out is available both in the desktop user chip and in the mobile header. Both
+controls share one pending command lock, so resizing the viewport or repeated clicks
+cannot start concurrent revocations. The mobile control is outside preference-control
+replacement and remains available after a theme change; both surfaces are hidden until
+authentication is established and after sign-out.
+
+## Profile draft protection
+
+The profile text/select form keeps an in-memory baseline. Account route-link navigation
+asks for confirmation only when its live values differ; returning a field to its saved
+value removes the warning. Clicking the current route preserves the form without
+rerendering. Native reload, tab close, and document exits request the browser's standard
+unsaved-changes warning (subject to the browser's user-activation policy). No passwords
+are tracked, and draft values never enter persistent storage.
+
+A successful save accepts the submitted snapshot, not whatever happens to be in the
+form when the request finishes. Every successful save refreshes the canonical session.
+Changed text/select values are captured immediately before that refresh and rehydrated
+into a new server-backed profile form; unchanged fields retain fresh server values, and
+newer edits remain dirty. Avatar/contact mutations use the same refresh policy. Only plain
+edited values survive: no old form/controller, CSRF proof, or upload is retained. A failed
+refresh keeps the draft through retry, still warning before navigation or document exit;
+explicit discard, anonymous state, or a different principal clears it. Failed saves keep the
+draft retryable, and duplicate submits while pending are ignored.
+
+Native Back/Forward traversal preserves the visible profile draft in route-owned memory
+instead of trying to cancel `popstate` or rewrite history. Returning to Profile reloads
+account/preferences/CSRF before restoring the changed fields into a fresh form. Hidden
+profile drafts do not prompt on unrelated sidebar navigation, but document exit and locale
+reload still warn. Confirming an explicit sidebar discard really discards the visible
+draft; a later history traversal cannot resurrect it. The cache lasts only this document.
+
+Completed profile saves carry a typed acknowledgement through the canonical refresh.
+The new form shows localized saved feedback, distinguishing newer unsaved edits after
+rehydration. Only that profile render and principal may display it; aborted renders and
+principal changes cannot leak stale success into another page.
+
+Locale changes confirm draft discard before updating either selection state or storage.
+Cancelling restores the current language selection; approving reload avoids a second
+native warning. Theme-control rebuilding does not register additional media listeners.
+
+## Profile input and split-save ownership
+
+Profile preflight validates both payloads before either independent API write. Interest
+and link lists are never sliced: excess counts, duplicate exact-case tags, per-item limits
+and invalid absolute URLs produce localized, field-focused errors while preserving the
+entire draft. URL schemes accepted by the platform parser are not narrowed to HTTP(S).
+Profile text limits use Unicode scalar counts rather than HTML UTF-16 maxlength; timezone
+uses the backend's nonempty/64 UTF-8 byte contract, without an invented IANA restriction.
+
+The two writes are not an atomic transaction. Save owns both until all settle. Only
+fulfilled write groups acknowledge their submitted draft fields; a canonical refresh
+reconciles those baselines while preserving failed/unconfirmed and newer edits. Partial
+feedback identifies the confirmed group without asserting a rejected request could not
+have committed. Both rejected results stay dirty with explicit uncertainty and deliberate
+retry. A failed canonical refresh after a confirmed mutation never replays that mutation;
+the obsolete form stays locked and asks for reload. Abort prevents late acknowledgement,
+feedback and refresh. No backend endpoint, transaction or exactly-once claim is introduced.
+
+## Profile cross-operation ownership
+
+Every rendered Profile has one local owner shared by Save, avatar preparation/upload/
+removal, and contact add/remove/promote/verification delivery/resend/completion. Its lease
+lasts through the command and canonical refresh; other mutating controls are disabled
+and their handlers guard queued/direct events. Profile text/select editing remains usable
+so newer edits survive reconciliation. Avatar removal waits for preparation rather than
+cancelling it through a conflicting command.
+
+Each control records explicit local disabled intent instead of a snapshot restored later.
+The shared lock projects that intent, including dynamically created verifier buttons;
+release never revives a terminal Save, detached control, or aborted page. Other routes
+have no Profile owner. This prevents same-page incidental refresh from replacing a still-
+pending Save owner; it is not cross-tab or backend concurrency/version control.
+
+## Authenticated locale and persistent header controls
+
+Canonical account `preferences.locale` wins over local/browser fallback at bootstrap and
+refresh, following ADR 0003. Applying it updates the translator, document language/title,
+existing navigation/sign-out/in-app labels, and both persistent header selectors before
+rendering route content or acknowledgement. Theme remains independent; cycling appearance
+updates the existing button rather than replacing keyboard focus or registering listeners.
+
+Authenticated header selection writes the same account preference, sharing the Profile
+operation lease and its own request token. Pending commands reject competing header writes;
+other route forms are inert during a header write. A localized discard dialog uses the
+current translator. Approval snapshots all editable Profile values without accepting any
+saved baseline: failure retains the original draft, while success discards only the approved
+values and restores edits made after approval into a fresh server-backed form. Hidden history
+drafts participate in consent. No document reload, secret persistence, or automatic write
+retry is introduced. Confirmed PATCH plus failed canonical read is reported as saved language
+with failed readback; Retry performs only canonical reads. Abort/principal changes unlock
+headers immediately and suppress late application of the old request.
+
+Header language failure feedback includes a localized **Read latest state** action. It
+performs canonical reads only, retains all live Profile drafts (not just post-consent deltas),
+and shares header-token/Profile-lease admission. Both selectors and read controls stay
+disabled until that read settles or its new route scope aborts. Successful recovery hides
+the notice and moves focus from the hidden recovery control to its same header selector;
+a failed read exposes the existing canonical Retry, never replaying the uncertain write.

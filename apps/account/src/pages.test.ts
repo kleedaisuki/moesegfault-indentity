@@ -6,10 +6,44 @@ import { avatarPreparationError, errorText, formatAvatarOutput, mutationErrorPre
 import { AccountApiClient, ApiError } from "./api/client";
 import type { Account, Avatar, MutationProof } from "./api/types";
 import { translator } from "./i18n";
+import { hasUnsavedChanges } from "./draft";
 
 describe("page policies", () => {
+  it("retains legacy errorText behavior and correlation IDs when opting into network localization", () => {
+    const network = new ApiError(0, { type: "urn:moesegfault:problem:network", title: "Network unavailable", detail: "Unable to reach the identity service.", status: 0 }, "network-id");
+    expect(errorText(network, "Fallback")).toBe("Unable to reach the identity service. · ID network-id");
+    expect(errorText(network, "Fallback", "Localized network retry")).toBe("Localized network retry · ID network-id");
+    expect(errorText(new ApiError(503, { type: "urn:moesegfault:problem:network", title: "Network unavailable", status: 503 }), "Fallback", "Localized network retry")).toBe("Localized network retry");
+    const other = new ApiError(503, { type: "urn:test", title: "Unavailable", detail: "Original service detail", status: 503 }, "service-id");
+    expect(errorText(other, "Fallback", "Localized network retry")).toBe("Original service detail · ID service-id");
+    expect(errorText(new Error("Ordinary error"), "Fallback", "Network")).toBe("Ordinary error");
+    expect(errorText(undefined, "Fallback", "Network")).toBe("Fallback");
+  });
   it("flags accounts with no login method or no recovery readiness", () => { const base = { password: true, passkey_count: 1, mfa_methods: ["passkey" as const], verified_email_count: 1, verified_mobile_count: 0, recovery_ready: true }; expect(securityAttention(base)).toBe(false); expect(securityAttention({ ...base, recovery_ready: false })).toBe(true); expect(securityAttention({ ...base, password: false, passkey_count: 0 })).toBe(true); });
   it("shows safe correlation IDs on typed errors", () => { expect(errorText(new ApiError(500, { type: "urn:test", title: "Failure", status: 500 }, "abc"))).toBe("Failure · ID abc"); });
+});
+
+describe("session mutation network feedback", () => {
+  it.each(["zh-CN", "en", "ja"] as const)("localizes actual transport failure in %s and retries only on a new user activation", async (locale) => {
+    const transport = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new AccountApiClient("https://identity.example.test", transport);
+    const refresh = vi.fn(async () => undefined);
+    const api = { listSessions: vi.fn(async () => ({ items: [{ session_id: "other", is_current: false, authentication_method: "password", amr: ["pwd"], last_seen_at: "2026-01-01T00:00:00Z" }] })), revokeSession: client.revokeSession.bind(client) } as unknown as AccountApiClient;
+    const main = document.createElement("main");
+    const t = translator(locale);
+    await renderPage("/sessions", main, { api, account: {} as Account, preferences: {} as PageContext["preferences"], csrfToken: "csrf", locale, t, signal: new AbortController().signal, refresh });
+    const revoke = main.querySelector<HTMLButtonElement>(".entity-row button")!;
+    revoke.click();
+    await vi.waitFor(() => expect(main.querySelector('[role="alert"]')?.textContent).toBe(t("networkUnavailable")));
+    expect(main.textContent).not.toContain("Unable to reach the identity service.");
+    expect(revoke.disabled).toBe(false);
+    expect(transport).toHaveBeenCalledOnce();
+    expect(refresh).not.toHaveBeenCalled();
+    revoke.click();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(main.querySelector('[role="alert"]')).toBeNull();
+  });
 });
 
 describe("recent-authentication mutation UX", () => {
@@ -76,6 +110,25 @@ describe("avatar preparation UX", () => {
     expect(fixture.uploadAvatar.mock.calls[0]?.[0]).toBe(prepared.file);
     await vi.waitFor(() => expect(prepared.dispose).toHaveBeenCalledOnce());
     expect(fixture.refresh).toHaveBeenCalledOnce();
+    expect(fixture.refresh).toHaveBeenCalledWith("avatar-saved");
+  });
+
+  it("requests canonical acknowledgement after removal and suppresses a late upload after navigation", async () => {
+    const prepared = preparedAvatar("blob:late-upload", "late.webp");
+    const fixture = await profileFixture(vi.fn(async () => prepared));
+    fixture.main.querySelector<HTMLButtonElement>(".avatar-controls .button.danger")!.click();
+    await vi.waitFor(() => expect(fixture.refresh).toHaveBeenCalledWith("avatar-saved"));
+    fixture.refresh.mockClear();
+    let finish!: (avatar: Avatar) => void;
+    fixture.uploadAvatar.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await chooseFile(fixture.main.querySelector<HTMLInputElement>('input[type="file"]')!, new File(["source"], "source.png", { type: "image/png" }));
+    fixture.main.querySelector<HTMLButtonElement>(".avatar-prepared-actions .primary")!.click();
+    fixture.abort.abort();
+    finish({ avatar_id: "late", url: "https://avatars.example/late.webp", media_type: "image/webp", width: 1024, height: 1024, updated_at: "2026-01-01T00:00:00Z" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.refresh).not.toHaveBeenCalled();
+    expect(fixture.main.querySelector(".avatar-message")?.textContent).toBe("");
+    expect(prepared.dispose).toHaveBeenCalledOnce();
   });
 
   it("disposes previews on reselect, cancel, and page abort", async () => {
@@ -103,7 +156,7 @@ describe("avatar preparation UX", () => {
     expect(fixture.uploadAvatar).not.toHaveBeenCalled();
   });
 
-  it("unlocks selection when removing the current avatar cancels in-flight preparation", async () => {
+  it("serializes removal after in-flight preparation and unlocks selection after failure", async () => {
     let resolvePreparation!: (value: ProcessedAvatar) => void;
     const next = preparedAvatar("blob:late", "late.webp");
     const fixture = await profileFixture(() => new Promise((resolve) => { resolvePreparation = resolve; }));
@@ -114,11 +167,16 @@ describe("avatar preparation UX", () => {
     input.dispatchEvent(new Event("change"));
     const select = input.closest(".button-row")!.querySelector<HTMLButtonElement>(".button.quiet")!;
     expect(select.disabled).toBe(true);
-    fixture.main.querySelector<HTMLButtonElement>(".avatar-controls .button.danger")!.click();
-    expect(select.disabled).toBe(false);
-
+    const remove = fixture.main.querySelector<HTMLButtonElement>(".avatar-controls .button.danger")!;
+    remove.dispatchEvent(new MouseEvent("click"));
+    expect(select.disabled).toBe(true);
+    expect(fixture.deleteAvatar).not.toHaveBeenCalled();
     resolvePreparation(next);
+    await vi.waitFor(() => expect(select.disabled).toBe(false));
+    remove.click();
     await vi.waitFor(() => expect(next.dispose).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(select.disabled).toBe(false));
+    expect(fixture.deleteAvatar).toHaveBeenCalledOnce();
     expect(fixture.uploadAvatar).not.toHaveBeenCalled();
   });
 
@@ -129,6 +187,78 @@ describe("avatar preparation UX", () => {
     expect(avatarPreparationError(new AvatarImageError("INPUT_TOO_LARGE", "large"), t)).toBe(t("avatarTooLarge"));
     expect(avatarPreparationError(new AvatarImageError("UNSUPPORTED_TYPE", "type"), t)).toBe(t("avatarInvalidType"));
     expect(avatarPreparationError(new Error("decoder internals"), t)).toBe(t("avatarProcessingFailed"));
+  });
+});
+
+describe("profile links editing", () => {
+  it("retains newer edits as dirty while requesting canonical session refresh after each save", async () => {
+    const fixture = await profileFixture(undefined);
+    let finish!: (account: Account) => void;
+    fixture.updateMe.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const form = fixture.main.querySelector<HTMLFormElement>(".form-card")!;
+    const name = form.querySelector<HTMLInputElement>('[name="display_name"]')!;
+    name.value = "Submitted";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    name.value = "Typed while saving";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(fixture.updateMe).toHaveBeenCalledOnce();
+    finish({} as Account);
+    await vi.waitFor(() => expect(form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(false));
+    expect(name.value).toBe("Typed while saving");
+    expect(hasUnsavedChanges(fixture.main)).toBe(true);
+    expect(fixture.refresh).toHaveBeenCalledOnce();
+    expect(fixture.refresh).toHaveBeenCalledWith("profile-saved");
+    expect(form.querySelector(".inline-message")?.textContent).toBe(translator("en")("savedWithNewChanges"));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.refresh).toHaveBeenCalledTimes(2));
+    expect(hasUnsavedChanges(fixture.main)).toBe(false);
+  });
+
+  it("localizes an actual profile transport failure, keeps the draft dirty and retries the same values", async () => {
+    const fixture = await profileFixture(undefined);
+    const client = new AccountApiClient("https://identity.example.test", async () => { throw new TypeError("Failed to fetch"); });
+    fixture.updateMe.mockImplementationOnce((patch, proof) => client.updateMe(patch, proof));
+    fixture.updatePreferences.mockImplementationOnce((patch, proof) => client.updatePreferences(patch, proof));
+    const form = fixture.main.querySelector<HTMLFormElement>(".form-card")!;
+    form.querySelector<HTMLInputElement>('[name="display_name"]')!.value = "Unsaved";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(form.querySelector(".inline-message")?.textContent).toContain(translator("en")("networkUnavailable")));
+    expect(form.querySelector(".inline-message")?.textContent).toContain(translator("en")("profileSaveUnconfirmed"));
+    expect(hasUnsavedChanges(fixture.main)).toBe(true);
+    expect(fixture.refresh).not.toHaveBeenCalled();
+    expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fixture.refresh).toHaveBeenCalledWith("profile-saved"));
+    expect(fixture.updateMe).toHaveBeenCalledTimes(2);
+    expect(fixture.updateMe.mock.calls[1]?.[0]).toMatchObject({ display_name: "Unsaved" });
+    expect(hasUnsavedChanges(fixture.main)).toBe(false);
+  });
+  it("preserves multiple existing links when saving unrelated profile changes", async () => {
+    const links = ["https://example.com/about", "https://example.org/projects"];
+    const fixture = await profileFixture(undefined, links);
+    const form = fixture.main.querySelector<HTMLFormElement>(".form-card")!;
+    const field = form.querySelector<HTMLTextAreaElement>('[name="links"]')!;
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.value).toBe(links.join("\n"));
+    form.querySelector<HTMLInputElement>('[name="display_name"]')!.value = "New display name";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fixture.updateMe).toHaveBeenCalledOnce());
+    expect(fixture.updateMe.mock.calls[0]?.[0]).toMatchObject({ links, display_name: "New display name" });
+  });
+
+  it("accepts newline-separated links and allows clearing the whole list", async () => {
+    const fixture = await profileFixture(undefined);
+    const form = fixture.main.querySelector<HTMLFormElement>(".form-card")!;
+    const field = form.querySelector<HTMLTextAreaElement>('[name="links"]')!;
+    field.value = " https://example.com \n\n https://example.org ";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fixture.updateMe).toHaveBeenCalledOnce());
+    expect(fixture.updateMe.mock.calls[0]?.[0]).toMatchObject({ links: ["https://example.com", "https://example.org"] });
+    await vi.waitFor(() => expect(form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(false));
+    field.value = "";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fixture.updateMe).toHaveBeenCalledTimes(2));
+    expect(fixture.updateMe.mock.calls[1]?.[0]).toMatchObject({ links: [] });
   });
 });
 
@@ -146,21 +276,25 @@ function preparedAvatar(previewUrl: string, name: string): ProcessedAvatar & { d
 }
 
 /** 渲染可交互的资料页夹具。Renders an interactive profile-page fixture. */
-async function profileFixture(prepareAvatar: PageContext["prepareAvatar"]) {
+async function profileFixture(prepareAvatar: PageContext["prepareAvatar"], links: string[] = []) {
   const account: Account = {
     principal_id: "principal",
     lifecycle_state: "active",
-    profile: { display_name: "Klee", locale: "en", avatar_url: "https://avatars.example/current.webp" },
+    profile: { display_name: "Klee", locale: "en", avatar_url: "https://avatars.example/current.webp", links },
     identifiers: [{ identifier_id: "username", kind: "username", value: "klee", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }],
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
   const uploadAvatar = vi.fn<(file: File, proof: MutationProof) => Promise<Avatar>>(async () => ({ avatar_id: "avatar", url: "https://avatars.example/new.webp", media_type: "image/webp", width: 1024, height: 1024, updated_at: "2026-01-01T00:00:00Z" }));
   const deleteAvatar = vi.fn<(proof: MutationProof) => Promise<void>>(async () => undefined);
+  const updateMe = vi.fn<AccountApiClient["updateMe"]>(async () => account);
+  const updatePreferences = vi.fn<AccountApiClient["updatePreferences"]>(async () => undefined as never);
   const api = {
     listContacts: vi.fn(async () => []),
     uploadAvatar,
     deleteAvatar,
+    updateMe,
+    updatePreferences,
   } as unknown as AccountApiClient;
   const abort = new AbortController();
   const refresh = vi.fn(async () => undefined);
@@ -176,7 +310,7 @@ async function profileFixture(prepareAvatar: PageContext["prepareAvatar"]) {
     refresh,
     prepareAvatar,
   });
-  return { main, uploadAvatar, deleteAvatar, refresh, abort };
+  return { main, uploadAvatar, deleteAvatar, updateMe, updatePreferences, refresh, abort };
 }
 
 /** 选择文件并等待异步准备完成。Selects a file and waits for asynchronous preparation. */

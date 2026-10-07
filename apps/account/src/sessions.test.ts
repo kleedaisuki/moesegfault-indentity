@@ -54,7 +54,7 @@ describe("device sign-out", () => {
     fixture.fetch.mockRejectedValueOnce(new TypeError("offline"));
     const button = fixture.main.querySelector<HTMLButtonElement>("button")!;
     button.click();
-    await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toContain("Unable to reach"));
+    await vi.waitFor(() => expect(fixture.main.querySelector('[role="alert"]')?.textContent).toBe(translator("zh-CN")("networkUnavailable")));
     expect(button.disabled).toBe(false);
     expect(fixture.refresh).not.toHaveBeenCalled();
     expect(fixture.main.textContent).not.toContain("已退出");
