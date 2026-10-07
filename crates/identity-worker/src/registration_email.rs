@@ -179,7 +179,7 @@ pub(crate) async fn start(mut request: Request, context: RouteContext<()>) -> Re
         201,
         &correlation,
     )?;
-    renew_browser(&mut response, &browser, time + 600)?;
+    renew_browser(&mut response, &browser)?;
     Ok(response)
 }
 
@@ -350,17 +350,17 @@ fn proof_response(
         200,
         correlation,
     )?;
-    renew_browser(&mut response, browser, expiry)?;
+    renew_browser(&mut response, browser)?;
     Ok(response)
 }
 
-/// Keep the same CSRF/browser binding alive, never longer than the mailbox state.
-/// A replay does not extend proof expiry; expired or unvalidated requests never renew.
-fn renew_browser(response: &mut Response, browser: &str, expiry: i64) -> Result<()> {
-    response.headers_mut().append(
-        "set-cookie",
-        &guard::browser_cookie_for(browser, expiry - now()),
-    )
+/// Retains the shared browser binding without shortening another tab's ceremony.
+/// A replay never extends server-side proof expiry; expired or unvalidated requests
+/// never renew. The cookie is binding material, not the mailbox authorization itself.
+fn renew_browser(response: &mut Response, browser: &str) -> Result<()> {
+    response
+        .headers_mut()
+        .append("set-cookie", &guard::browser_cookie(browser))
 }
 
 /// Validates an email/browser-specific proof without consuming it before credential creation.

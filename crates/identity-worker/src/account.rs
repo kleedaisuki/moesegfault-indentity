@@ -41,6 +41,21 @@ struct AccountWire {
 
 #[derive(Debug, Serialize)]
 struct ProfileWire {
+    /// Optional biography; null clears the stored value.
+    bio: Option<String>,
+    /// Optional short status; null clears the stored value.
+    status_message: Option<String>,
+    /// Optional pronouns; null clears the stored value.
+    pronouns: Option<String>,
+    /// Optional favorite character; null clears the stored value.
+    favorite_character: Option<String>,
+    /// Interest labels; an empty array clears all labels.
+    interests: Vec<String>,
+    /// Profile links; an empty array clears all links.
+    links: Vec<String>,
+    /// Explicit profile visibility; null is not an allowed policy.
+    profile_visibility: String,
+
     display_name: String,
     avatar_url: Option<String>,
     locale: String,
@@ -122,9 +137,98 @@ struct SessionWire {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Explicit profile patch fields reject unknown keys and retain JSON null for clearing.
 struct UpdateAccountRequest {
+    /// Optional biography; null clears the stored value.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    bio: Option<serde_json::Value>,
+    /// Optional short status; null clears the stored value.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    status_message: Option<serde_json::Value>,
+    /// Optional pronouns; null clears the stored value.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    pronouns: Option<serde_json::Value>,
+    /// Optional favorite character; null clears the stored value.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    favorite_character: Option<serde_json::Value>,
+    /// Interest labels; an empty array clears all labels.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    interests: Option<serde_json::Value>,
+    /// Profile links; an empty array clears all links.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    links: Option<serde_json::Value>,
+    /// Explicit profile visibility; null is not an allowed policy.
+    #[serde(default, deserialize_with = "present_patch_value")]
+    profile_visibility: Option<serde_json::Value>,
+
     display_name: Option<String>,
     locale: Option<String>,
+}
+
+/// Preserve a present JSON null instead of conflating it with an omitted member.
+fn present_patch_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+impl UpdateAccountRequest {
+    /// Validate the established details contract before passing a JSON patch to D1.
+    fn details_patch(&self) -> Option<serde_json::Value> {
+        let mut patch = serde_json::Map::new();
+        for (key, field, limit) in [
+            ("bio", &self.bio, 500),
+            ("status_message", &self.status_message, 100),
+            ("pronouns", &self.pronouns, 40),
+            ("favorite_character", &self.favorite_character, 100),
+        ] {
+            if let Some(value) = field {
+                if !value.is_null()
+                    && value
+                        .as_str()
+                        .is_none_or(|text| text.chars().count() > limit)
+                {
+                    return None;
+                }
+                patch.insert(key.into(), value.clone());
+            }
+        }
+        for (key, field, max_items, max_length) in [
+            ("interests", &self.interests, 20, 40),
+            ("links", &self.links, 10, 2048),
+        ] {
+            if let Some(value) = field {
+                let items = value.as_array()?;
+                if items.len() > max_items {
+                    return None;
+                }
+                let mut seen = std::collections::HashSet::new();
+                for item in items {
+                    let text = item.as_str()?;
+                    if text.is_empty() || text.chars().count() > max_length {
+                        return None;
+                    }
+                    if key == "interests" && !seen.insert(text) {
+                        return None;
+                    }
+                    if key == "links" && url::Url::parse(text).is_err() {
+                        return None;
+                    }
+                }
+                patch.insert(key.into(), value.clone());
+            }
+        }
+        if let Some(value) = &self.profile_visibility {
+            if !value
+                .as_str()
+                .is_some_and(|text| matches!(text, "private" | "members" | "public"))
+            {
+                return None;
+            }
+            patch.insert("profile_visibility".into(), value.clone());
+        }
+        Some(serde_json::Value::Object(patch))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,7 +504,15 @@ pub async fn update_self(mut request: Request, context: RouteContext<()>) -> Res
         Ok(input) => input,
         Err(_) => return invalid_request("Invalid JSON request", &correlation),
     };
-    if input.display_name.is_none() && input.locale.is_none() {
+    let Some(details_patch) = input.details_patch() else {
+        return invalid_request("Invalid profile fields", &correlation);
+    };
+    if input.display_name.is_none()
+        && input.locale.is_none()
+        && details_patch
+            .as_object()
+            .is_some_and(|patch| patch.is_empty())
+    {
         return invalid_request("At least one profile field is required", &correlation);
     }
     let display_name = input
@@ -423,6 +535,7 @@ pub async fn update_self(mut request: Request, context: RouteContext<()>) -> Res
         &session.principal_id,
         display_name,
         locale,
+        &serde_json::to_string(&details_patch)?,
         now_seconds(),
     )
     .await?
@@ -2573,6 +2686,14 @@ fn account_to_wire(value: repository::AccountView, avatar_public_origin: &str) -
         principal_id: value.principal_id,
         lifecycle_state: value.lifecycle_state,
         profile: ProfileWire {
+            bio: value.bio,
+            status_message: value.status_message,
+            pronouns: value.pronouns,
+            favorite_character: value.favorite_character,
+            interests: value.interests,
+            links: value.links,
+            profile_visibility: value.profile_visibility,
+
             display_name: value.display_name,
             avatar_url,
             locale: value.locale,
@@ -2914,6 +3035,13 @@ mod tests {
     fn wire_models_convert_unix_time_and_publish_avatar_url() {
         let wire = account_to_wire(
             repository::AccountView {
+                bio: None,
+                status_message: Some("Testing".into()),
+                pronouns: None,
+                favorite_character: None,
+                interests: vec!["Linux".into()],
+                links: vec![],
+                profile_visibility: "members".into(),
                 principal_id: "p".into(),
                 lifecycle_state: "active".into(),
                 display_name: "Klee".into(),
@@ -2930,7 +3058,32 @@ mod tests {
             json["profile"]["avatar_url"],
             "https://avatars.moesegfault.dev/avatars/id/avatar.png"
         );
+        assert_eq!(json["profile"]["status_message"], "Testing");
+        assert_eq!(json["profile"]["interests"], serde_json::json!(["Linux"]));
         assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn profile_patch_preserves_null_and_rejects_invalid_details() {
+        let patch: UpdateAccountRequest =
+            serde_json::from_value(serde_json::json!({"bio": null, "interests": []})).unwrap();
+        let details = patch.details_patch().unwrap();
+        assert_eq!(details["bio"], serde_json::Value::Null);
+        assert_eq!(details["interests"], serde_json::json!([]));
+        assert!(details.get("status_message").is_none());
+        for value in [
+            serde_json::json!({"interests": null}),
+            serde_json::json!({"profile_visibility": null}),
+            serde_json::json!({"interests": ["Linux", "Linux"]}),
+            serde_json::json!({"links": ["invalid"]}),
+        ] {
+            let patch: UpdateAccountRequest = serde_json::from_value(value).unwrap();
+            assert!(patch.details_patch().is_none());
+        }
+        assert!(
+            serde_json::from_value::<UpdateAccountRequest>(serde_json::json!({"unknown": "value"}))
+                .is_err()
+        );
     }
 
     #[test]
