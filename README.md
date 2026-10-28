@@ -51,6 +51,28 @@ event ID. Consumers must deduplicate retries. See the
 input schemas and trust boundaries. A forwarded link confers its bearer authority;
 use Identity step-up in the consuming service for high-risk account changes.
 
+## Integration skills
+
+| Skill | Use when |
+| --- | --- |
+| [`moesegfault-identity`](skills/moesegfault-identity/SKILL.md) | Integrating human sign-in, OIDC, or first-party account APIs |
+| [`moesegfault-notifications`](skills/moesegfault-notifications/SKILL.md) | Sending branded transactional email from a trusted first-party service |
+| [`moesegfault-decisions`](skills/moesegfault-decisions/SKILL.md) | Collecting an explicitly confirmed email-linked response and delivering it to the owning service |
+
+From the consuming service's repository, install just the required skills with the
+[Skills CLI](https://github.com/vercel-labs/skills#install-a-skill):
+
+```bash
+npx skills add kleedaisuki/moesegfault-indentity --skill moesegfault-notifications --skill moesegfault-decisions
+```
+
+Alternatively, copy the corresponding skill directory into your agent's configured
+skill directory. The Notifications and Decisions directories are self-contained;
+they do not require this repository's build tools or an installed sibling skill.
+Start with `SKILL.md`, then load only the reference for the current integration
+step. Examples cover environment-matched private bindings, stable retries, and
+callback ownership; installing instructions does not provision runtime access.
+
 接入新应用请从 [`docs/integrating-app.md`](docs/integrating-app.md) 开始：它区分当前已实现的 OIDC 能力与长期设计，说明客户端登记、PKCE、回调校验、令牌与运维验收。 / New applications should start with the implemented-contract [integration guide](docs/integrating-app.md), including reviewed client provisioning and an acceptance checklist.
 
 ## 账户能力 / Account capabilities
