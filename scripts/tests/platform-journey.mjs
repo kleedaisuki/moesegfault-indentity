@@ -38,7 +38,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({persist: state, workers: [
     EMAIL_SINK: async request => {emails.push(await request.json()); return Response.json({messageId: randomUUID()}, {status: emailStatus});},
     CALLBACK_SINK: async request => {callbacks.push({value: await request.json(), key: request.headers.get("idempotency-key"), event: request.headers.get("x-moesegfault-event-id")}); return new Response(null, {status: callbackStatus});},
   }},
-  {name: "notifications", modules: true, scriptPath: join(state, "notifications.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", OUTBOX_KEY: Buffer.alloc(32, 3).toString("base64url")}, d1Databases: {DB: "notifications"}, serviceBindings: {EMAIL: {name: "router", entrypoint: "EmailCapture"}}},
+  {name: "notifications", modules: true, scriptPath: join(state, "notifications.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", ACCOUNT_ORIGIN: "https://account-staging.moesegfault.dev", OUTBOX_KEY: Buffer.alloc(32, 3).toString("base64url")}, d1Databases: {DB: "notifications"}, serviceBindings: {EMAIL: {name: "router", entrypoint: "EmailCapture"}}},
   {name: "decisions", modules: true, scriptPath: join(state, "decisions.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", OUTBOX_KEY: Buffer.alloc(32, 4).toString("base64url"), PUBLIC_ORIGIN: "https://decisions.example.test", CALLBACK_SERVICES: JSON.stringify({journey: {binding: "CALLBACK_JOURNEY", paths: ["/v1/results"]}})}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, CALLBACK_JOURNEY: {name: "router", entrypoint: "CallbackCapture"}}},
   {name: "journey-fixture", modules: true, scriptPath: join(state, "journey-fixture.mjs"), compatibilityDate: "2026-10-01", bindings: {JOURNEY_TOKEN: "a-fixture-only-one-time-token-with-at-least-32-characters"}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, DECISIONS: {name: "decisions", entrypoint: "DecisionsApi"}}},
 ]}));
@@ -72,6 +72,9 @@ try {
   await migrate(ddb, "decisions");
   await json(await request("NPUBLIC", "/healthz"), 200);
   await json(await request("DPUBLIC", "/healthz"), 200);
+  const notificationsLanding = await (await request("NPUBLIC", "/")).text();
+  assert.ok(notificationsLanding.includes('href="https://account-staging.moesegfault.dev"'), "Staging notification navigation must stay on the paired staging Account origin");
+  assert.ok(!notificationsLanding.includes('href="https://account.moesegfault.dev"'), "Staging must never navigate to production Account");
   await json(await post("NPUBLIC", "/v1/messages", notification), 404);
   await json(await post("DPUBLIC", "/v1/decisions", decision), 404);
 

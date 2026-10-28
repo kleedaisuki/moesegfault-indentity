@@ -6,7 +6,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "minify": true,
-  "vars": { "ENVIRONMENT": "staging" },
+  "vars": { "ENVIRONMENT": "staging", "ACCOUNT_ORIGIN": "https://account-staging.moesegfault.dev" },
   "send_email": [{ "name": "EMAIL" }],
   "d1_databases": [{
     "binding": "DB",
@@ -23,7 +23,7 @@
   "env": {
     "production": {
       "name": "moesegfault-notifications",
-      "vars": { "ENVIRONMENT": "production" },
+      "vars": { "ENVIRONMENT": "production", "ACCOUNT_ORIGIN": "https://account.moesegfault.dev" },
       "send_email": [{ "name": "EMAIL" }],
       "d1_databases": [{
         "binding": "DB",

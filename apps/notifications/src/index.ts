@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { correlationId, json, problem, providerError, secure } from "@moesegfault/service-platform";
+import { correlationId, escapeHtml, json, problem, providerError, secure } from "@moesegfault/service-platform";
 import { messageSchema, type NotificationsEnv } from "./message";
 import { deliver, drain, enqueue, IdempotencyConflict, InvalidExpiry } from "./outbox";
 
@@ -67,8 +67,7 @@ export async function publicFetch(request: Request, env: NotificationsEnv): Prom
     }
   }
   if (path !== "/") return secure(problem(404, "not_found"));
-  const accountOrigin = env.ENVIRONMENT === "production" ? "https://account.moesegfault.dev" : "https://account-staging.moesegfault.dev";
-  return secure(new Response(landing.replace("{{ACCOUNT_ORIGIN}}", accountOrigin), { headers: { "content-type": "text/html; charset=utf-8" } }));
+  return secure(new Response(landing.replace("{{ACCOUNT_ORIGIN}}", () => escapeHtml(env.ACCOUNT_ORIGIN)), { headers: { "content-type": "text/html; charset=utf-8" } }));
 }
 
 const landing = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>moeSegFault · Notifications</title><style>

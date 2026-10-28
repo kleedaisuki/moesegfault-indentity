@@ -69,4 +69,5 @@ export interface NotificationsEnv {
   EMAIL: { send(message: EmailContent): Promise<{ messageId: string }> };
   OUTBOX_KEY: string;
   ENVIRONMENT: string;
+  ACCOUNT_ORIGIN: string;
 }
