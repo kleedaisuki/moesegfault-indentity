@@ -21,7 +21,6 @@ await env.DECISIONS.fetch("https://decisions.internal/v1/decisions", {
     title: "Approve this account change?",
     body: "Review this request before submitting your response.",
     locale: "en",
-    expires_at: Math.floor(Date.now() / 1000) + 3600,
     choices: [
       { value: "approve", label: "Approve" },
       { value: "deny", label: "Deny" },
@@ -35,8 +34,14 @@ await env.DECISIONS.fetch("https://decisions.internal/v1/decisions", {
 
 Accepted response: HTTP `202` with `{decision_id,state,url,expires_at}`. Replaying
 the same service/idempotency key and validated payload returns the original link;
-a different payload returns `409 idempotency_conflict`. Keep `expires_at` stable
-across retries. New requests expire within seven days. The title is single-line,
+a different payload returns `409 idempotency_conflict`. Omit `expires_at` for a
+seven-day deadline resolved once at creation, including across later retries.
+Or supply an explicit business deadline in Unix seconds: 30, 90, and 365 days are
+supported. Keep an explicit deadline stable across retries. The default safety
+ceiling is 365 days from creation, controlled by the deployment-owned
+`MAX_DECISION_LIFETIME_SECONDS` setting (`31536000`); operators can raise it for a
+reviewed business requirement. This guard also catches common milliseconds-versus-
+seconds mistakes. Expired links are never automatically extended. The title is single-line,
 at most 160 characters. `service` and `sender` are lowercase slugs of at most 48
 characters; separators `.`, `_`, and `-` may only separate alphanumeric segments.
 
@@ -103,6 +108,27 @@ uses the Notifications service's branded decision template and stable idempotenc
 key. A notification outage creates backlog instead of losing the accepted request.
 Expired decisions are not mailed. Notification acceptance means queued by the
 notification center, not proof of final inbox placement.
+
+The business deadline does not govern email queue retention. New decisions save an
+immutable serialized invitation inside their encrypted payload: its delivery expiry
+is `min(created_at + 7 days, decision.expires_at)` while `action.expires_at` carries
+the actual business deadline displayed in the email. The delivery attempt budgets
+still apply independently; a seven-day envelope is not a promise of seven days of
+retries. Older accepted jobs have one compatibility read adapter that reconstructs
+their exact previous outbound JSON, without a new action field or regenerated
+expiry, so their notification idempotency key remains valid after rollout.
+
+Prefer rolling forward if this version needs repair. A pre-snapshot binary cannot
+honor the new omitted-deadline request contract or replay new invitation snapshots:
+after a send/acknowledgement crash it may regenerate a different message under the
+same accepted idempotency key. Do not downgrade Decisions below this capability
+while new clients or queued snapshot invitations remain active. Keep Notifications
+at an action-deadline-capable version too: an older strict schema rejects the new
+`action.expires_at` field even if Decisions itself is not rolled back. The producer
+and consumer therefore share this minimum rollback floor after new envelopes are
+accepted; prefer a coordinated roll-forward repair. Existing mail
+already accepted by Notifications remains owned by that service; never replace its
+idempotency key merely to bypass a conflict.
 
 `GET /d/:token` never consumes or submits a decision: link scanners are harmless.
 The page renders an explicit **Confirm and submit** button, with no auto-submit

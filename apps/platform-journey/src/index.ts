@@ -33,7 +33,7 @@ async function fetch(request: Request, env: Env): Promise<Response> {
       body: JSON.stringify({service: "journey", sender: "security", to: recipient, template: "security", locale: "zh-CN", title: "moeSegFault 通知投递检查", body: "这是一封 staging 通知中心的链路验证邮件。", expires_at: Math.floor(Date.now() / 1000) + 1800})});
     if (notification.status !== 202) return Response.json({error: "notification_rejected", upstream_status: notification.status}, {status: 502});
     const decision = await env.DECISIONS.fetch("https://decisions.internal/v1/decisions", {method: "POST", headers: {...headers, "idempotency-key": `journey-decision:${run_id}`},
-      body: JSON.stringify({service: "journey", sender: "accounts", to: recipient, title: "欢迎来到 moeSegFault 决策中心", locale: "zh-CN", expires_at: Math.floor(Date.now() / 1000) + 1800,
+      body: JSON.stringify({service: "journey", sender: "accounts", to: recipient, title: "欢迎来到 moeSegFault 决策中心", locale: "zh-CN",
         choices: [{value: "approve", label: "确认启用"}, {value: "reject", label: "暂不启用"}], fields: [{name: "note", label: "回复", type: "text", required: true}],
         callback: {binding: "CALLBACK_JOURNEY", path: "/v1/results"}, context: {test_run: run_id}})});
     if (decision.status !== 202) return Response.json({error: "decision_rejected", upstream_status: decision.status}, {status: 502});
@@ -65,7 +65,6 @@ export class CallbackReceiver extends WorkerEntrypoint<Env> {
     const valid = event.response.choice === "approve" && event.response.fields.note === "staging-ok";
     await this.env.DB.prepare("INSERT INTO platform_journey_callbacks(event_id,decision_id,payload_hash,response_valid,created_at) VALUES(?,?,?,?,?)")
       .bind(event.event_id, event.decision_id, hash, valid ? 1 : 0, Math.floor(Date.now() / 1000)).run();
-    await this.env.DB.prepare("DELETE FROM platform_journey_callbacks WHERE created_at<?").bind(Math.floor(Date.now() / 1000) - 86400).run();
     return new Response(null, {status: 204});
   }
 }

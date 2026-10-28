@@ -18,7 +18,7 @@ export const decisionSchema = z.object({
   title: z.string().trim().min(1).max(160).regex(/^[^\r\n\u0000]+$/),
   body: text.optional(),
   locale: z.enum(["en", "zh-CN", "ja"]).default("en"),
-  expires_at: z.number().int().positive(),
+  expires_at: z.number().int().positive().max(8_640_000_000_000).optional(),
   choices: z.array(option).min(1).max(20).optional(),
   fields: z.array(field).min(1).max(20).optional(),
   callback: z.object({ binding: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/), path: z.string().regex(/^\/[a-zA-Z0-9/_-]{1,200}$/) }).strict(),
@@ -33,8 +33,18 @@ export const decisionSchema = z.object({
   }
 });
 
-export type DecisionInput = z.infer<typeof decisionSchema>;
-export interface DecisionPayload { input: DecisionInput; token: string }
+export type DecisionRequest = z.infer<typeof decisionSchema>;
+export type DecisionInput = DecisionRequest & { expires_at: number };
+export interface DecisionPayload { input: DecisionInput; token: string; notification_json?: string }
+export const defaultDecisionLifetime = 7 * 86400;
+
+export function resolveDecision(request: DecisionRequest, createdAt: number, configuredMaximum?: string): DecisionInput {
+  const maximum = Number(configuredMaximum ?? 365 * 86400);
+  if (!Number.isSafeInteger(maximum) || maximum < defaultDecisionLifetime) throw new Error("invalid_decision_lifetime_configuration");
+  const expiresAt = request.expires_at ?? createdAt + defaultDecisionLifetime;
+  if (expiresAt <= createdAt || expiresAt - createdAt > maximum) throw new RangeError("invalid_expiry");
+  return { ...request, expires_at: expiresAt };
+}
 export interface DecisionRow {
   decision_id: string;
   service: string;
@@ -53,11 +63,12 @@ export interface Env {
   PUBLIC_ORIGIN: string;
   ENVIRONMENT: string;
   CALLBACK_SERVICES: string;
+  MAX_DECISION_LIFETIME_SECONDS?: string;
   [binding: string]: unknown;
 }
 export interface Submission { choice?: string; fields: Record<string, string | number | boolean> }
 
-export function callbackTarget(env: Env, input: DecisionInput): Fetcher | null {
+export function callbackTarget(env: Env, input: Pick<DecisionInput, "service" | "callback">): Fetcher | null {
   const config = JSON.parse(env.CALLBACK_SERVICES || "{}") as Record<string, CallbackRegistration>;
   const registered = config[input.service];
   if (!registered || registered.binding !== input.callback.binding || !registered.paths.includes(input.callback.path)) return null;
@@ -65,7 +76,7 @@ export function callbackTarget(env: Env, input: DecisionInput): Fetcher | null {
   return binding && typeof binding.fetch === "function" ? binding : null;
 }
 
-export function parseSubmission(input: DecisionInput, form: FormData): Submission {
+export function parseSubmission(input: Pick<DecisionInput, "choices" | "fields">, form: FormData): Submission {
   const allowed = new Set(["csrf", "choice", ...(input.fields?.map((field) => field.name) ?? [])]);
   for (const [name, value] of form.entries()) {
     if (!allowed.has(name) || typeof value !== "string" || form.getAll(name).length !== 1) throw new Error("invalid_field");

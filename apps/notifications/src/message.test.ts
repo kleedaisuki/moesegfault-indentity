@@ -42,6 +42,11 @@ describe("notification contract", () => {
       expect(messageSchema.safeParse({ ...verification, action: { label: "Open", url } }).success).toBe(false);
     }
   });
+  it("rejects invalid action deadline timestamps before email rendering", () => {
+    for (const expires_at of [0, -1, 1.5, NaN, Infinity, -Infinity, 8_640_000_000_001, Number.MAX_SAFE_INTEGER + 1, "1793180000", null]) {
+      expect(messageSchema.safeParse({ ...verification, action: { label: "Open", url: "https://decisions.moesegfault.dev/d/opaque", expires_at } }).success).toBe(false);
+    }
+  });
   it("retains only syntactically bounded provider codes", () => {
     expect(providerCode({ code: "E_RECIPIENT_SUPPRESSED" })).toBe("E_RECIPIENT_SUPPRESSED");
     for (const error of [null, "secret", { code: "person@example.com" }, { code: "E_\n12345678" }]) {
@@ -51,6 +56,77 @@ describe("notification contract", () => {
 });
 
 describe("branded email", () => {
+  const deadlineText = (timestamp: number): string => new Date(timestamp * 1000).toISOString().replace("T", " ").replace(/\.000Z$/, " UTC");
+
+  it("displays the actual 30/90-day decision deadline independently of the seven-day delivery window", () => {
+    const createdAt = 1793180000;
+    const deliveryExpiry = createdAt + 7 * 86400;
+    for (const days of [30, 90]) {
+      const decisionExpiry = createdAt + days * 86400;
+      const message = messageSchema.parse({ service: "accounts", sender: "accounts", to: "person@example.com", template: "decision",
+        title: "A business decision", expires_at: deliveryExpiry,
+        action: { label: "Review", url: "https://decisions.moesegfault.dev/d/opaque", expires_at: decisionExpiry } });
+      const email = renderEmail(message, `decision-${days}`);
+      for (const content of [email.html, email.text]) {
+        expect(content).toContain("Respond by");
+        expect(content).toContain(deadlineText(decisionExpiry));
+        expect(content).not.toContain(deadlineText(deliveryExpiry));
+      }
+      expect(message.expires_at).toBe(deliveryExpiry);
+    }
+  });
+  it("preserves existing decision payloads and legacy delivery-expiry display when no action deadline is supplied", () => {
+    const action = { label: "Review", url: "https://decisions.moesegfault.dev/d/opaque" };
+    const message = messageSchema.parse({ service: "accounts", sender: "accounts", to: "person@example.com", template: "decision",
+      title: "A business decision", expires_at: verification.expires_at, action });
+    expect(JSON.stringify(message.action)).toBe(JSON.stringify(action));
+    expect(Object.hasOwn(message.action!, "expires_at")).toBe(false);
+    const email = renderEmail(message, "legacy-decision");
+    expect(email.text).toContain("Valid until");
+    expect(email.html).toContain(deadlineText(verification.expires_at));
+    expect(email.text).toContain(deadlineText(verification.expires_at));
+  });
+  it("keeps verification code expiry and warning independent of an action deadline", () => {
+    const actionExpiry = verification.expires_at + 90 * 86400;
+    const message = messageSchema.parse({...verification, action: {label: "Open", url: "https://account.moesegfault.dev", expires_at: actionExpiry}});
+    const email = renderEmail(message, "verification-expiry");
+    for (const content of [email.html, email.text]) {
+      expect(content).toContain(deadlineText(verification.expires_at));
+      expect(content).not.toContain(deadlineText(actionExpiry));
+      expect(content).toContain(verification.code);
+      expect(content).toContain("Never share this code");
+    }
+  });
+  it("never presents the queue lifetime as validity of an informational or security message", () => {
+    for (const template of ["notification", "security"] as const) {
+      for (const action of [undefined, {label: "Open", url: "https://account.moesegfault.dev"}]) {
+        const message = messageSchema.parse({...verification, template, title: "Account update", body: "Review your account.", action});
+        const serialized = JSON.stringify(message);
+        const email = renderEmail(message, `queue-expiry-${template}`);
+        for (const content of [email.html, email.text]) {
+          expect(content).not.toContain(deadlineText(verification.expires_at));
+          expect(content).not.toContain("Valid until");
+          expect(content).not.toContain("Link valid until");
+        }
+        expect(JSON.stringify(message)).toBe(serialized);
+      }
+    }
+  });
+  it("shows only an explicit link deadline for informational and security actions", () => {
+    const actionExpiry = verification.expires_at + 90 * 86400;
+    for (const template of ["notification", "security"] as const) {
+      for (const [locale, label] of [["en", "Link valid until"], ["zh-CN", "链接有效期至"], ["ja", "リンクの有効期限"]] as const) {
+        const message = messageSchema.parse({...verification, template, locale, title: "Account update", body: "Review your account.",
+          action: {label: "Open", url: "https://account.moesegfault.dev", expires_at: actionExpiry}});
+        const email = renderEmail(message, `action-expiry-${template}`);
+        for (const content of [email.html, email.text]) {
+          expect(content).toContain(label);
+          expect(content).toContain(deadlineText(actionExpiry));
+          expect(content).not.toContain(deadlineText(verification.expires_at));
+        }
+      }
+    }
+  });
   it("provides localized HTML and readable plain text without external assets", () => {
     for (const locale of ["en", "zh-CN", "ja"] as const) {
       const email = renderEmail(messageSchema.parse({ ...verification, locale }), "event-1");

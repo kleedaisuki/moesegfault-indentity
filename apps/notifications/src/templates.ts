@@ -5,32 +5,40 @@ const copy = {
   en: {
     verification: "Verify your email", verificationBody: "Enter this code to continue.",
     warning: "Never share this code. If you did not request it, you can ignore this email.",
-    expires: "Valid until", security: "Account security", notification: "A note from moeSegFault",
+    expires: "Valid until", respondBy: "Respond by", linkExpires: "Link valid until", security: "Account security", notification: "A note from moeSegFault",
     decision: "Your response is requested", action: "Open", footer: "A little closer, together.",
   },
   "zh-CN": {
     verification: "验证你的邮箱", verificationBody: "输入验证码，继续下一步。",
     warning: "请勿向他人透露验证码。如果这不是你的操作，忽略这封邮件即可。",
-    expires: "有效期至", security: "账户安全", notification: "来自 moeSegFault 的消息",
+    expires: "有效期至", respondBy: "回复截止", linkExpires: "链接有效期至", security: "账户安全", notification: "来自 moeSegFault 的消息",
     decision: "等待你的回应", action: "查看", footer: "让彼此，再靠近一点。",
   },
   ja: {
     verification: "メールアドレスの確認", verificationBody: "このコードを入力して続行してください。",
     warning: "コードを他の人と共有しないでください。心当たりがなければ、このメールを無視してください。",
-    expires: "有効期限", security: "アカウントの安全", notification: "moeSegFault からのお知らせ",
+    expires: "有効期限", respondBy: "回答期限", linkExpires: "リンクの有効期限", security: "アカウントの安全", notification: "moeSegFault からのお知らせ",
     decision: "ご回答をお待ちしています", action: "開く", footer: "一緒に、もう少し近くへ。",
   },
 } as const;
 
 const paragraphStyle = "margin:0 0 24px;line-height:1.75;font-size:16px;color:#523b31;overflow-wrap:anywhere";
 
+function expiryText(message: NotificationMessage): string {
+  const words = copy[message.locale];
+  const format = (label: string, timestamp?: number): string => timestamp
+    ? `${label} ${new Date(timestamp * 1000).toISOString().replace("T", " ").replace(/\.000Z$/, " UTC")}` : "";
+  if (message.template === "verification") return format(words.expires, message.expires_at);
+  if (message.action?.expires_at) return format(message.template === "decision" ? words.respondBy : words.linkExpires, message.action.expires_at);
+  if (message.template === "decision") return format(words.expires, message.expires_at);
+  return "";
+}
+
 export function renderEmail(message: NotificationMessage, messageId: string): EmailContent {
   const words = copy[message.locale];
   const title = message.title ?? words[message.template];
   const body = message.body ?? (message.template === "verification" ? words.verificationBody : "");
-  const expiry = message.expires_at
-    ? `${words.expires} ${new Date(message.expires_at * 1000).toISOString().replace("T", " ").replace(/\.000Z$/, " UTC")}`
-    : "";
+  const expiry = expiryText(message);
   const code = message.template === "verification" ? message.code : undefined;
   const codeBlock = code
     ? `<div style="margin:8px 0 24px;padding:24px 12px;border:1px solid #e4c7b5;border-radius:12px;background:#fff4e8;text-align:center;font:700 30px/1.4 ui-monospace,Consolas,monospace;letter-spacing:.16em;color:#a53b20">${escapeHtml(code)}</div>`

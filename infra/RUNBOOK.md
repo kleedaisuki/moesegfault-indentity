@@ -218,8 +218,10 @@ References:
 
 The staging-only callback fixture is installed from
 `wrangler.platform-journey-bootstrap.jsonc` before Decisions, so its named callback
-entrypoint exists when Cloudflare validates bindings. This initial fixture has no
-API or database bindings. The manually dispatched platform journey workflow installs
+entrypoint exists when Cloudflare validates bindings. This public-driver-disabled
+fixture retains only the staging Decisions D1 binding for its private callback
+consumer; it has no notification/decision control bindings or driver token.
+The manually dispatched platform journey workflow installs
 the fully bound fixture, sends a real message, exposes a capability link for the
 browser journey, and verifies the recorded callback. No fixture service or callback
 registration is installed in production.
@@ -264,8 +266,9 @@ job's environment and concurrency lock, and its recipient comes only from the st
 acceptance and the form/callback round trip, not mailbox receipt. Mailbox mode waits
 for the approved recipient to open the delivered link and explicitly submit it.
 The script's `finally` cleanup is backed by an unconditional-on-attempt workflow step
-that deletes the fixture token and reinstalls the inert callback-only fixture after
-success, failure or a step timeout. The separate journey workflow remains available
+that deletes the fixture token and disables public fixture control after success,
+failure or a step timeout, while retaining its DB-backed private callback consumer.
+The separate journey workflow remains available
 for repeated probes once merged; no production entrypoint is exposed.
 
 If an explicitly requested staging journey fails, CI reads at most ten recent
@@ -294,3 +297,20 @@ bounded D1 diagnostic shell helpers rather than divergent inline command copies.
 Remote D1 execution resolves a configured database name when the checked-in UUID is
 empty (the pinned Wrangler implementation's `getDatabaseByNameOrBinding` path), so
 read-only diagnostics need no resource provisioning before a fast-path probe.
+
+### Asynchronous decisions outlive CI observation
+
+A decision's business deadline is independent of the test driver's observation
+window. The fixture no longer imposes a 30-minute decision deadline: it uses the
+platform default (seven days), and business callers can request a longer deadline.
+A fifteen-minute CI polling timeout means only that the job did not observe a reply;
+it does not expire a decision, revoke its link or disable its private callback path.
+
+After a probe, cleanup removes the one-time public-driver credential and the
+Notifications/Decisions send/control bindings. It **retains the same staging D1
+binding as Decisions** for the private `CallbackReceiver`, so a still-valid link can
+be submitted days later and its callback can be durably recorded and acknowledged.
+Public driver routes still return 404 without the removed credential. The consumer's
+small event-ID/hash receipt ledger is no longer pruned after one day: duplicate
+callbacks remain idempotent across asynchronous user response times. Explicit staging
+operator maintenance, not a CI job ending, owns eventual receipt cleanup.

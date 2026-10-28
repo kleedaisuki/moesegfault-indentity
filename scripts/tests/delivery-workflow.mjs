@@ -215,3 +215,27 @@ test('bootstrap offers an explicit staging acceptance fast path without infrastr
   const standalone = readFileSync(new URL('../../.github/workflows/platform-journey.yml', import.meta.url), 'utf8');
   assert.match(standalone, /run: bash scripts\/platform-journey-cleanup\.sh/);
 });
+
+test('disabling the staging public driver preserves its private callback state and decision deadline', () => {
+  const bootstrap = JSON.parse(readFileSync(new URL('../../wrangler.platform-journey-bootstrap.jsonc', import.meta.url), 'utf8'));
+  const decisions = JSON.parse(readFileSync(new URL('../../wrangler.decisions.jsonc', import.meta.url), 'utf8'));
+  assert.equal(bootstrap.name, 'moesegfault-platform-journey-staging');
+  assert.equal(bootstrap.d1_databases.length, 1);
+  assert.deepEqual(bootstrap.d1_databases[0], {
+    binding: 'DB',
+    database_name: decisions.d1_databases[0].database_name,
+    database_id: decisions.d1_databases[0].database_id,
+  });
+  assert.equal(bootstrap.services, undefined);
+  assert.equal(bootstrap.vars, undefined);
+  assert.equal(bootstrap.send_email, undefined);
+  const fixture = readFileSync(new URL('../../apps/platform-journey/src/index.ts', import.meta.url), 'utf8');
+  const decisionRequest = fixture.match(/title: "欢迎来到 moeSegFault 决策中心"([\s\S]*?)context: \{test_run: run_id\}/)?.[1];
+  assert.ok(decisionRequest);
+  assert.doesNotMatch(decisionRequest, /expires_at/);
+  assert.doesNotMatch(fixture, /DELETE FROM platform_journey_callbacks/);
+  const driver = readFileSync(new URL('../platform-journey.mjs', import.meta.url), 'utf8');
+  assert.match(driver, /observation window ended/);
+  assert.match(driver, /business deadline is unchanged/);
+  assert.match(driver, /private callback consumer remains available/);
+});

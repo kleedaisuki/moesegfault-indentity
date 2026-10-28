@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { callbackTarget, decisionSchema, parseSubmission, randomToken, type DecisionInput, type Env } from "./model";
+import { callbackTarget, decisionSchema, parseSubmission, randomToken, resolveDecision, type DecisionInput, type Env } from "./model";
 import { decisionPage } from "./pages";
 
-const sample = (): DecisionInput => decisionSchema.parse({ service: "accounts", sender: "accounts", to: "user@example.com", title: "Choose a meeting", expires_at: 1800000000, callback: { binding: "ACCOUNTS", path: "/v1/results" }, choices: [{ value: "accept", label: "Accept" }, { value: "decline", label: "Decline" }], fields: [{ name: "note", label: "Note", type: "textarea" }] });
+const sample = (): DecisionInput => resolveDecision(decisionSchema.parse({ service: "accounts", sender: "accounts", to: "user@example.com", title: "Choose a meeting", expires_at: 1800000000, callback: { binding: "ACCOUNTS", path: "/v1/results" }, choices: [{ value: "accept", label: "Accept" }, { value: "decline", label: "Decline" }], fields: [{ name: "note", label: "Note", type: "textarea" }] }), 1799990000);
 
 describe("decision contracts", () => {
   it("requires a response surface and unique field / option names", () => {

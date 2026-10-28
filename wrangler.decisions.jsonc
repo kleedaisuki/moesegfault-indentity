@@ -9,6 +9,7 @@
   "vars": {
     "ENVIRONMENT": "staging",
     "PUBLIC_ORIGIN": "https://decisions-staging.moesegfault.dev",
+    "MAX_DECISION_LIFETIME_SECONDS": "31536000",
     "CALLBACK_SERVICES": "{\"journey\":{\"binding\":\"CALLBACK_JOURNEY\",\"paths\":[\"/v1/results\"]}}"
   },
   "services": [
@@ -28,6 +29,7 @@
       "vars": {
         "ENVIRONMENT": "production",
         "PUBLIC_ORIGIN": "https://decisions.moesegfault.dev",
+        "MAX_DECISION_LIFETIME_SECONDS": "31536000",
         "CALLBACK_SERVICES": "{}"
       },
       "services": [

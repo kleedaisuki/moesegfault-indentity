@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {mkdirSync, mkdtempSync, readFileSync, readdirSync} from "node:fs";
 import {resolve, join} from "node:path";
-import {randomUUID} from "node:crypto";
+import {randomBytes, randomUUID} from "node:crypto";
+import {pathToFileURL} from "node:url";
 import {build} from "esbuild";
 import {Miniflare, convertV4MiniflareOptions} from "miniflare";
 import {waitFixtureReady} from "../lib/platform-journey-http.mjs";
@@ -26,6 +27,8 @@ for (const service of ["notifications", "decisions"]) {
   await build({stdin: {contents: source, resolveDir: root, sourcefile: `${service}-test.ts`, loader: "ts"}, bundle: true, format: "esm", platform: "neutral", conditions: ["workerd", "worker", "browser"], external: ["cloudflare:workers"], outfile: join(state, `${service}.mjs`)});
 }
 await build({entryPoints: [join(root, "apps/platform-journey/src/index.ts")], bundle: true, format: "esm", platform: "neutral", external: ["cloudflare:workers"], outfile: join(state, "journey-fixture.mjs")});
+await build({stdin: {contents: "export {encryptJson,decryptJson,keyedDigest,sha256} from './packages/service-platform/src/index.ts'; export {decisionSchema} from './apps/decisions/src/model.ts';", resolveDir: root, loader: "ts"}, bundle: true, format: "esm", platform: "node", outfile: join(state, "fixture-model.mjs")});
+const fixtureModel = await import(pathToFileURL(join(state, "fixture-model.mjs")).href);
 const fixture = `import {WorkerEntrypoint} from 'cloudflare:workers';
   export class EmailCapture extends WorkerEntrypoint {async send(message){const response=await this.env.EMAIL_SINK.fetch('https://email-sink.internal',{method:'POST',body:JSON.stringify(message)});if(!response.ok)throw new Error('fixture_provider_'+response.status);return response.json()}}
   export class CallbackCapture extends WorkerEntrypoint {async fetch(request){const response=await this.env.CALLBACK_SINK.fetch(request.clone());if(!response.ok)return response;return this.env.FCALL.fetch(request)}}
@@ -36,12 +39,14 @@ const mf = new Miniflare(convertV4MiniflareOptions({persist: state, workers: [
     NADMIN: {name: "notifications", entrypoint: "TestAdmin"}, DADMIN: {name: "decisions", entrypoint: "TestAdmin"},
     NPUBLIC: "notifications", DPUBLIC: "decisions",
     FIXTURE: "journey-fixture", FCALL: {name: "journey-fixture", entrypoint: "CallbackReceiver"},
+    INERT: "inert-receiver", ICALL: {name: "inert-receiver", entrypoint: "CallbackReceiver"},
     EMAIL_SINK: async request => {emails.push(await request.json()); return Response.json({messageId: randomUUID()}, {status: emailStatus});},
     CALLBACK_SINK: async request => {callbacks.push({value: await request.json(), key: request.headers.get("idempotency-key"), event: request.headers.get("x-moesegfault-event-id")}); return new Response(null, {status: callbackStatus});},
   }},
   {name: "notifications", modules: true, scriptPath: join(state, "notifications.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", ACCOUNT_ORIGIN: "https://account-staging.moesegfault.dev", OUTBOX_KEY: Buffer.alloc(32, 3).toString("base64url")}, d1Databases: {DB: "notifications"}, serviceBindings: {EMAIL: {name: "router", entrypoint: "EmailCapture"}}},
   {name: "decisions", modules: true, scriptPath: join(state, "decisions.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", OUTBOX_KEY: Buffer.alloc(32, 4).toString("base64url"), PUBLIC_ORIGIN: "https://decisions.example.test", CALLBACK_SERVICES: JSON.stringify({journey: {binding: "CALLBACK_JOURNEY", paths: ["/v1/results"]}})}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, CALLBACK_JOURNEY: {name: "router", entrypoint: "CallbackCapture"}}},
   {name: "journey-fixture", modules: true, scriptPath: join(state, "journey-fixture.mjs"), compatibilityDate: "2026-10-01", bindings: {JOURNEY_TOKEN: "a-fixture-only-one-time-token-with-at-least-32-characters"}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, DECISIONS: {name: "decisions", entrypoint: "DecisionsApi"}}},
+  {name: "inert-receiver", modules: true, scriptPath: join(state, "journey-fixture.mjs"), compatibilityDate: "2026-10-01", d1Databases: {DB: "decisions"}},
 ]}));
 
 const ndb = await mf.getD1Database("DB", "notifications");
@@ -115,8 +120,47 @@ try {
   assert.equal((await json(await post("DAPI", "/v1/decisions", decision, "decision-first"), 202)).url, accepted.url);
   await json(await post("DAPI", "/v1/decisions", {...decision, title: "Different"}, "decision-first"), 409);
   await json(await post("DAPI", "/v1/decisions", {...decision, callback: {binding: "CALLBACK_JOURNEY", path: "/unregistered"}}), 403);
-  await json(await post("DAPI", "/v1/decisions", {...decision, expires_at: now() + 8 * 86400}), 422);
+  await json(await post("DAPI", "/v1/decisions", {...decision, expires_at: now() + 366 * 86400}), 422);
   await json(await post("DAPI", "/v1/decisions", {...decision, title: "Invalid\nTitle"}), 422);
+  const defaultRequest = {...decision};
+  delete defaultRequest.expires_at;
+  const beforeDefault = now();
+  const defaultDecision = await json(await post("DAPI", "/v1/decisions", defaultRequest, "default-seven-days"), 202);
+  assert.ok(defaultDecision.expires_at >= beforeDefault + 7 * 86400 && defaultDecision.expires_at <= now() + 7 * 86400);
+  await new Promise(done => setTimeout(done, 1100));
+  const defaultReplay = await json(await post("DAPI", "/v1/decisions", defaultRequest, "default-seven-days"), 202);
+  assert.equal(defaultReplay.expires_at, defaultDecision.expires_at, "An omitted default deadline must be resolved once, not extended by replay");
+  assert.equal(defaultReplay.url, defaultDecision.url);
+  for (const days of [30, 90, 365]) {
+    const deadline = now() + days * 86400;
+    const longDecision = await json(await post("DAPI", "/v1/decisions", {...decision, expires_at: deadline}), 202);
+    await eventually(() => emails.some(message => message.html.includes(longDecision.url)), `Explicit ${days}-day business deadline did not produce an invitation`);
+    const message = emails.find(message => message.html.includes(longDecision.url));
+    const displayedDeadline = new Date(deadline * 1000).toISOString().replace("T", " ").replace(/\.000Z$/, " UTC");
+    assert.ok(message.text.includes(displayedDeadline), "Email must display the action deadline, not the delivery horizon");
+    const notificationExpiry = await ndb.prepare("SELECT expires_at FROM notification_messages WHERE service='journey' AND idempotency_key=?").bind(`decision:${longDecision.decision_id}`).first("expires_at");
+    assert.ok(notificationExpiry <= now() + 7 * 86400 && notificationExpiry < deadline, "Long business deadlines must not extend the notification queue horizon");
+  }
+  const legacyId = randomUUID();
+  const legacyToken = randomBytes(32).toString("base64url");
+  const legacyInput = fixtureModel.decisionSchema.parse({...decision, expires_at: now() + 600});
+  const legacyKey = Buffer.alloc(32, 4).toString("base64url");
+  const legacyPayload = await fixtureModel.encryptJson(legacyKey, {input: legacyInput, token: legacyToken}, legacyId);
+  const legacyDigest = await fixtureModel.keyedDigest(legacyKey, `decisions-idempotency.v1:${JSON.stringify(legacyInput)}`);
+  await ddb.batch([
+    ddb.prepare("INSERT INTO decisions(decision_id,service,idempotency_key,request_digest,token_digest,payload,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(legacyId, "journey", "legacy-before-snapshots", legacyDigest, await fixtureModel.sha256(legacyToken), legacyPayload, now(), legacyInput.expires_at),
+    ddb.prepare("INSERT INTO decision_outbox(outbox_id,decision_id,kind,available_at,created_at) VALUES(?,?,'notification',0,?)").bind(randomUUID(), legacyId, now()),
+  ]);
+  const legacyNotification = {service: legacyInput.service, sender: legacyInput.sender, to: legacyInput.to, template: "decision", locale: legacyInput.locale,
+    title: legacyInput.title, body: legacyInput.body, expires_at: legacyInput.expires_at,
+    action: {label: "Review and respond", url: `https://decisions.example.test/d/${legacyToken}`}};
+  const legacyAccepted = await json(await post("NAPI", "/v1/messages", legacyNotification, `decision:${legacyId}`), 202);
+  const legacyReplay = await json(await post("DAPI", "/v1/decisions", legacyInput, "legacy-before-snapshots"), 202);
+  assert.equal(legacyReplay.decision_id, legacyId, "Legacy request fingerprints must still replay after optional-deadline rollout");
+  await request("DADMIN", "/drain");
+  assert.equal(await ddb.prepare("SELECT state FROM decision_outbox WHERE decision_id=? AND kind='notification'").bind(legacyId).first("state"), "delivered", "Legacy accepted invitation JSON must replay without an idempotency conflict");
+  assert.equal(await ndb.prepare("SELECT message_id FROM notification_messages WHERE service='journey' AND idempotency_key=?").bind(`decision:${legacyId}`).first("message_id"), legacyAccepted.message_id);
   await eventually(() => emails.some(message => message.html.includes(accepted.url)), "Minimal decision without optional body did not send an email");
   const path = new URL(accepted.url).pathname;
   const page = await request("DPUBLIC", path);
@@ -174,6 +218,19 @@ try {
   exhausted = await ddb.prepare("SELECT state,attempts,last_error_code FROM decision_outbox WHERE outbox_id=?").bind(cachedJob.outbox_id).first();
   assert.deepEqual(exhausted, {state: "failed", attempts: 12, last_error_code: "attempts_exhausted"}, "A worker dying during its final attempt must become terminal after lease expiry");
   assert.equal(callbacks.length, exhaustedCalls, "Final-lease recovery must never resend beyond the attempt budget");
+  const driverAuthorization = {authorization: "Bearer a-fixture-only-one-time-token-with-at-least-32-characters"};
+  assert.equal((await post("INERT", "/start", {recipient: "klee@example.test", run_id: "must-not-send"})).status, 404);
+  assert.equal((await request("INERT", `/status/${accepted.decision_id}`, {headers: driverAuthorization})).status, 404);
+  assert.equal((await request("INERT", `/notifications/${first.message_id}`, {headers: driverAuthorization})).status, 404);
+  const lateEvent = {event_id: randomUUID(), decision_id: randomUUID(), type: "decision.submitted", service: "journey", submitted_at: now(),
+    response: {choice: "approve", fields: {note: "staging-ok"}}, context: {test_run: "after-driver-cleanup"}};
+  const lateHeaders = {"content-type": "application/json", "idempotency-key": lateEvent.event_id, "x-moesegfault-event-id": lateEvent.event_id};
+  const lateCallback = value => request("ICALL", "/v1/results", {method: "POST", headers: lateHeaders, body: JSON.stringify(value)});
+  assert.equal((await lateCallback(lateEvent)).status, 204, "DB-only private receiver must remain available after public driver cleanup");
+  await ddb.prepare("UPDATE platform_journey_callbacks SET created_at=? WHERE event_id=?").bind(now() - 2 * 86400, lateEvent.event_id).run();
+  assert.equal((await lateCallback(lateEvent)).status, 204, "An old asynchronous callback receipt must retain idempotency beyond the driver wait budget");
+  assert.equal((await lateCallback({...lateEvent, response: {choice: "reject", fields: {note: "changed"}}})).status, 409);
+  assert.equal(await ddb.prepare("SELECT COUNT(*) FROM platform_journey_callbacks WHERE event_id=? AND response_valid=1").bind(lateEvent.event_id).first("COUNT(*)"), 1);
   if (process.env.PLATFORM_NATIVE_BROWSER === "1") {
     const {runNativeFormJourney} = await import("./platform-native-form.mjs");
     await runNativeFormJourney({state, decision});

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { correlationId, decryptJson, encryptJson, json, keyedDigest, problem, secure, sha256 } from "@moesegfault/service-platform";
-import { callbackTarget, decisionSchema, parseSubmission, randomToken, type DecisionPayload, type DecisionRow, type Env } from "./model";
+import { callbackTarget, decisionSchema, parseSubmission, randomToken, resolveDecision, type DecisionInput, type DecisionPayload, type DecisionRow, type Env } from "./model";
+import { snapshotInvitation } from "./invitation";
 import { drain } from "./outbox";
 import { completedPage, decisionPage, expiredPage, landingPage } from "./pages";
 
@@ -101,16 +102,22 @@ privateApp.post("/v1/decisions", async (c) => {
   catch { return problem(400, "invalid_json"); }
   const parsed = decisionSchema.safeParse(raw);
   if (!parsed.success) return problem(422, "invalid_decision", parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
-  const input = parsed.data;
-  const requestDigest = await keyedDigest(c.env.OUTBOX_KEY, `decisions-idempotency.v1:${JSON.stringify(input)}`);
-  const existing = await c.env.DB.prepare("SELECT * FROM decisions WHERE service=? AND idempotency_key=?").bind(input.service, key).first<DecisionRow>();
+  const request = parsed.data;
+  const requestDigest = await keyedDigest(c.env.OUTBOX_KEY, `decisions-idempotency.v1:${JSON.stringify(request)}`);
+  const existing = await c.env.DB.prepare("SELECT * FROM decisions WHERE service=? AND idempotency_key=?").bind(request.service, key).first<DecisionRow>();
   if (existing) return replay(c.env, existing, requestDigest);
-  if (input.expires_at <= now() || input.expires_at > now() + 7 * 86400) return problem(422, "invalid_expiry");
+  const timestamp = now();
+  let input: DecisionInput;
+  try { input = resolveDecision(request, timestamp, c.env.MAX_DECISION_LIFETIME_SECONDS); }
+  catch (error) {
+    if (error instanceof RangeError) return problem(422, "invalid_expiry");
+    throw error;
+  }
   if (!callbackTarget(c.env, input)) return problem(403, "callback_not_registered");
   const id = crypto.randomUUID();
   const token = randomToken();
-  const encrypted = await encryptJson(c.env.OUTBOX_KEY, { input, token } satisfies DecisionPayload, id);
-  const timestamp = now();
+  const encrypted = await encryptJson(c.env.OUTBOX_KEY, { input, token,
+    notification_json: snapshotInvitation(input, token, c.env.PUBLIC_ORIGIN, timestamp) } satisfies DecisionPayload, id);
   try {
     await c.env.DB.batch([
       c.env.DB.prepare("INSERT INTO decisions(decision_id,service,idempotency_key,request_digest,token_digest,payload,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
