@@ -1,0 +1,4 @@
+interface:
+  display_name: "moeSegFault Notifications"
+  short_description: "Send branded email from trusted moeSegFault services"
+  default_prompt: "Use $moesegfault-notifications to integrate this service with the moeSegFault notification center."
