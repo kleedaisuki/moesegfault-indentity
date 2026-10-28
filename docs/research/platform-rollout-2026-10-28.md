@@ -282,3 +282,40 @@ verifying its expected owned head and receiving deletion204 plus ref-not-found40
 No production test mail, account mutation, secret rotation, data snapshot restore,
 or changes to the user's unrelated working-tree files were used for final
 acceptance. The in-app Browser blocker is closed by actual interaction, not waived.
+
+## Fresh recipient acceptance — 2026-10-28
+
+The remaining native-provider question was whether successful mail to the controlled
+base Outlook mailbox could have relied on an individually verified Cloudflare
+destination. Earlier notes documented real receipt but did not establish the
+verification status of that exact address.
+
+Microsoft explicitly documents Outlook.com `+site` addressing as delivery to the
+same existing inbox: [Outlook.com site-specific addresses](https://support.microsoft.com/en-us/outlook/send-email-from-a-different-address-in-outlook-com).
+Cloudflare's current limits distinguish verified destinations from an onboarded
+sending domain, which may send to any recipient:
+[Email Service recipient limits](https://developers.cloudflare.com/email-service/platform/limits/).
+
+A staging-only HTTP journey used a fresh, cryptographically random 64-bit plus-tag
+of the user-authorized Outlook address. No destination registration, confirmation
+email or OTP flow was performed. Recipient SHA256:
+`231cb35e4a2c1daf81d31dd94a3073f3b966ae757facd120d640b138165c5f5a`.
+[Run 40713749593](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40713749593)
+used main `5cb3e6236dded2272098d42d1f277a2d8337c57f` and completed successfully in
+63 seconds. At 15:14:13 UTC the driver reported native provider acceptance, explicit
+HTTP confirmation and durable registered callback for decision
+`c88fbde3-a136-4e91-be0c-894f128bbcfb`. The driver checks the notification's native
+provider state is `sent` before declaring success. This proves the configured
+structured Email Sending path accepted the newly generated recipient; it is not
+an additional inbox-receipt or browser-interaction claim.
+
+Only the temporary staging fixture was deployed; no application release, full
+build, production operation or deployed application-code change occurred. The
+workflow disabled the public driver while retaining its private DB-backed callback
+consumer. A `finally` block restored `PLATFORM_JOURNEY_RECIPIENT` to the exact base
+address; the successful secret update was confirmed at 15:14:41 UTC. The original
+recipient was not replaced with the plus-tag in any source or documentation.
+
+Separate root in-app production acceptance also confirmed Notifications' **Your
+account** link opens production Account, whose anonymous entry points to the paired
+production Login return URI. No authentication or account mutation was performed.
