@@ -13,6 +13,21 @@ branch were not imported; their original history remains at
 `codex/pre-platform-preserve-20261028`. Existing unrelated working-tree changes
 and documents are not included in this release.
 
+## Coordination choices
+
+The work was split into platform, Identity transport, Account presentation, and
+delivery ownership, with a separate independent reviewer. The platform lead could
+delegate two leaf implementations, but further recursive delegation was disallowed.
+The root integrated commits, protected unrelated local state, and alone controlled
+publication. Contracts and file ownership were agreed before parallel edits;
+cross-service tests checked the assembled result, not just per-agent completion.
+
+This applies the centralized integration and explicit dependency lessons from
+[Effective Strategies for Asynchronous Software Engineering Agents (2026)](https://arxiv.org/abs/2603.21489)
+and role-separated review from [Agyn (2026)](https://arxiv.org/abs/2602.01465).
+The shared checkout uses disjoint ownership rather than claiming full worktree
+isolation or importing benchmark accuracy claims into this production task.
+
 ## Verification before hosted delivery
 
 - Strict TypeScript checks pass for shared platform, Notifications and Decisions.
@@ -36,6 +51,14 @@ First staging candidate: `9ac2f89c707e4781159973a808fe4af9514f951f` in
 At note creation, platform contracts/package, both full frontend suites/builds,
 and shared contracts/migrations/scripts had passed. Rust and actual delivery
 were still running. A queued or successful build is not evidence of deployment.
+
+The first run subsequently failed only its fresh Rust advisory gate:
+`RUSTSEC-2026-0387` affected the old crypto-bigint transitively used by vendored
+Passkey verification. Rust formatting, clippy and native tests had passed; no
+deployment occurred. A stable, MSRV-compatible upstream dependency migration is
+being evaluated rather than ignoring the advisory. The failure also exposed that
+dependency/tool caches must survive later validation failures, while validated
+application artifacts must remain success-only.
 
 ## Real-user acceptance constraints
 

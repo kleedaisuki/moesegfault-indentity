@@ -91,3 +91,33 @@ maximum lifetime; accepted decisions no longer fall outside the notification
 contract. The real named-binding/D1 journey passes
 with the actual staging callback receiver, including a body-less invitation,
 single consumption under concurrent submissions, and stable-event retry.
+
+## Hosted advisory remediation follow-up
+
+Hosted first-run advisory failure identified `RUSTSEC-2026-0387` in the old
+`crypto-bigint 0.5.5` transitive P-256 dependency. Independent upstream advisory
+readback confirms patched versions are `>=0.7.6`; the proposed stable `0.7.10`
+therefore addresses the reported advisory without an ignore-list exception.
+See [RustSec advisory](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
+
+Reviewed in-progress vendor migration: `p256 0.14.0`, `elliptic-curve 0.14.3`,
+`crypto-bigint 0.7.10`, and `x509-cert 0.3`/`const-oid 0.10` trait-family alignment.
+The installed primary-source crate manifests declare Rust 1.85 for P-256/X509 and
+1.87 for elliptic-curve/crypto-bigint, within repository Rust 1.88. Runtime P-256
+has defaults disabled and enables `ecdsa,alloc`; native test RNG is separate.
+
+The persisted COSE X/Y byte representation, SEC1 uncompressed point construction,
+DER signature parsing and SHA-256 digest remain unchanged. Public-key conversion
+still rejects invalid points. Signature trait 2 (Ed25519) and trait 3 (P-256)
+imports are explicit and separate. Upstream `p256 0.14.0/src/ecdsa.rs` sets
+`NistP256::NORMALIZE_S=false`, preserving both high-S and low-S acceptance; the
+new static legacy fixture is being added by the owner to guard that contract.
+No source-level credential compatibility blocker found in these production edits.
+Actual native/WASM compile and fixed legacy/attestation tests remain hosted gates,
+not implied by this source review.
+
+Also reviewed `a0bb1bf` Decisions retry repair: scans pass only job IDs, the atomic
+claim returns the authoritative incremented attempt and enforces `<12`, settlement
+matches its unique lease, and exhausted crashed leases become terminal only after
+lease expiry. This addresses stale-scan extra-attempt behavior without interrupting
+an active final attempt. No actionable regression found in that bounded diff.

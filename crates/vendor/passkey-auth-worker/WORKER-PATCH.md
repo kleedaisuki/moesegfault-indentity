@@ -167,3 +167,15 @@ Sources:
 This section supersedes the earlier statement that runtime delta is limited to
 `src/types.rs` and metadata to clock dependencies. The complete vendor delta
 also includes the explicitly scoped security dependency/API updates above.
+
+Validation completed on Rust 1.88.0 (Windows, one compiler job):
+
+```text
+cargo check --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --lib --locked -j 1
+cargo check --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --lib --locked --target wasm32-unknown-unknown -j 1
+cargo test --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --locked --lib --test attestation_e2e --test ceremony_e2e -j 1
+```
+
+The native and wasm32 checks passed; all 48 tests passed (29 unit, 6 certificate-attestation,
+13 ceremony). Hosted Actions remains the release gate for the complete Identity
+Worker, dependency policy, and staging user journey.
