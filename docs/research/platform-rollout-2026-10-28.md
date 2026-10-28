@@ -319,3 +319,49 @@ recipient was not replaced with the plus-tag in any source or documentation.
 Separate root in-app production acceptance also confirmed Notifications' **Your
 account** link opens production Account, whose anonymous entry points to the paired
 production Login return URI. No authentication or account mutation was performed.
+
+## Portable integration skills
+
+[PR31](https://github.com/kleedaisuki/moesegfault-indentity/pull/31) publishes
+`skills/moesegfault-notifications` and `skills/moesegfault-decisions` alongside the
+existing Identity skill. Each new folder is independently copyable: short
+`SKILL.md` entrypoints route to bundled references only when the current task
+needs integration, templates/forms, callback registration, or operational detail.
+No relative reference escapes its skill folder, and maintainer source links are
+not prerequisites. README indexes selective installation through the
+[upstream Skills CLI](https://github.com/vercel-labs/skills#install-a-skill).
+The layout follows the [Agent Skills specification](https://agentskills.io/specification),
+without inventing an SDK, provider credentials, public send API, or access grant.
+
+Both system skill validators passed. All four embedded TypeScript blocks passed
+strict checking against the installed Cloudflare runtime types and Zod, including
+exact optional properties and unchecked-index checks. The callback SQL example
+uses a unique receipt insert, an operation/decision foreign key, a pending-state
+trigger, and one D1 batch: a duplicate or failed effect rolls the whole batch back,
+rather than allowing an ignored insert followed by a repeated mutation.
+
+An independent consumer exercise read only each supplied skill and its selected
+bundled references, not platform implementation or service READMEs. With Node's
+built-in test runner and SQLite, it produced two isolated service integrations:
+
+| Exercise | Result | Discriminating behavior |
+| --- | --- | --- |
+| Notifications | Strict build; 18 offline tests passed | Chinese security notification, paired environments, response lost after acceptance, restart with unchanged envelope/key and the same receipt, terminal/conflicting outcomes |
+| Decisions | Strict build; 13 offline tests passed | Thirty-day choice/form, required region and optional note, both sides of registration, early callback before mapping, eight duplicate contenders, conflicting events, failure rollback, commit followed by lost completion signal |
+
+These are consumer-control-flow and local SQLite transaction checks, not a claim
+of distributed D1, new mailbox receipt, or new browser acceptance. The actual
+runtime journeys above remain separate evidence. The exercise found no blocking
+contract gap; receipt loss through the entire delivery window without a known
+message ID still requires operator reconciliation rather than an invented lookup
+API or renewed deadline.
+
+[Hosted run40716622045](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40716622045)
+passed the existing required quality/package and native-browser gates before
+merge. Validated Rust, frontend and Identity integration artifacts were reused;
+the fresh advisory gates still ran. These changes are skills/README only, so the
+documentation-only main filter correctly avoids deploying identical application
+code again. Production remains the verified0.2.0 application revision above;
+Notifications, Decisions and Identity health checks were independently200. A
+copied skill neither registers a callback nor grants a service binding, and live
+onboarding/deployment still requires the current task's authorization.
