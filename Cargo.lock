@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "identity-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "hmac",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "identity-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64",
