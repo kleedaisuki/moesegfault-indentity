@@ -188,10 +188,11 @@ No production account was created or modified, no production test mail was sent,
 and no database snapshot was restored. Existing unrelated local working changes
 remain outside this delivery.
 
-## Open acceptance item: actual built-in Browser
+## Earlier acceptance blocker: actual built-in Browser
 
 The user explicitly required this acceptance in the current task and declined
-deferring it. **Do not mark the goal complete merely because production is healthy.**
+deferring it. At this checkpoint production health alone did not prove completion.
+The later recovery and completed acceptance below supersede this earlier blocker.
 
 The root used the advertised in-app browser, not an external browser. Metadata
 calls can list an Account page with its live title, but navigation, AX/DOM reads
@@ -209,3 +210,75 @@ and run the staging `mailbox` acceptance mode for a fresh decision: choose, fill
 explicitly submit, verify completion and the durable callback, and save screenshots.
 The previous HTTP round trip and user-confirmed mail receipt remain valid evidence,
 but are not substitutes for that requested browser interaction.
+
+## Browser acceptance completed and final 0.2.0 state
+
+After the user repaired the connection, the in-app browser completed the real
+staging decision journey: choose `approve`, fill `staging-ok`, separately confirm,
+follow the native completion redirect, and observe the submitted page. The actual
+registered service receipt was confirmed by successful
+[mailbox/browser run 40699666946](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40699666946).
+The observed decision ID was `a18a15ac-5e5e-4f4c-be42-fcb60c7fa0c2`; no bearer URL
+is recorded here. The earlier rejected native POST and corrected protocol/test
+transport are explained in
+[the native-Origin incident](../incidents/2026-10-28-native-decision-origin.md).
+
+The user then explicitly chose a seven-day default with longer caller-specified
+business deadlines. [PR29](https://github.com/kleedaisuki/moesegfault-indentity/pull/29)
+implements that contract, rather than asking asynchronous recipients to watch
+their inbox. Admission defaults are applied once and are independent of message
+delivery and CI observation. New encrypted invitation snapshots freeze outbound
+JSON; old records retain their original serializer and accepted idempotency key.
+Thirty/ninety/365-day cases, omitted-expiry retries, legacy encrypted records, and
+late private callbacks after public-driver cleanup are covered by actual Workers
+and D1. The one-year admission safety ceiling is configurable; accepted records
+are not rewritten when policy changes. Verification codes retain their short
+security lifetime. Queue-only expiry is not presented as the validity of an
+ordinary informational/security message.
+
+[Source/native gates 40704220756](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40704220756),
+[exact-candidate staging/HTTP acceptance 40704050563](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40704050563),
+and [production promotion 40705586193](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40705586193)
+all passed for this asynchronous-lifetime change.
+
+Account actual-page theme/locale/navigation and desktop/narrow display checks also
+completed. A clearly synthetic authenticated-shaped fixture used the real shell,
+pages and CSS, not a forged Identity session, and exposed the compact-header
+ownership issue fixed by [PR30](https://github.com/kleedaisuki/moesegfault-indentity/pull/30).
+Its source/native/package gates passed in
+[run 40704236673](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40704236673).
+See the [Account presentation note](account-presentation-refresh-2026-10-28.md)
+for measured bounds and the distinction between fixture, actual-page and capture
+evidence. No profile save, authentication or sign-out persistence is claimed by
+the synthetic display fixture.
+
+The final application revision is
+`5e0dae68826d89aaf2832625fa4f69abfe831d87`. Its complete hosted quality/package,
+staging and production promotion succeeded in
+[run 40707342063](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/40707342063).
+
+| Final production unit | Worker version |
+| --- | --- |
+| Notifications | `cfae9af1-eaa2-440d-8091-c7d36d23c9e8` |
+| Decisions | `3ff930b8-b6eb-4c88-bdad-b318c6dd3411` |
+| Identity | `a074006d-fecf-4b53-a77e-c737c7a93fe1` |
+| Login | `7aa017cc-2e45-4e9f-8151-8cee45b51bdf` |
+| Account | `1c59e83f-29dd-4d37-8cd7-85e6e44fa09d` |
+
+Independent final readback confirmed Identity0.2.0/D1 healthy, both new services
+healthy with strict-origin, and public POSTs to private send/create paths returning
+404. Existing pinned D1 IDs were reused. Every first-party npm manifest reports
+0.2.0. Public frontend bytes exactly matched the final hosted artifacts:
+
+| App | Entry | SHA256 |
+| --- | --- | --- |
+| Account | `/assets/index-CNQzDJn4.js` | `f18525e9ea2fe4325c1c18f0f4b2d1b02da1ea4ad75fc0fa62f12d02e88daf1f` |
+| Login | `/assets/index-C4ZFXKix.js` | `e337647d56a0e9e99f93a5098566988fd5d013c189a12bb04d870d138f327bc7` |
+
+The callback consumer retains its D1-only private binding when the public test
+driver is disabled; no sending/control bindings or public token remain necessary
+for a late reply. The temporary sandbox workflow branch was deleted only after
+verifying its expected owned head and receiving deletion204 plus ref-not-found404.
+No production test mail, account mutation, secret rotation, data snapshot restore,
+or changes to the user's unrelated working-tree files were used for final
+acceptance. The in-app Browser blocker is closed by actual interaction, not waived.

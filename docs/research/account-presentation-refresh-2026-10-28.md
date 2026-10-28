@@ -61,3 +61,51 @@ usable alternative. No screenshot or responsive visual acceptance is claimed;
 complete desktop/mobile and light/dark visual checks against staging when the
 browser integration is usable. Existing API behavior remains covered by the
 focused executable journeys above; CI owns broader regression execution.
+
+## Completed in-app acceptance and compact command ownership
+
+The Browser connection was subsequently repaired. Actual staging checks covered
+the anonymous landing, light/dark appearance cycling, Chinese/English locale
+selection, and navigation to Login and back with the paired staging return URI.
+Tested preferences were restored. No account authentication, credential change,
+profile save or production-account mutation is claimed by these display checks.
+
+The actual shell/pages/CSS were also rendered in the in-app browser using the
+explicitly synthetic local fixture. Overview and Profile were inspected, including
+the real locale autonyms and a synthetic locale-save failure. This revealed a real
+authenticated-shaped header problem: logout could become an orphan second row.
+At360px viewport/345px available content, the old header measured113.7px and logout
+started at y61.8 while the other controls started near y9.
+
+[PR30](https://github.com/kleedaisuki/moesegfault-indentity/pull/30) groups preferences
+and sign-out into one action region, while keeping sign-out outside the preference
+host that is replaced during locale updates. Shared command locking is unchanged.
+All narrow headers use a named logo target, avoiding session-specific layout
+branches. The full localized home-link accessible name survives the compact visual
+wordmark, and command/home targets remain at least44px.
+
+Measured synthetic-fixture results at320px available content width:
+
+| Element | Width / height |
+| --- | --- |
+| Header | Normal height67.2px |
+| Home target | 44×44px |
+| Language control | 109×46px; all three autonyms present |
+| Theme control | 44×46px |
+| Sign-out | 44×44px; remains in its action group |
+
+The normal and locale-error cases had scrollWidth320 == clientWidth320. Error
+feedback remains readable within its preference host; it is not hidden to force
+the header to fit. The16 focused shell/presentation cases and production build
+passed before hosted full suites. The temporary local Vite session was stopped
+after acceptance; port5174 and its owned process were verified absent.
+
+Two capture caveats were distinguished from product defects: a full-page capture
+appeared cropped while DOM/viewport bounds were correct, and browser-scoped viewport
+overrides apply to the selected tab rather than an arbitrary background tab handle.
+Always confirm the measured inner/client widths on the target page. The deployed
+staging header was finally checked in the selected tab at360px, with clientWidth345,
+scrollWidth345, header height67.2px and the full Chinese accessible home-link name.
+No speculative overflow-hiding or intrinsic-grid patch was shipped for the capture
+artifact. Remote screenshot capture was intermittent, so the saved component
+images, actual-page AX state and measured geometry are kept distinct evidence.
