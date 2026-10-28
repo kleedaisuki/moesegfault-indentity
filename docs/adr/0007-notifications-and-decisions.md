@@ -120,6 +120,12 @@ quality gate, rather than requiring a heavyweight local full-suite run.
 Hosted Chromium additionally exercises real native form navigation, browser-created
 Origin/Referer, secure cookies, explicit confirmation, and the registered callback.
 Node fetches with a manually supplied Origin cannot certify that browser contract.
+The browser gate uses a real loopback HTTPS listener backed by the actual Decisions
+Worker and isolated D1; its generated certificate is trusted only by that test's
+browser context. Automatic POST/Redirect/GET must reach the completion page over
+normal network requests. Playwright route interception is deliberately avoided:
+its first-URL redirect handling can make a virtual-host test fail after a correct
+303, even though the application accepted the form and delivered its callback.
 
 The manually dispatched `Platform mailbox and browser journey` workflow has two
 explicit modes. `http` sends through the native provider, submits the form with

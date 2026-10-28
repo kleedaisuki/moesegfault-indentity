@@ -176,8 +176,7 @@ try {
   assert.equal(callbacks.length, exhaustedCalls, "Final-lease recovery must never resend beyond the attempt budget");
   if (process.env.PLATFORM_NATIVE_BROWSER === "1") {
     const {runNativeFormJourney} = await import("./platform-native-form.mjs");
-    callbackStatus = 204;
-    await runNativeFormJourney({mf, post, ddb, callbacks, decision});
+    await runNativeFormJourney({state, decision});
   }
   console.log("PASS: named service capabilities, sender reuse/create, branded mail, encrypted durable retries, explicit form confirmation, CSRF, callback registration, single consumption and idempotent callback recovery.");
 } finally {
