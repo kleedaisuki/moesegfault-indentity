@@ -24,20 +24,23 @@ for (const service of ["notifications", "decisions"]) {
     export class TestAdmin extends WorkerEntrypoint {async fetch(){await ${operation}(this.env);return new Response('ok')}}`;
   await build({stdin: {contents: source, resolveDir: root, sourcefile: `${service}-test.ts`, loader: "ts"}, bundle: true, format: "esm", platform: "neutral", conditions: ["workerd", "worker", "browser"], external: ["cloudflare:workers"], outfile: join(state, `${service}.mjs`)});
 }
+await build({entryPoints: [join(root, "apps/platform-journey/src/index.ts")], bundle: true, format: "esm", platform: "neutral", external: ["cloudflare:workers"], outfile: join(state, "journey-fixture.mjs")});
 const fixture = `import {WorkerEntrypoint} from 'cloudflare:workers';
   export class EmailCapture extends WorkerEntrypoint {async send(message){const response=await this.env.EMAIL_SINK.fetch('https://email-sink.internal',{method:'POST',body:JSON.stringify(message)});if(!response.ok)throw new Error('fixture_provider_'+response.status);return response.json()}}
-  export class CallbackCapture extends WorkerEntrypoint {fetch(request){return this.env.CALLBACK_SINK.fetch(request)}}
+  export class CallbackCapture extends WorkerEntrypoint {async fetch(request){const response=await this.env.CALLBACK_SINK.fetch(request.clone());if(!response.ok)return response;return this.env.FCALL.fetch(request)}}
   export default {fetch(request,env){const url=new URL(request.url);const [,binding,...parts]=url.pathname.split('/');url.pathname='/'+parts.join('/');return env[binding].fetch(new Request(url,request))}};`;
 const mf = new Miniflare(convertV4MiniflareOptions({persist: state, workers: [
   {name: "router", modules: true, script: fixture, compatibilityDate: "2026-10-01", serviceBindings: {
     NAPI: {name: "notifications", entrypoint: "NotificationsApi"}, DAPI: {name: "decisions", entrypoint: "DecisionsApi"},
     NADMIN: {name: "notifications", entrypoint: "TestAdmin"}, DADMIN: {name: "decisions", entrypoint: "TestAdmin"},
     NPUBLIC: "notifications", DPUBLIC: "decisions",
+    FIXTURE: "journey-fixture", FCALL: {name: "journey-fixture", entrypoint: "CallbackReceiver"},
     EMAIL_SINK: async request => {emails.push(await request.json()); return Response.json({messageId: randomUUID()}, {status: emailStatus});},
     CALLBACK_SINK: async request => {callbacks.push({value: await request.json(), key: request.headers.get("idempotency-key"), event: request.headers.get("x-moesegfault-event-id")}); return new Response(null, {status: callbackStatus});},
   }},
   {name: "notifications", modules: true, scriptPath: join(state, "notifications.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", OUTBOX_KEY: Buffer.alloc(32, 3).toString("base64url")}, d1Databases: {DB: "notifications"}, serviceBindings: {EMAIL: {name: "router", entrypoint: "EmailCapture"}}},
   {name: "decisions", modules: true, scriptPath: join(state, "decisions.mjs"), compatibilityDate: "2026-10-01", bindings: {ENVIRONMENT: "staging", OUTBOX_KEY: Buffer.alloc(32, 4).toString("base64url"), PUBLIC_ORIGIN: "https://decisions.example.test", CALLBACK_SERVICES: JSON.stringify({journey: {binding: "CALLBACK_JOURNEY", paths: ["/v1/results"]}})}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, CALLBACK_JOURNEY: {name: "router", entrypoint: "CallbackCapture"}}},
+  {name: "journey-fixture", modules: true, scriptPath: join(state, "journey-fixture.mjs"), compatibilityDate: "2026-10-01", bindings: {JOURNEY_TOKEN: "a-fixture-only-one-time-token-with-at-least-32-characters"}, d1Databases: {DB: "decisions"}, serviceBindings: {NOTIFICATIONS: {name: "notifications", entrypoint: "NotificationsApi"}, DECISIONS: {name: "decisions", entrypoint: "DecisionsApi"}}},
 ]}));
 
 const ndb = await mf.getD1Database("DB", "notifications");
@@ -141,6 +144,10 @@ try {
   const final = await json(await request("DAPI", `/v1/decisions/${accepted.decision_id}`), 200);
   assert.equal(final.state, "submitted");
   assert.ok(final.deliveries.every(job => job.state === "delivered"));
+  assert.equal((await request("FIXTURE", `/status/${accepted.decision_id}`)).status, 404, "Staging fixture must not publish status without its one-time credential");
+  const fixtureStatus = await json(await request("FIXTURE", `/status/${accepted.decision_id}`, {headers: {authorization: "Bearer a-fixture-only-one-time-token-with-at-least-32-characters"}}), 200);
+  assert.equal(fixtureStatus.received, true);
+  assert.equal(fixtureStatus.valid, true, "Actual staging CallbackReceiver must persist only the validated callback outcome");
   console.log("PASS: named service capabilities, sender reuse/create, branded mail, encrypted durable retries, explicit form confirmation, CSRF, callback registration, single consumption and idempotent callback recovery.");
 } finally {
   await mf.dispose();
