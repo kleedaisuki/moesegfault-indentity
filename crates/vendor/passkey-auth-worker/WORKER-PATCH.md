@@ -117,3 +117,53 @@ challenge，且日志和响应中不得再出现 `SystemTime` panic。
 
 消费方固定使用本路径与 `=0.1.3`。升级时先验证新发布包与许可证，再重新移植并
 执行完整验证；上游一旦正式支持该目标，应删除本 fork，而不是叠加兼容分支。
+
+## Security dependency update — 2026-10-28
+
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+reports secret-dependent timing in crypto-bigint arithmetic before 0.7.6.
+Although this server only verifies public WebAuthn inputs (authenticator private
+keys stay on user devices), a supported stable upstream upgrade is available;
+no advisory ignore or local cryptographic backport is needed.
+
+The pinned lockfiles now resolve the stable `p256 0.14.0` →
+`elliptic-curve 0.14.3` → `crypto-bigint 0.7.10` chain. The upstream minimum Rust
+versions are respectively 1.85, 1.87, and 1.87, compatible with the repository's
+Rust 1.88 toolchain. The vendor manifest minimum is raised to 1.87 accordingly.
+`crypto-bigint 0.7.6` was the initial security fix, but is now yanked; 0.7.10 is
+the maintained non-yanked stable resolution. `deny.toml` remains unchanged.
+
+Production `p256` explicitly disables defaults and enables `ecdsa` plus `alloc`.
+In particular, this does not add a new OS RNG/getrandom backend to the Worker.
+Only native dev/test builds enable p256's default `std`/RNG features for synthetic
+signers. The existing rand 0.8 + getrandom 0.2 JavaScript-backed challenge
+randomness is unchanged. `cargo tree --locked -p identity-worker --target
+wasm32-unknown-unknown -i getrandom@0.4.3` has no production path.
+
+The dependency generation renames SEC1 point APIs; `src/crypto.rs` and
+`src/attestation.rs` use the corresponding upstream `Sec1Point` and
+`FromSec1Point` names. `x509-cert` moves to 0.3 (and `const-oid` to 0.10) to match
+signature 3 / DER 0.8 traits used by the P-256 attestation test certificate
+builder. `src/x509.rs` accesses the same parsed DER fields through upstream
+getters. The synthetic certificate tests use a minimal self-signed attestation
+profile, not the new TLS-oriented certificate profiles.
+
+Credential COSE bytes, stored credential IDs, public coordinates, SHA-256
+message hashing, strict DER signature encoding, challenge/state formats, and
+accepted algorithms remain unchanged. Both high-S and low-S ES256 signatures
+remain valid: upstream p256's `NistP256::NORMALIZE_S` is false. The fixed RFC 6979
+A.2.5 public key and SHA-256 signature of `sample`, plus its `n-s` twin, exercise
+this compatibility without a newly generated signature hiding drift. Tampered
+messages and malformed DER reject. Existing ceremony and attestation end-to-end
+tests continue to cover generated Ed25519/P-256 verification and certificate
+AAGUID matching/rejection.
+
+Sources:
+- [P-256 0.14 manifest](https://docs.rs/crate/p256/0.14.0/source/Cargo.toml)
+- [elliptic-curve 0.14.3 manifest](https://docs.rs/crate/elliptic-curve/0.14.3/source/Cargo.toml)
+- [crypto-bigint changelog](https://docs.rs/crate/crypto-bigint/0.7.10/source/CHANGELOG.md)
+- [RFC 6979 test vectors](https://www.rfc-editor.org/rfc/rfc6979#appendix-A.2.5)
+
+This section supersedes the earlier statement that runtime delta is limited to
+`src/types.rs` and metadata to clock dependencies. The complete vendor delta
+also includes the explicitly scoped security dependency/API updates above.

@@ -342,11 +342,11 @@ fn verify_fido_u2f(
 fn verify_es256_sec1(sec1: &[u8; 65], msg: &[u8], sig: &[u8]) -> Result<()> {
     use p256::ecdsa::signature::Verifier;
     use p256::ecdsa::{Signature as EsSig, VerifyingKey as EsKey};
-    use p256::elliptic_curve::sec1::FromEncodedPoint;
-    use p256::{EncodedPoint, PublicKey};
+    use p256::elliptic_curve::sec1::FromSec1Point;
+    use p256::{PublicKey, Sec1Point};
 
-    let point = EncodedPoint::from_bytes(sec1).map_err(|_| Error::BadSignature)?;
-    let pk = PublicKey::from_encoded_point(&point);
+    let point = Sec1Point::from_bytes(sec1).map_err(|_| Error::BadSignature)?;
+    let pk = PublicKey::from_sec1_point(&point);
     let pk = Option::<PublicKey>::from(pk).ok_or(Error::BadSignature)?;
     let vk = EsKey::from(&pk);
     let parsed = EsSig::from_der(sig).map_err(|_| Error::BadSignature)?;

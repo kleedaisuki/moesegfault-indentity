@@ -10,9 +10,9 @@
 //! careful here.
 
 use ed25519_dalek::{Signature as EdSig, Verifier as _, VerifyingKey as EdKey};
-use p256::ecdsa::{Signature as EsSig, VerifyingKey as EsKey};
-use p256::elliptic_curve::sec1::FromEncodedPoint;
-use p256::{EncodedPoint, PublicKey};
+use p256::ecdsa::{Signature as EsSig, VerifyingKey as EsKey, signature::Verifier as _};
+use p256::elliptic_curve::sec1::FromSec1Point;
+use p256::{PublicKey, Sec1Point};
 
 use crate::cose::CoseKey;
 use crate::error::{Error, Result};
@@ -34,8 +34,8 @@ fn verify_es256(x: &[u8; 32], y: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<()
     sec1[0] = 0x04;
     sec1[1..33].copy_from_slice(x);
     sec1[33..65].copy_from_slice(y);
-    let point = EncodedPoint::from_bytes(sec1).map_err(|_| Error::BadSignature)?;
-    let pk = PublicKey::from_encoded_point(&point);
+    let point = Sec1Point::from_bytes(sec1).map_err(|_| Error::BadSignature)?;
+    let pk = PublicKey::from_sec1_point(&point);
     let pk = Option::<PublicKey>::from(pk).ok_or(Error::BadSignature)?;
     let vk = EsKey::from(&pk);
 
@@ -69,7 +69,8 @@ fn verify_ed25519(key: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
-    use p256::ecdsa::SigningKey as EsSigningKey;
+    use p256::ecdsa::{SigningKey as EsSigningKey, signature::Signer as _};
+    use p256::elliptic_curve::Generate;
     use rand::RngCore;
 
     #[test]
@@ -90,10 +91,36 @@ mod tests {
     }
 
     #[test]
+    fn historical_es256_der_accepts_high_and_low_s() {
+        // RFC 6979 A.2.5, P-256/SHA-256 signature of "sample". These fixed public
+        // bytes predate this dependency upgrade; no new signer can mask wire drift.
+        let x: [u8; 32] =
+            hex::decode("60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let y: [u8; 32] =
+            hex::decode("7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let key = CoseKey::Es256 { x, y };
+        let high_s = hex::decode("3046022100efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716022100f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8").unwrap();
+        let low_s = hex::decode("3045022100efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf371602200834e36ad29a83bf2bc9385e491d6099c8fdf9d1ed67aa7ea5f51f93782857a9").unwrap();
+        verify(&key, b"sample", &high_s).expect("existing high-S DER remains accepted");
+        verify(&key, b"sample", &low_s).expect("equivalent low-S DER remains accepted");
+        assert!(verify(&key, b"tampered", &high_s).is_err());
+        assert!(verify(&key, b"tampered", &low_s).is_err());
+        let mut malformed = low_s;
+        malformed[0] = 0x31;
+        assert!(verify(&key, b"sample", &malformed).is_err());
+    }
+
+    #[test]
     fn es256_round_trip() {
-        let sk = EsSigningKey::random(&mut rand::thread_rng());
+        let sk = EsSigningKey::generate();
         let vk = sk.verifying_key();
-        let pt = vk.to_encoded_point(false);
+        let pt = vk.to_sec1_point(false);
         let xs = pt.x().expect("x coord");
         let ys = pt.y().expect("y coord");
         let mut x = [0u8; 32];

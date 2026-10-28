@@ -15,12 +15,13 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use ciborium::value::Value as CborValue;
 use p256::ecdsa::{Signature as EsSig, SigningKey, signature::Signer};
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::EncodePublicKey;
 use sha2::{Digest, Sha256};
-use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::builder::{Builder, CertificateBuilder, profile::BuilderProfile};
 use x509_cert::der::asn1::OctetString;
 use x509_cert::der::{Encode, oid::AssociatedOid};
-use x509_cert::ext::{AsExtension, Extension};
+use x509_cert::ext::{Criticality, Extension};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
 use x509_cert::spki::SubjectPublicKeyInfoOwned;
@@ -49,8 +50,8 @@ impl x509_cert::der::Encode for FidoAaguid {
     }
 }
 
-impl AsExtension for FidoAaguid {
-    fn critical(&self, _subject: &Name, _exts: &[Extension]) -> bool {
+impl Criticality for FidoAaguid {
+    fn criticality(&self, _subject: &Name, _exts: &[Extension]) -> bool {
         false
     }
 }
@@ -81,8 +82,8 @@ impl x509_cert::der::Encode for MalformedAaguid {
     }
 }
 
-impl AsExtension for MalformedAaguid {
-    fn critical(&self, _subject: &Name, _exts: &[Extension]) -> bool {
+impl Criticality for MalformedAaguid {
+    fn criticality(&self, _subject: &Name, _exts: &[Extension]) -> bool {
         false
     }
 }
@@ -114,11 +115,33 @@ enum AaguidExt {
     Malformed,
 }
 
+/// A self-signed test leaf with no unrelated TLS constraints.
+struct AttestationProfile(Name);
+
+impl BuilderProfile for AttestationProfile {
+    fn get_issuer(&self, _subject: &Name) -> Name {
+        self.0.clone()
+    }
+
+    fn get_subject(&self) -> Name {
+        self.0.clone()
+    }
+
+    fn build_extensions(
+        &self,
+        _spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
+        _issuer_spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
+        _tbs: &x509_cert::TbsCertificate,
+    ) -> x509_cert::builder::Result<Vec<Extension>> {
+        Ok(Vec::new())
+    }
+}
+
 impl CertBundle {
     /// Mint a fresh self-signed leaf cert with the requested AAGUID
     /// extension shape.
     fn new(aaguid: AaguidExt) -> Self {
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
         let verifying_key = signing_key.verifying_key();
 
         // SubjectPublicKeyInfo for the verifying key, in PKCS8/SEC1 form.
@@ -136,20 +159,11 @@ impl CertBundle {
             .expect("name to DER");
         let subject = Name::from_der_slice(&subject);
 
-        // Use Leaf profile (no constraints, no SAN). We are a leaf cert
-        // in a one-cert chain; that's all the FIDO format needs.
-        let profile = Profile::Leaf {
-            issuer: subject.clone(),
-            enable_key_agreement: false,
-            enable_key_encipherment: false,
-        };
         let mut builder = CertificateBuilder::new(
-            profile,
+            AttestationProfile(subject),
             SerialNumber::from(1u32),
             Validity::from_now(Duration::from_secs(60 * 60)).expect("validity"),
-            subject,
             spki,
-            &signing_key,
         )
         .expect("CertificateBuilder::new");
 
@@ -172,7 +186,7 @@ impl CertBundle {
         }
 
         let cert: x509_cert::Certificate = builder
-            .build::<p256::ecdsa::DerSignature>()
+            .build::<_, p256::ecdsa::DerSignature>(&signing_key)
             .expect("cert build");
         let cert_der = cert.to_der().expect("cert to DER");
 
@@ -212,9 +226,9 @@ struct CredKey {
 
 impl CredKey {
     fn new() -> Self {
-        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signing_key = SigningKey::generate();
         let vk = signing_key.verifying_key();
-        let pt = vk.to_encoded_point(false);
+        let pt = vk.to_sec1_point(false);
         let mut x = [0u8; 32];
         let mut y = [0u8; 32];
         x.copy_from_slice(&pt.x().unwrap()[..]);
