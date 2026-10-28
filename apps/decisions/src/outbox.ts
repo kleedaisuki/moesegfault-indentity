@@ -1,5 +1,6 @@
 import { decryptJson, providerError, retryDelay } from "@moesegfault/service-platform";
 import { callbackTarget, type DecisionPayload, type DecisionRow, type Env } from "./model";
+import { invitationJson } from "./invitation";
 
 interface OutboxRow { outbox_id: string; decision_id: string; kind: "notification" | "callback"; attempts: number }
 const maxAttempts = 12;
@@ -9,15 +10,14 @@ function deliveryError(code: string): Error {
 }
 
 async function dispatch(env: Env, job: OutboxRow, row: DecisionRow): Promise<void> {
-  const { input, token } = await decryptJson<DecisionPayload>(env.OUTBOX_KEY, row.payload, row.decision_id);
+  const decision = await decryptJson<DecisionPayload>(env.OUTBOX_KEY, row.payload, row.decision_id);
+  const { input } = decision;
   if (job.kind === "notification") {
     if (row.state !== "pending" || row.expires_at <= Math.floor(Date.now() / 1000)) return;
     const response = await env.NOTIFICATIONS.fetch("https://notifications.internal/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": `decision:${row.decision_id}`, "x-moesegfault-correlation-id": row.decision_id },
-      body: JSON.stringify({ service: input.service, sender: input.sender, to: input.to, template: "decision", locale: input.locale,
-        title: input.title, body: input.body, expires_at: input.expires_at,
-        action: { label: input.locale === "zh-CN" ? "查看并回复" : input.locale === "ja" ? "回答する" : "Review and respond", url: `${env.PUBLIC_ORIGIN}/d/${token}` } }),
+      body: invitationJson(decision, env.PUBLIC_ORIGIN),
     });
     if (response.status !== 202) throw deliveryError(`notifications_http_${response.status}`);
     const accepted = await response.json<{ state: string }>();

@@ -102,10 +102,13 @@ try {
     complete = true;
     break;
   }
-  assert.ok(complete, "Timed out waiting for mailbox/browser confirmation and callback delivery");
+  if (!complete && process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\nThe CI observation window ended without a confirmed callback. This does not expire the decision link: its business deadline is unchanged, and the private callback consumer remains available for a later reply.\n");
+  }
+  assert.ok(complete, "CI observation window ended without confirmed mailbox/browser submission and callback delivery; the decision business deadline is unchanged and its private callback consumer remains available");
 } finally {
   if (deployed) {
-    // Leave only the inert callback entrypoint required by staging's fixed binding.
+    // Disable public control, not the durable callback consumer for outstanding decisions.
     wrangler(["secret", "delete", "JOURNEY_TOKEN", "--config", configPath]);
     wrangler(["deploy", "--config", "wrangler.platform-journey-bootstrap.jsonc"]);
   }

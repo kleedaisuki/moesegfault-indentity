@@ -69,10 +69,25 @@ second queue/state system. Workers may crash after a downstream send and before
 recording acknowledgement, so delivery is **at least once**, not exactly once.
 Callback consumers must durably deduplicate the stable event ID / `Idempotency-Key`.
 
-Decisions accepts at most seven-day lifetimes, matching Notifications' envelope
-horizon. Their sender syntax, single-line title limit, and optional decision body
+Decisions defaults to a seven-day business deadline, resolved once at creation.
+An optional explicit Unix-second deadline supports longer workflows, including
+30/90/365 days. The deployment-owned `MAX_DECISION_LIFETIME_SECONDS` safety ceiling
+defaults to 365 days and can be raised deliberately; deadlines must always remain
+finite. Request fingerprints exclude any freshly resolved default, so replaying an
+omitted expiry recovers the committed link rather than extending its authority.
+Previously expired links are never extended or replaced automatically.
+
+Business deadlines and email delivery retention are separate lifetimes. New
+decision payloads contain an immutable serialized notification snapshot. Its
+delivery expiry is `min(created_at + 7 days, decision.expires_at)`, and the email's
+`action.expires_at` displays the actual decision deadline. A compatibility adapter
+for legacy records reconstructs their exact original outbound JSON under the same
+accepted idempotency key; no action field, fresh expiry, or modified request is
+introduced on retry. Attempt budgets remain independent of either deadline.
+Their sender syntax, single-line title limit, and optional decision body
 are aligned so accepted decisions cannot deterministically fail notification
-validation. Retention is bounded to 30 days; queued callbacks delay decision cleanup
+validation. Decisions are retained through their business deadline and for 30 days
+afterward; queued callbacks delay decision cleanup
 until their retry policy reaches a terminal state. Outbox encryption-key rotation
 requires draining old records and completing caller retries first; this release
 does not implement a multi-key envelope/keyring migration.
@@ -141,6 +156,12 @@ Deployment order is staging fixture bootstrap, Notifications, Decisions, Identit
 Login, Account. Both new public domains and D1 databases are provisioned through
 GitHub Actions. State migration is forward-only; rollback must preserve accepted
 outboxes and service bindings needed by the deployed Identity version.
+After new snapshot invitations or long-deadline clients are accepted, both
+Notifications and Decisions have a coordinated minimum version floor. Older
+Notifications strictly rejects `action.expires_at`; older Decisions ignores the
+stored snapshot and regenerates a different retry payload. Do not independently
+downgrade either side below this feature with queued new envelopes. Prefer a
+roll-forward repair, preserving accepted message keys and outstanding callbacks.
 
 ## Engineering and research basis
 

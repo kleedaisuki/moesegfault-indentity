@@ -48,12 +48,32 @@ Production and staging must bind to their corresponding platform Workers.
 | `decision` | `title`, `action` | Decisions link invitation (`body` optional) |
 
 All templates support `en`, `zh-CN`, and `ja` (`en` by default), optional
-`subject`, `title`, `body`, and `action: {label,url}`. URLs must be HTTPS without
+`subject`, `title`, `body`, and `action: {label,url,expires_at?}`. URLs must be HTTPS without
 embedded credentials. Text is escaped, never treated as caller HTML. Emails use
 an inline-styled responsive presentation table, readable plain text, no remote
 fonts or images, and the same warm moeSegFault palette as Account. Every
 verification email includes an explicit non-sharing warning. `expires_at` is
 Unix seconds and must be in the next seven days; default TTL is one day.
+
+Delivery expiry and the user's decision deadline are independent. For `decision`
+emails, optional `action.expires_at` is the actual business deadline displayed in
+HTML and plain text; it may be 30, 90, or more days away. The top-level
+`expires_at` still bounds the notification outbox to at most seven days. Existing
+decision requests without `action.expires_at` retain the previous display of
+top-level expiry. Verification always displays its code expiry and non-sharing
+warning. Informational and security messages never label their queue expiry as
+message validity: only an explicit `action.expires_at` is displayed as a link
+deadline. New decision deadlines use "Respond by"; other action links use
+"Link valid until" (localized). The optional action deadline is a positive,
+integral Unix timestamp within the JavaScript Date range; no default is inserted
+into existing payloads, preserving their idempotency fingerprints.
+
+Deploy the action-deadline-capable Notifications consumer before the corresponding
+Decisions snapshot producer. Once new envelopes are queued, keep both services at
+or above that feature floor: older Notifications strictly rejects the new action
+field, while older Decisions regenerates different retry JSON. Do not downgrade
+either service independently with pending new envelopes; prefer rolling forward.
+Upgrading retained legacy requests and jobs remains compatible.
 
 ## Persistence and delivery
 

@@ -8,6 +8,7 @@ const action = z.object({
     const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password;
   }, "Action URLs must use HTTPS without credentials"),
+  expires_at: z.number().int().positive().max(8_640_000_000_000).optional(),
 }).strict();
 
 export const messageSchema = z.object({

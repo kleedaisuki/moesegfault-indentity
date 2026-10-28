@@ -5,5 +5,8 @@
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
   "preview_urls": false,
+  "d1_databases": [
+    {"binding": "DB", "database_name": "moesegfault-decisions-staging", "database_id": "6c305f96-9b50-4f6b-90e4-d5d8c77c71a3"}
+  ],
   "observability": {"enabled": true, "logs": {"enabled": true, "invocation_logs": false, "head_sampling_rate": 1}}
 }

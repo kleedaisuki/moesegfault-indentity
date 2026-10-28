@@ -121,3 +121,68 @@ claim returns the authoritative incremented attempt and enforces `<12`, settleme
 matches its unique lease, and exhausted crashed leases become terminal only after
 lease expiry. This addresses stale-scan extra-attempt behavior without interrupting
 an active final attempt. No actionable regression found in that bounded diff.
+
+## Native form Origin hotfix — ace4cba
+
+Focused independent review found no actionable security or test-validity blocker.
+The [WHATWG Fetch Origin-header algorithm](https://fetch.spec.whatwg.org/#append-a-request-origin-header)
+explicitly serializes non-CORS native POST origins as `null` under `no-referrer`.
+Using `strict-origin` preserves the HTTPS same-origin native POST Origin while
+limiting Referer to scheme/host/port, never the capability path or query. HTTPS
+transport downgrade still suppresses the origin/referrer; the implementation does
+not accept `Origin:null`, weaken exact-origin validation, change CSRF cookies or
+relax CSP. The shared policy change is broader than a single page but has no
+capability-path disclosure: Notifications/Decisions retain no-store, noindex,
+anti-framing and restrictive resource policies.
+
+The Chromium regression consumes actual Worker HTML and browser-managed Secure,
+HttpOnly, Strict host cookies. It clicks radio/text controls then the separate
+submit button, forwards browser-computed headers/body without injecting Origin
+or Cookie, and reaches actual Miniflare D1 plus registered callback persistence.
+The legacy response-policy-only override is a useful negative control: the same
+native browser request must fail 403 with `Origin:null` and leave the decision
+pending. The corrected case asserts origin-only Referer, 303 redirect, completion
+heading, one persisted consumption and callback event identity. This is materially
+stronger than manually supplying Origin in an HTTP test. Route interception still
+does not test live Cloudflare DNS/TLS/edge configuration; retain the real staging
+in-app browser submit/callback acceptance gate.
+
+CI restores pinned Playwright-version Chromium binaries, always installs system
+dependencies, saves browser files only after successful installation and before
+assertions, then runs the native journey. Installation cache cannot turn failed
+browser assertions into a successful job. OS key is sufficient for the current
+fixed ubuntu-24.04/x64 runner; no local browser installation was performed during
+this source review. Hosted Chromium completion remains a separate run result.
+
+## Long-lived decision lifecycle candidate (working tree)
+
+Focused review of optional/default business deadlines, immutable invitation
+snapshots and DB-only staging callback cleanup found no actionable blocker.
+New create requests fingerprint the parsed caller request before resolving a
+missing deadline, and lookup/replay precedes current lifetime-policy validation;
+therefore omitted-deadline retries retain the original expiry and valid old
+records are not shortened by later policy changes. Explicit legacy expiry keeps
+the existing schema field order/HMAC serialization. The encrypted snapshot owns
+its notification delivery deadline, original URL and action deadline; the caller
+cannot supply that snapshot because the request schema is strict. The legacy
+adapter retains the exact pre-snapshot envelope/property order with no added
+`action.expires_at`, allowing the receiver's accepted message key to replay.
+
+The default business deadline is seven days, configurable admission ceiling is
+365 days, and new snapshots cap mail delivery at creation plus seven days while
+showing the independent action deadline in the email. Expiry uses integer Unix
+seconds; the schema's 8,640,000,000,000-second maximum maps to JavaScript Date's
+8.64e15-millisecond inclusive bound. Normal admission ceilings also reject common
+millisecond mistakes. Existing payloads/deadlines are not migrated or rewritten.
+
+Cleanup now retains only the private CallbackReceiver's DB binding; public
+send/status controls lose their notification/decision bindings and one-time
+credential. Removing the former one-day callback-receipt deletion avoids making
+late callback retries conflict with the unique decision receipt. The caller's
+CI observation timeout reports failure without expiring the business decision or
+removing its callback consumer. Actual scheduled callback delivery still has its
+explicit retry budget; a permanently failing downstream consumer remains an
+observable failed outbox, not an exactly-once delivery promise. Added tests seed
+legacy ciphertext/HMAC and receiver acceptance, verify 30/90/365-day invitations,
+unchanged omitted-deadline replay and DB-only late callback idempotency. This
+review did not independently rerun the owner's reported 38 tests/Miniflare run.
