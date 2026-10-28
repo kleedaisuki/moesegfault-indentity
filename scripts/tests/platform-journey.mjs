@@ -4,6 +4,7 @@ import {resolve, join} from "node:path";
 import {randomUUID} from "node:crypto";
 import {build} from "esbuild";
 import {Miniflare, convertV4MiniflareOptions} from "miniflare";
+import {waitFixtureReady} from "../lib/platform-journey-http.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const temp = resolve(root, ".temp/platform-journey-tests");
@@ -70,6 +71,7 @@ const decision = {service: "journey", sender: "accounts", to: "klee@example.test
 try {
   await migrate(ndb, "notifications");
   await migrate(ddb, "decisions");
+  await waitFixtureReady("https://decisions.example.test/FIXTURE", {authorization: "Bearer a-fixture-only-one-time-token-with-at-least-32-characters"}, {attempts: 1, report: () => {}, fetcher: (url, init) => mf.dispatchFetch(url, {headers: init.headers})});
   await json(await request("NPUBLIC", "/healthz"), 200);
   await json(await request("DPUBLIC", "/healthz"), 200);
   const notificationsLanding = await (await request("NPUBLIC", "/")).text();

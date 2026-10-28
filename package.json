@@ -44,7 +44,7 @@
     "dry-run:login": "wrangler deploy --dry-run --outdir=dist/dry-run/login --env production --config wrangler.login.jsonc",
     "dry-run:account": "wrangler deploy --dry-run --outdir=dist/dry-run/account --env production --config wrangler.account.jsonc",
     "typecheck:platform": "npm run typecheck --workspace=@moesegfault/service-platform && npm run typecheck --workspace=@moesegfault/notifications && npm run typecheck --workspace=@moesegfault/decisions",
-    "test:platform": "npm run test --workspace=@moesegfault/service-platform && npm run test --workspace=@moesegfault/notifications && npm run test --workspace=@moesegfault/decisions && node scripts/tests/platform-journey.mjs"
+    "test:platform": "npm run test --workspace=@moesegfault/service-platform && npm run test --workspace=@moesegfault/notifications && npm run test --workspace=@moesegfault/decisions && node scripts/tests/platform-journey.mjs && node --test scripts/tests/platform-journey-http.mjs"
   },
   "devDependencies": {
     "@redocly/cli": "2.52.1",
