@@ -97,3 +97,28 @@ describe("shared locale representation", () => {
     expect(options.find((option) => option.value === "ja")?.selected).toBe(true);
   });
 });
+
+describe("compact mobile header ownership", () => {
+  it("groups preferences and sign-out without putting sign-out inside replaceable preference content", () => {
+    const shell = createShell(translator("en"), false, async () => undefined);
+    shell.setSession(authenticated);
+    const actions = shell.root.querySelector(".mobile-header .header-actions")!;
+    const mobile = shell.root.querySelector(".mobile-sign-out")!;
+    expect(actions.contains(shell.controls[0]!)).toBe(true);
+    expect(mobile.parentElement).toBe(actions);
+    expect(shell.controls[0]!.contains(mobile)).toBe(false);
+    shell.controls[0]!.replaceChildren(document.createElement("select"));
+    expect(mobile.parentElement).toBe(actions);
+    expect(mobile.getAttribute("aria-label")).toBe(translator("en")("signOut"));
+  });
+
+  it.each(["zh-CN", "en", "ja"] as const)("keeps a named home link when the narrow wordmark is visually omitted in %s", (locale) => {
+    const shell = createShell(translator("en"), false, async () => undefined);
+    shell.relocalize(translator(locale));
+    const brand = shell.root.querySelector(".mobile-header .brand")!;
+    expect(brand.getAttribute("aria-label")).toBe(`moeSegFault ${translator(locale)("account")}`);
+    expect(brand.getAttribute("href")).toBe("/");
+    expect(brand.querySelector("img")?.getAttribute("alt")).toBe("");
+    expect(brand.querySelector(".brand-name")?.textContent).toBe("moeSegFault");
+  });
+});
