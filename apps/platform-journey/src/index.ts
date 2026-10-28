@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { correlationId, providerError } from "@moesegfault/service-platform";
 
 interface Env {
   DB?: D1Database;
@@ -70,13 +71,23 @@ export class CallbackReceiver extends WorkerEntrypoint<Env> {
 }
 
 export default {async fetch(request: Request, env: Env): Promise<Response> {
+  const correlation = correlationId(request);
+  let response: Response;
   try {
-    const response = await fetch(request, env);
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.set("X-Content-Type-Options", "nosniff");
-    return response;
+    const upstream = await fetch(request, env);
+    response = new Response(upstream.body, upstream);
   } catch (error) {
-    console.error(JSON.stringify({event: "platform_journey_failed", error_type: error instanceof Error ? error.name : "UnknownError"}));
-    return Response.json({error: "fixture_unavailable"}, {status: 503});
+    const path = new URL(request.url).pathname;
+    const match = /^\/(status|notifications)\/[a-f0-9-]{36}$/.exec(path);
+    const route = match ? `/${match[1]}/:id` : ["/start", "/healthz"].includes(path) ? path : "unmatched";
+    const detail = providerError(error);
+    console.error(JSON.stringify({event: "platform_journey_failed", method: request.method, route,
+      correlation_id: correlation, error_type: error instanceof Error ? error.name : "UnknownError",
+      error_code: detail.code, error_message: detail.message.replace(/\b[A-Za-z0-9_-]{43,}\b/g, "[token]")}));
+    response = Response.json({error: "fixture_unavailable", correlation_id: correlation}, {status: 503});
   }
+  response.headers.set("Cache-Control", "no-store");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("x-moesegfault-correlation-id", correlation);
+  return response;
 }} satisfies ExportedHandler<Env>;

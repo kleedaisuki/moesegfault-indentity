@@ -85,6 +85,10 @@ try {
   const replay = await json(await post("NAPI", "/v1/messages", notification, "verification-first"), 202);
   assert.equal(replay.message_id, first.message_id);
   assert.equal(replay.state, "sent");
+  const providerProbe = await request("FIXTURE", `/notifications/${first.message_id}`, {headers: {authorization: "Bearer a-fixture-only-one-time-token-with-at-least-32-characters"}});
+  const providerStatus = await json(providerProbe, 200);
+  assert.equal(providerStatus.state, "sent", "Staging fixture must forward native provider status without mutating an immutable subrequest response");
+  assert.equal(providerProbe.headers.get("cache-control"), "no-store");
   assert.equal(emails.length, 1, "An accepted replay must not send twice");
   assert.equal(emails[0].from.email, "identity@moesegfault.dev");
   assert.ok(emails[0].html.includes("01234567") && emails[0].text.includes("01234567"));
