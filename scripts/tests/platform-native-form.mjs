@@ -4,7 +4,7 @@ import {randomUUID} from "node:crypto";
 import {mkdirSync, readFileSync, readdirSync} from "node:fs";
 import {createServer} from "node:https";
 import {join, resolve} from "node:path";
-import {Miniflare, convertV4MiniflareOptions} from "miniflare";
+import {CoreHeaders, Miniflare, convertV4MiniflareOptions} from "miniflare";
 import {chromium} from "playwright";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -42,7 +42,7 @@ async function migrate(db) {
   }
 }
 
-async function createFixture(state) {
+export async function createNativeFormFixture(state) {
   const certificates = join(state, "native-https");
   mkdirSync(certificates, {recursive: true});
   const keyPath = join(certificates, "key.pem");
@@ -52,7 +52,7 @@ async function createFixture(state) {
   const callbacks = [];
   const observations = [];
   const failures = [];
-  let publicWorker;
+  let dispatchPublic;
   let origin;
   let legacyPath = null;
   const server = createServer({key: readFileSync(keyPath), cert: readFileSync(certPath)}, async (request, response) => {
@@ -65,20 +65,27 @@ async function createFixture(state) {
       for (const [name, value] of Object.entries(request.headers)) {
         if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
       }
+      // Undici replaces Sec-Fetch-Mode with cors. Miniflare's transport envelope
+      // restores the observed browser value before invoking the user Worker.
+      if (headers["sec-fetch-mode"]) headers[CoreHeaders.SEC_FETCH_MODE] = headers["sec-fetch-mode"];
       // Real TLS preserves Chromium's wire headers and redirect chain;
       // interception cannot model automatic 303 navigation faithfully.
-      const upstream = await publicWorker.fetch(url, {method, headers, redirect: "manual",
+      const upstream = await dispatchPublic(url, {method, headers, redirect: "manual",
         ...(["GET", "HEAD"].includes(method) ? {} : {body: Buffer.concat(chunks)})});
       const responseHeaders = Object.fromEntries(upstream.headers.entries());
+      const body = Buffer.from(await upstream.arrayBuffer());
+      const contentType = upstream.headers.get("content-type");
+      let problem = null;
+      if (contentType?.includes("application/problem+json")) problem = JSON.parse(body.toString("utf8"));
       if (method === "GET" && new URL(url).pathname === legacyPath) responseHeaders["referrer-policy"] = "no-referrer";
       observations.push({method, pathname: new URL(url).pathname, headers, status: upstream.status,
         policy: responseHeaders["referrer-policy"], location: responseHeaders.location,
-        problem: upstream.headers.get("content-type")?.includes("application/problem+json") ? await upstream.clone().json() : null});
+        contentType, problem, errorBody: upstream.status >= 400 ? safeMessage(body.toString("utf8")).slice(0, 320) : null});
       for (const [name, value] of Object.entries(responseHeaders)) response.setHeader(name, value);
       const cookies = upstream.headers.getSetCookie?.();
       if (cookies?.length) response.setHeader("set-cookie", cookies);
       response.writeHead(upstream.status);
-      response.end(Buffer.from(await upstream.arrayBuffer()));
+      response.end(body);
     } catch (error) {
       failures.push(error);
       console.error(JSON.stringify({event: "native_https_bridge_error", method, route: category(url), message: safeMessage(error)}));
@@ -96,6 +103,13 @@ async function createFixture(state) {
   let mf;
   try {
     mf = new Miniflare(convertV4MiniflareOptions({persist: join(state, "native-mf"), workers: [
+      {name: "native-decisions", modules: true, scriptPath: join(state, "decisions.mjs"), compatibilityDate: "2026-10-01",
+        bindings: {ENVIRONMENT: "staging", PUBLIC_ORIGIN: origin, OUTBOX_KEY: Buffer.alloc(32, 4).toString("base64url"),
+          CALLBACK_SERVICES: JSON.stringify({journey: {binding: "CALLBACK_JOURNEY", paths: ["/v1/results"]}})},
+        d1Databases: {DB: "native-decisions"}, serviceBindings: {
+          NOTIFICATIONS: async () => Response.json({message_id: randomUUID(), state: "queued"}, {status: 202}),
+          CALLBACK_JOURNEY: {name: "native-control", entrypoint: "CallbackCapture"},
+        }},
       {name: "native-control", modules: true, script: control, compatibilityDate: "2026-10-01", serviceBindings: {
         DAPI: {name: "native-decisions", entrypoint: "DecisionsApi"},
         RECEIVER: {name: "native-receiver", entrypoint: "CallbackReceiver"},
@@ -104,20 +118,20 @@ async function createFixture(state) {
           return new Response(null, {status: 204});
         },
       }},
-      {name: "native-decisions", modules: true, scriptPath: join(state, "decisions.mjs"), compatibilityDate: "2026-10-01",
-        bindings: {ENVIRONMENT: "staging", PUBLIC_ORIGIN: origin, OUTBOX_KEY: Buffer.alloc(32, 4).toString("base64url"),
-          CALLBACK_SERVICES: JSON.stringify({journey: {binding: "CALLBACK_JOURNEY", paths: ["/v1/results"]}})},
-        d1Databases: {DB: "native-decisions"}, serviceBindings: {
-          NOTIFICATIONS: async () => Response.json({message_id: randomUUID(), state: "queued"}, {status: 202}),
-          CALLBACK_JOURNEY: {name: "native-control", entrypoint: "CallbackCapture"},
-        }},
       {name: "native-receiver", modules: true, scriptPath: join(state, "journey-fixture.mjs"), compatibilityDate: "2026-10-01",
         d1Databases: {DB: "native-decisions"}},
     ]}));
-    publicWorker = await mf.getWorker("native-decisions");
+    dispatchPublic = (url, init) => mf.dispatchFetch(url, init);
     const controlWorker = await mf.getWorker("native-control");
     const ddb = await mf.getD1Database("DB", "native-decisions");
     await migrate(ddb);
+    const ingress = await dispatchPublic(`${origin}/d/${"a".repeat(43)}/submit`, {method: "POST",
+      headers: {origin: "null", "content-type": "application/x-www-form-urlencoded", [CoreHeaders.SEC_FETCH_MODE]: "navigate"}, body: ""});
+    assert.equal(ingress.status, 403, "Public ingress probe must reach the actual application's Origin rejection");
+    const ingressBody = await ingress.text();
+    assert.ok(ingress.headers.get("content-type")?.includes("application/problem+json"),
+      `Unexpected public ingress response: ${JSON.stringify({status: ingress.status, content_type: ingress.headers.get("content-type"), body: safeMessage(ingressBody).slice(0, 320)})}`);
+    assert.equal(JSON.parse(ingressBody).code, "origin_rejected");
     return {origin, ddb, callbacks, observations, failures,
       setLegacyPath(path) { legacyPath = path; },
       async post(value) {
@@ -171,7 +185,9 @@ async function runCase(browser, fixture, decision, mode) {
     await submitted.finished();
     const submission = observations.find(item => item.method === "POST" && item.pathname === `${path}/submit`);
     assert.ok(submission, "Explicit confirmation must issue a native POST");
+    assert.equal(submission.headers["sec-fetch-mode"], "navigate", "Confirmation must be native navigation, not a scripted fetch");
     console.log(JSON.stringify({event: "native_decision_form", mode, status: submission.status, origin: submission.headers.origin ?? null,
+      fetch_mode: submission.headers["sec-fetch-mode"], content_type: submission.contentType, problem_code: submission.problem?.code,
       referer_present: Boolean(submission.headers.referer), referer_path_present: submission.headers.referer ? new URL(submission.headers.referer).pathname !== "/" : false}));
     assert.equal(failures.length, 0, "The real HTTPS-to-Worker bridge must not fail");
     if (mode === "legacy-no-referrer") {
@@ -206,7 +222,7 @@ async function runCase(browser, fixture, decision, mode) {
     console.error(JSON.stringify({event: "native_form_failure", mode, final_origin: (() => { try { return new URL(page.url()).origin; } catch { return null; } })(),
       final_route: category(page.url()), title: (await page.title().catch(() => "unavailable")).slice(0, 100),
       requests: observations.filter(item => item.pathname === path || item.pathname === `${path}/submit`)
-        .map(item => ({method: item.method, status: item.status, route: category(`${origin}${item.pathname}`)})),
+      .map(item => ({method: item.method, status: item.status, route: category(`${origin}${item.pathname}`), content_type: item.contentType, error_body: item.errorBody})),
       browser_failures: browserFailures, message: safeMessage(error)}));
     throw error;
   } finally {
@@ -218,7 +234,7 @@ export async function runNativeFormJourney({state, decision}) {
   let fixture;
   let browser;
   try {
-    fixture = await createFixture(state);
+    fixture = await createNativeFormFixture(state);
     browser = await chromium.launch({headless: true});
     await runCase(browser, fixture, decision, "legacy-no-referrer");
     await runCase(browser, fixture, decision, "strict-origin");
