@@ -32,7 +32,7 @@ export function subscriptionReconnectUrl(hostname: string): string {
  * Subscribe owns tokens and the viewer identity. The parent only supplies locale/theme and fixed links.
  */
 export function renderSubscriptions(main: HTMLElement, c: PageContext): void {
-  const heading = el("div", { className: "page-heading" }, el("h1", {}, c.t("subscriptions")), el("p", { className: "muted" }, c.t("subscriptionsIntro")));
+  const heading = el("div", { className: "page-heading" }, el("h1", {}, c.t("subscriptions")));
   const frame = el("iframe", { className: "subscription-viewer", attrs: {
     src: subscriptionViewerUrl(location.hostname, c.locale, document.documentElement.dataset.theme),
     title: c.t("subscriptionViewer"), referrerpolicy: "no-referrer",

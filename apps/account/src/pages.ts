@@ -43,14 +43,14 @@ export async function renderPage(route: Route, main: HTMLElement, context: PageC
 /** 总览将最常用动作提升为卡片。Overview promotes common actions into cards. */
 function renderOverview(main: HTMLElement, c: PageContext): void {
   replace(main,
-    heading(`${c.t("hello")}，${c.account.profile.display_name}`, c.t("subtitle")),
+    heading(c.t("overview")),
     el("section", { className: "hero-card moe-glass" },
       el("div", { className: "hero-avatar-wrap" }, avatar(c.account), el("span", { className: "sparkle" }, icon("sparkle"))),
-      el("div", {}, el("p", { className: "eyebrow" }, `@${username(c.account)}`), el("h2", { attrs: { dir: "auto" } }, c.account.profile.display_name), el("p", { className: "muted", attrs: { dir: "auto" } }, c.account.profile.bio || c.t("editProfile"))),
+      el("div", {}, el("p", { className: "eyebrow" }, `@${username(c.account)}`), el("h2", { attrs: { dir: "auto" } }, c.account.profile.display_name), c.account.profile.bio ? el("p", { className: "muted", attrs: { dir: "auto" } }, c.account.profile.bio) : null),
       el("a", { className: "button primary", attrs: { href: "/profile" }, dataset: { route: "/profile" } }, icon("user"), c.t("editProfile")),
     ),
     el("div", { className: "quick-grid" },
-      quick("shield", c.t("security"), c.t("securityScore"), "/security"), quick("devices", c.t("sessions"), c.t("devicesIntro"), "/sessions"), quick("apps", c.t("apps"), c.t("connectedIntro"), "/apps"), quick("apps", c.t("subscriptions"), c.t("subscriptionsIntro"), "/subscriptions"),
+      quick("shield", c.t("security"), "/security"), quick("devices", c.t("sessions"), "/sessions"), quick("apps", c.t("apps"), "/apps"), quick("apps", c.t("subscriptions"), "/subscriptions"),
     ),
   );
 }
@@ -392,7 +392,7 @@ function passwordCard(security: SecuritySummary, c: PageContext): HTMLElement {
 async function renderSessions(main: HTMLElement, c: PageContext): Promise<void> {
   const sessions = await c.api.listSessions(c.signal); if (c.signal.aborted) return;
   const rows = sessions.items.map((session) => sessionRow(session, c));
-  replace(main, heading(c.t("sessions"), c.t("devicesIntro")), el("section", { className: "card moe-glass" }, ...(rows.length ? rows : [empty(c.t("noSessions"))])));
+  replace(main, heading(c.t("sessions")), el("section", { className: "card moe-glass" }, ...(rows.length ? rows : [empty(c.t("noSessions"))])));
 }
 
 /** Retained revoked sessions are history, not actionable devices; Identity remains authoritative. */
@@ -416,13 +416,13 @@ function sessionRow(session: Session, c: PageContext): HTMLElement {
 /** 已连接应用清楚列出 scope 与最后使用时间。Connected apps expose scopes and last use. */
 async function renderApps(main: HTMLElement, c: PageContext): Promise<void> {
   const apps = await c.api.listConnectedApps(c.signal); if (c.signal.aborted) return;
-  replace(main, heading(c.t("apps"), c.t("connectedIntro")), el("div", { className: "app-grid" }, ...(apps.items.length ? apps.items.map((app) => el("article", { className: "card app-card moe-glass" }, app.logo_url ? el("img", { className: "app-logo", attrs: { src: app.logo_url, alt: "" } }) : icon("apps"), el("h2", {}, app.display_name), el("p", { className: "muted" }, `${c.t("permissions")}: ${app.scopes.join(" · ")}`), el("p", { className: "muted" }, formatTime(app.last_used_at ?? app.granted_at, c.locale)), actionButton(c.t("disconnect"), async (btn) => { await c.api.revokeConnectedApp(app.authorization_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c))) : [empty(c.t("noApps"))])));
+  replace(main, heading(c.t("apps")), el("div", { className: "app-grid" }, ...(apps.items.length ? apps.items.map((app) => el("article", { className: "card app-card moe-glass" }, app.logo_url ? el("img", { className: "app-logo", attrs: { src: app.logo_url, alt: "" } }) : icon("apps"), el("h2", {}, app.display_name), el("p", { className: "muted" }, `${c.t("permissions")}: ${app.scopes.join(" · ")}`), el("p", { className: "muted" }, formatTime(app.last_used_at ?? app.granted_at, c.locale)), actionButton(c.t("disconnect"), async (btn) => { await c.api.revokeConnectedApp(app.authorization_id, proof(c)); await c.refresh(); busy(btn, false); }, "danger", c))) : [empty(c.t("noApps"))])));
 }
 
 /** 页面标题。Page heading. */
-function heading(title: string, intro: string): HTMLElement { return el("header", { className: "page-heading" }, el("p", { className: "eyebrow" }, "MOESEGFAULT"), el("h1", {}, title), el("p", { className: "lede" }, intro)); }
+function heading(title: string, status?: string): HTMLElement { return el("header", { className: "page-heading" }, el("h1", {}, title), status ? el("p", { className: "lede" }, status) : null); }
 /** 快捷入口。Quick entry. */
-function quick(iconName: string, title: string, text: string, href: Route): HTMLElement { return el("a", { className: "quick-card moe-glass", attrs: { href }, dataset: { route: href } }, icon(iconName), el("div", {}, el("h2", {}, title), el("p", {}, text)), icon("chevron")); }
+function quick(iconName: string, title: string, href: Route): HTMLElement { return el("a", { className: "quick-card moe-glass", attrs: { href }, dataset: { route: href } }, icon(iconName), el("h2", {}, title), icon("chevron")); }
 /** 用户头像，缺省使用品牌而非远程占位服务。User avatar with a local brand fallback. */
 function avatar(account: Account): HTMLImageElement { return el("img", { className: "avatar", attrs: { src: account.profile.avatar_url || "/icons/logo.svg", alt: account.profile.display_name } }); }
 /** 普通输入字段。Ordinary input field. */

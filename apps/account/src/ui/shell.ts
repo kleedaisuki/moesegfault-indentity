@@ -62,7 +62,12 @@ export function createShell(t: (key: MessageKey) => string, inApp: boolean, sign
         if (copy) copy.textContent = t(copy.dataset.copied ? "copied" : "copyLink");
       }
     },
-    setRoute(route) { for (const link of root.querySelectorAll<HTMLAnchorElement>("[data-route]")) link.toggleAttribute("aria-current", link.dataset.route === route); },
+    setRoute(route) {
+      for (const link of root.querySelectorAll<HTMLAnchorElement>(".nav-link")) {
+        if (link.dataset.route === route) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      }
+    },
     setSession(session) {
       const authenticated = session.status === "authenticated";
       for (const element of [sideNav, ...signOutButtons, bottomNav, banner]) element?.toggleAttribute("hidden", !authenticated);
