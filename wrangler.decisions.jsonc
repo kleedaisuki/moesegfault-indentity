@@ -34,7 +34,7 @@
         { "binding": "NOTIFICATIONS", "service": "moesegfault-notifications", "entrypoint": "NotificationsApi" }
       ],
       "d1_databases": [
-        { "binding": "DB", "database_name": "moesegfault-decisions-production", "database_id": "", "migrations_dir": "./migrations/decisions" }
+        { "binding": "DB", "database_name": "moesegfault-decisions-production", "database_id": "38507781-e814-4488-a831-fd54f801ac77", "migrations_dir": "./migrations/decisions" }
       ],
       "triggers": { "crons": ["* * * * *"] }
     }

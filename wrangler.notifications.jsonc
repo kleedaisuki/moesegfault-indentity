@@ -28,7 +28,7 @@
       "d1_databases": [{
         "binding": "DB",
         "database_name": "moesegfault-notifications-production",
-        "database_id": "",
+        "database_id": "6a3d613a-4e46-4775-8ff0-742fcc7a59cc",
         "migrations_dir": "./migrations/notifications"
       }],
       "triggers": { "crons": ["* * * * *"] }
