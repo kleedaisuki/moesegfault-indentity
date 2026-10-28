@@ -11,7 +11,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "moesegfault-notifications-staging",
-    "database_id": "",
+    "database_id": "121c47f4-71b5-44f3-92cb-73ada2cb98d9",
     "migrations_dir": "./migrations/notifications"
   }],
   "triggers": { "crons": ["* * * * *"] },

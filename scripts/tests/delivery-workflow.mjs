@@ -152,3 +152,24 @@ test('dependency caches survive failed gates without certifying failed build art
   }
   assert.ok(workflow.indexOf('id: cargo-build-tool') < workflow.indexOf('- name: Check current Rust advisories'));
 });
+
+test('optional platform journey is dispatch-only staging and always restores the inert fixture', () => {
+  const header = workflow.split('\npermissions:\n')[0];
+  assert.match(header, /platform_journey:\n[\s\S]*?default: skip\n        options: \[skip, http, mailbox\]/);
+  const staging = workflow.match(/\n  deploy-staging:\n([\s\S]*?)\n  deploy-production:/)?.[1];
+  const production = workflow.match(/\n  deploy-production:\n([\s\S]*?)\n  quality-gate:/)?.[1];
+  assert.ok(staging);
+  assert.ok(production);
+  assert.match(staging, /concurrency: \{group: cloudflare-staging, cancel-in-progress: false\}/);
+  const journey = staging.match(/id: platform-journey\n([\s\S]*?)(?=      - name:)/)?.[1];
+  assert.ok(journey);
+  assert.match(journey, /if: github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'/);
+  assert.match(journey, /PLATFORM_JOURNEY_MODE: \$\{\{ inputs.platform_journey \}\}/);
+  assert.match(journey, /PLATFORM_JOURNEY_RECIPIENT: \$\{\{ secrets.PLATFORM_JOURNEY_RECIPIENT \}\}/);
+  assert.match(journey, /run: node scripts\/platform-journey\.mjs/);
+  assert.ok(staging.indexOf('scripts/release.sh staging') < staging.indexOf('id: platform-journey'));
+  assert.match(staging, /if: always\(\) && steps.platform-journey.outcome != 'skipped'/);
+  assert.match(staging, /secret delete JOURNEY_TOKEN --config wrangler\.platform-journey-bootstrap\.jsonc \|\| true/);
+  assert.match(staging, /wrangler deploy --config wrangler\.platform-journey-bootstrap\.jsonc/);
+  assert.doesNotMatch(production, /platform-journey|PLATFORM_JOURNEY_RECIPIENT/);
+});

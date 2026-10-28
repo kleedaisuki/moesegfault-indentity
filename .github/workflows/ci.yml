@@ -21,6 +21,12 @@ on:
         required: true
         default: verify-only
         options: [verify-only, staging-only]
+      platform_journey:
+        description: Optional staging native-email and decision journey
+        type: choice
+        required: true
+        default: skip
+        options: [skip, http, mailbox]
       verify_client_id:
         description: 'Optional OAuth client ID to read back from staging D1 / 可选的预发布 D1 客户端 ID'
         type: string
@@ -325,6 +331,22 @@ jobs:
           sha256sum --check release-${GITHUB_SHA}.sha256
           tar -xzf release-${GITHUB_SHA}.tar.gz
           scripts/release.sh staging
+      - name: Run the requested staging platform journey
+        id: platform-journey
+        if: github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        timeout-minutes: 18
+        env:
+          PLATFORM_JOURNEY_MODE: ${{ inputs.platform_journey }}
+          PLATFORM_JOURNEY_RECIPIENT: ${{ secrets.PLATFORM_JOURNEY_RECIPIENT }}
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/platform-journey.mjs
+      - name: Restore the inert staging fixture after the requested journey
+        if: always() && steps.platform-journey.outcome != 'skipped' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: |
+          npx --no-install wrangler secret delete JOURNEY_TOKEN --config wrangler.platform-journey-bootstrap.jsonc || true
+          npx --no-install wrangler deploy --config wrangler.platform-journey-bootstrap.jsonc
       - name: Read back reviewed OAuth client / 回读已评审客户端
         if: github.event_name == 'workflow_dispatch' && inputs.verify_client_id != ''
         env:

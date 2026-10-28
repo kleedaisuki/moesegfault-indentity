@@ -254,3 +254,16 @@ subsequent runs; Cargo fingerprints validate reused target data. Only reproducib
 dependencies are cached this way: the validated Worker output remains success-only,
 and current advisories remain unconditional. Failed quality gates can reuse work,
 never certify a release.
+
+Before the standalone journey workflow exists on the default branch, CI's existing
+manual dispatch can run the same staging probe using `delivery=staging-only` and
+`platform_journey=http` or `mailbox`. The default is `skip`; PR checks, normal main
+promotion and production remain unchanged. The probe reuses the staging deployment
+job's environment and concurrency lock, and its recipient comes only from the staging
+`PLATFORM_JOURNEY_RECIPIENT` secret. HTTP mode verifies actual native provider
+acceptance and the form/callback round trip, not mailbox receipt. Mailbox mode waits
+for the approved recipient to open the delivered link and explicitly submit it.
+The script's `finally` cleanup is backed by an unconditional-on-attempt workflow step
+that deletes the fixture token and reinstalls the inert callback-only fixture after
+success, failure or a step timeout. The separate journey workflow remains available
+for repeated probes once merged; no production entrypoint is exposed.
