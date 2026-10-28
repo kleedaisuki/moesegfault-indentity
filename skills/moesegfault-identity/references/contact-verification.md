@@ -34,3 +34,23 @@ The start handler's ownership query is in [`../../../crates/identity-worker/src/
 - A new logical start or completion gets a new idempotency key. Retry an uncertain result only with the same key and same payload; never create a fresh challenge merely because the response was lost.
 - Two principals may hold the same unverified address; the first successful verification claims uniqueness. Do not infer account identity from unverified email.
 - Test the real client sequence with the returned contact ID and transaction ID, plus stale ID, wrong principal, changed/deleted contact, resend, `429`, wrong/expired code, and accepted-but-delayed delivery. Assert no secret code appears in URLs or logs.
+
+## Notification center delivery boundary
+
+Both pre-account registration and authenticated contact verification hand off to
+`NOTIFICATIONS`, the environment-matched notification center's private
+`NotificationsApi` service-binding entrypoint. Identity never sends directly to
+Cloudflare Email Service or owns email HTML. It submits the `verification` template
+with `service="identity"`, `sender="identity"`, recipient, code, and the original
+absolute expiry. The notification center creates/reuses `identity@moesegfault.dev`.
+
+The Identity encrypted outbox ID is the center's idempotency key. A validated
+`202` (`queued` or `sent`) transfers durable responsibility and clears Identity's
+ciphertext; its legacy `delivered` state means handoff, not inbox delivery. Failed
+handoffs retain local encrypted retry state. Center provider retries must respect
+expiry. Diagnose the two boundaries separately using correlation ID, outbox ID,
+and center message ID; do not log verification codes or recipient payloads.
+
+Official platform contract: [HTTP service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/http/).
+The named entrypoint is a deployment capability; do not replace it with a public
+URL or accept arbitrary browser-driven sends.

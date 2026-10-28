@@ -21,8 +21,6 @@ This document defines first-release runtime configuration names, ownership, and 
 | `TOKEN_TTL_SECONDS` | `300` | ID/Access Token 最大寿命。 |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh family 绝对寿命。 |
 | `IDEMPOTENCY_TTL_SECONDS` | `86400` | Domain API idempotency metadata 保留时间。 |
-| `EMAIL_FROM_ADDRESS` | `identity@moesegfault.dev` | 验证邮件的 RFC 5322 发件地址；必须同时出现在 `EMAIL` binding 的发件人允许列表中。 |
-| `EMAIL_FROM_NAME` | `moeSegFault Identity` | 验证邮件的非秘密显示名称。 |
 | `EMAIL_VERIFICATION_TTL_SECONDS` | `600` | 8 位数字邮箱验证码的有效期（10 分钟）。 |
 | `EMAIL_VERIFICATION_COOLDOWN_SECONDS` | `60` | 同一联系方式再次发送前的最短间隔。 |
 | `EMAIL_VERIFICATION_HOURLY_LIMIT` | `5` | 同一联系方式滚动一小时内最多接受的发送次数。 |
@@ -53,12 +51,25 @@ broadened merely because Account may call the Identity resource API.
 | `DB` | D1 | 身份、OAuth、audit 和 outbox 的唯一关系型权威。 |
 | `AUDIT_ARCHIVE` | R2 | 以 `audit_event_id` 派生的确定性对象键归档安全审计。 |
 | `STATUS` | Service Binding | 异步提交去标识化 Diagnostic；故障不得阻塞认证。 |
-| `EMAIL` | Cloudflare Email Service `send_email` | 发送邮箱验证码；staging 与 production 都仅允许 `identity@moesegfault.dev` 作为发件地址。 |
+| `NOTIFICATIONS` | Service Binding, `NotificationsApi` entrypoint | Environment-matched notification center; durable verification-email handoff. |
 
-`EMAIL` 保持收件地址动态，以便向任意用户邮箱投递，但通过
-`allowed_sender_addresses=["identity@moesegfault.dev"]` 将发件身份收窄。部署前必须在拥有
-Worker 的同一 Cloudflare 账号中为 `moesegfault.dev` 完成 Email Sending 域名接入及其
-SPF、DKIM、DMARC DNS 记录；绑定配置本身不会完成域名接入。
+Identity no longer owns a `send_email` binding, sender-address configuration, or HTML
+mail templates. `NOTIFICATIONS` targets `moesegfault-notifications-staging` in staging
+and `moesegfault-notifications` in production, with the private named
+`NotificationsApi` entrypoint. Its public default entrypoint does not accept sends.
+Identity submits `service="identity"`, `sender="identity"`; the center owns
+`identity@moesegfault.dev`, creates/reuses the sender record, and renders the branded
+verification template. The notification center alone owns Cloudflare Email Service
+and its domain/SPF/DKIM/DMARC setup.
+
+The Identity encrypted outbox and verification policies remain authoritative until
+handoff. A `202` with state `queued` or `sent` means the center has accepted durable
+delivery responsibility, not inbox delivery. Identity's legacy outbox state
+`delivered` now records that handoff and clears local ciphertext. Outbox IDs become
+`Idempotency-Key` values, and payloads retain the transaction's absolute `expires_at`
+on retries. Center failures preserve the encrypted local job with bounded retry;
+the center must not send after expiry. Logs distinguish handoff acceptance from
+provider delivery and retain correlation/outbox IDs without recipient/code values.
 
 D1 迁移的公共源文件位于 `migrations/`，发行方专属客户端配置位于 `migrations/environments/{staging,production}/`。运行 `node scripts/prepare-migrations.mjs <target>` 后，Wrangler 从 `.temp/migration-streams/<target>` 读取该环境独有的迁移流；既有迁移 basename 保持不变。必须使用 database name（而不是易变 binding name）执行远端迁移，且不得在未物化正确环境流时运行。生产正确性读使用 primary-first D1 Session/bookmark；KV 不得承担 credential、transaction、session、revocation、Binding 唯一性或幂等权威。
 

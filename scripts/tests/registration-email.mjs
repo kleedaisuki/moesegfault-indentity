@@ -12,6 +12,8 @@ const state = mkdtempSync(join(temp, "worker-"));
 const build = join(root, "crates/identity-worker/build");
 const pepper = "fixture-only-email-pepper";
 const origin = "https://login.example.test";
+const notificationRequests = [];
+let notificationStatus = 202;
 const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: root, modules: [
   { type: "ESModule", path: join(build, "index.js") },
   { type: "CompiledWasm", path: join(build, "index_bg.wasm") },
@@ -22,7 +24,11 @@ const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: root, modules:
   REGISTRATION_PEPPER: "fixture-only-registration", TRANSACTION_PEPPER: "fixture-only-transaction",
   TRANSACTION_STATE_KEY: Buffer.alloc(32, 8).toString("base64url"),
   CONTACT_VERIFICATION_PEPPER: pepper, EMAIL_OUTBOX_KEY_V1: Buffer.alloc(32, 7).toString("base64url"),
-}, d1Databases: { DB: "signup-tests" }, persist: state }));
+}, serviceBindings: { NOTIFICATIONS: async request => {
+  const value = await request.json();
+  notificationRequests.push({ value, key: request.headers.get("idempotency-key"), correlation: request.headers.get("x-moesegfault-correlation-id"), url: request.url });
+  return Response.json(notificationStatus === 202 ? { message_id: randomUUID(), state: "queued" } : { error: "fixture unavailable" }, { status: notificationStatus });
+} }, d1Databases: { DB: "signup-tests" }, persist: state }));
 const db = await mf.getD1Database("DB");
 const request = (path, init) => mf.dispatchFetch(`https://identity.example.test${path}`, init);
 
@@ -76,6 +82,20 @@ try {
   assert.ok(/Max-Age=(59\d|600)/.test(challengeResponse.headers.get("set-cookie")), "mail challenge retains its existing browser binding for the code lifetime");
   assert.equal(challengeResponse.headers.get("set-cookie").split(";")[0], first.cookie);
   const challenge = await body(challengeResponse, 201);
+  const handoff = notificationRequests.at(-1);
+  assert.equal(handoff.url, "https://notifications.internal/v1/messages");
+  assert.equal(handoff.value.service, "identity");
+  assert.equal(handoff.value.sender, "identity");
+  assert.equal(handoff.value.to, registration.email);
+  assert.equal(handoff.value.template, "verification");
+  assert.match(handoff.value.code, /^[0-9]{8}$/);
+  assert.equal(handoff.value.expires_at, Date.parse(challenge.expires_at) / 1000);
+  assert.ok(handoff.correlation);
+  const handoffRow = await db.prepare("SELECT outbox_id,state,payload_ciphertext,payload_nonce FROM registration_email_outbox WHERE transaction_id=?").bind(challenge.transaction_id).first();
+  assert.equal(handoff.key, handoffRow.outbox_id, "retry identity is the committed outbox ID");
+  assert.equal(handoffRow.state, "delivered", "delivered means notification center durably accepted responsibility");
+  assert.equal(handoffRow.payload_ciphertext, null);
+  assert.equal(handoffRow.payload_nonce, null);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM principals").first("n"), 0);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM identity_sessions").first("n"), 0);
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM password_credentials").first("n"), 0);
@@ -116,6 +136,24 @@ try {
   const sessionCookie = createdResponse.headers.get("set-cookie").split(";")[0];
   const created = await createdResponse.json();
   const me = () => request("/v1/me", { headers: { origin, cookie: sessionCookie } }).then(response => body(response, 200));
+  const accountCsrf = (await me()).csrf_token;
+  const accountPost = (path, value, key = randomUUID()) => request(path, { method: "POST", headers: {
+    origin, cookie: sessionCookie, "content-type": "application/json", "x-moesegfault-csrf": accountCsrf, "idempotency-key": key,
+  }, body: JSON.stringify(value) });
+  const secondaryContact = await body(await accountPost("/v1/me/contacts", { kind: "email", email: "contact-notification@example.test", is_primary: false }), 201);
+  const contactPath = `/v1/me/contacts/${secondaryContact.contact_id}/verification-transactions`;
+  const contactKey = randomUUID();
+  const contactChallenge = await body(await accountPost(contactPath, {}, contactKey), 201);
+  const contactHandoff = notificationRequests.at(-1);
+  assert.equal(contactHandoff.value.to, "contact-notification@example.test");
+  assert.equal(contactHandoff.value.expires_at, Date.parse(contactChallenge.expires_at) / 1000);
+  const contactRow = await db.prepare("SELECT outbox_id,state,payload_ciphertext FROM email_verification_outbox WHERE transaction_id=?").bind(contactChallenge.transaction_id).first();
+  assert.equal(contactRow.state, "delivered");
+  assert.equal(contactRow.payload_ciphertext, null);
+  assert.equal(contactHandoff.key, contactRow.outbox_id);
+  const handoffsBeforeReplay = notificationRequests.length;
+  assert.equal((await body(await accountPost(contactPath, {}, contactKey), 201)).transaction_id, contactChallenge.transaction_id);
+  assert.equal(notificationRequests.length, handoffsBeforeReplay, "API replay does not enqueue another email");
   const registeredProfile = (await me()).account.profile;
   for (const [key, value] of Object.entries(profile)) assert.deepEqual(registeredProfile[key], value, `registration persists ${key}`);
   assert.equal(registeredProfile.bio, null);
@@ -264,5 +302,12 @@ try {
   await body(await post("/v1/password/registrations", { ...contextualInput, authorization_transaction_id: "mail-signup" }, eighth), 201);
   await body(await post("/v1/registration-email-transactions", { email: "authenticated@example.test", authorization_transaction_id: "mail-signup" }, await browser()), 400);
   assert.equal(await db.prepare("SELECT expires_at FROM oauth_authorization_transactions WHERE authorization_transaction_id='expired-signup'").first("expires_at") < Math.floor(Date.now()/1000), true, "expired transactions are never revived");
+  notificationStatus = 503;
+  const delayed = await body(await post("/v1/registration-email-transactions", { email: "delayed@example.test" }, await browser()), 201);
+  const delayedRow = await db.prepare("SELECT state,last_error_code,payload_ciphertext,next_attempt_at FROM registration_email_outbox WHERE transaction_id=?").bind(delayed.transaction_id).first();
+  assert.equal(delayedRow.state, "pending", "center outages preserve the accepted challenge and encrypted retry job");
+  assert.equal(delayedRow.last_error_code, "notifications_unavailable");
+  assert.ok(delayedRow.payload_ciphertext);
+  assert.ok(delayedRow.next_attempt_at);
   console.log("registration email: no-account-before-proof, password/passkey bypass prevention, email/browser binding, atomic single-use race, expiry, parallel guessing limits, and full profile read/write/null/legacy roundtrip passed");
 } finally { await mf.dispose(); }

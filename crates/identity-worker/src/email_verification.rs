@@ -1,5 +1,4 @@
-//! 邮箱验证码生成、摘要和邮件呈现。
-//! Email-verification code generation, digesting, and message rendering.
+//! Verification code generation, digesting, and encrypted delivery payloads.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
@@ -29,13 +28,6 @@ pub(crate) struct OutboxPayload {
 pub(crate) struct SealedPayload {
     pub(crate) ciphertext: Vec<u8>,
     pub(crate) nonce: [u8; 24],
-}
-
-/// 同时包含纯文本与 HTML 的邮件内容。
-/// Mail content carrying both plain-text and HTML alternatives.
-pub(crate) struct VerificationEmail {
-    pub(crate) text: String,
-    pub(crate) html: String,
 }
 
 /// 用密码学随机源生成保留前导零的 8 位验证码。
@@ -106,20 +98,6 @@ pub(crate) fn mask_email(destination: &str) -> String {
     format!("{first}***@{domain}")
 }
 
-/// 呈现中英双语验证邮件；所有动态值在 HTML 中都会转义。
-/// Renders a bilingual verification email with all dynamic HTML values escaped.
-pub(crate) fn render_email(destination: &str, code: &str, minutes: i64) -> VerificationEmail {
-    let text = format!(
-        "moeSegFault 邮箱验证 / Email verification\n\n验证码 / Verification code: {code}\n收件地址 / Address: {destination}\n\n验证码将在 {minutes} 分钟后失效。\nThis code expires in {minutes} minutes.\n如果不是你发起的请求，请忽略此邮件。\nIf you did not request this, you can ignore this email."
-    );
-    let address = escape_html(destination);
-    let code = escape_html(code);
-    let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><body><h1>moeSegFault 邮箱验证</h1><p>Email verification</p><p>验证码 / Verification code:</p><p><strong style=\"font-size:2em;letter-spacing:.15em\">{code}</strong></p><p>收件地址 / Address: {address}</p><p>验证码将在 {minutes} 分钟后失效。<br>This code expires in {minutes} minutes.</p><p>如果不是你发起的请求，请忽略此邮件。<br>If you did not request this, you can ignore this email.</p></body></html>"
-    );
-    VerificationEmail { text, html }
-}
-
 /// 使用 XChaCha20-Poly1305 加密投递负载，并把队列标识及版本放入 AAD。
 /// Seals an outbox payload with XChaCha20-Poly1305 and binds IDs/revisions as AAD.
 pub(crate) fn seal_payload(
@@ -187,21 +165,6 @@ fn outbox_aad(outbox_id: &str, transaction_id: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-fn escape_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,17 +220,6 @@ mod tests {
         assert_eq!(mask_email("klee@example.net"), "k***@example.net");
         assert_eq!(mask_email("x@example.net"), "x***@example.net");
         assert_eq!(mask_email("invalid"), "***");
-    }
-
-    #[test]
-    fn html_content_escapes_dynamic_values() {
-        let mail = render_email("<img src=x onerror=alert(1)>@example.net", "12&<\"'", 10);
-        assert!(!mail.html.contains("<img src=x"));
-        assert!(
-            mail.html
-                .contains("&lt;img src=x onerror=alert(1)&gt;@example.net")
-        );
-        assert!(mail.html.contains("12&amp;&lt;&quot;&#39;"));
     }
 
     #[test]
