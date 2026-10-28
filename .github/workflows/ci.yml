@@ -51,7 +51,6 @@ jobs:
           path: crates/identity-worker/build
           key: ${{ runner.os }}-identity-validated-v1-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'deny.toml', '.github/workflows/ci.yml') }}
       - name: Cache Cargo data / 缓存 Cargo 数据
-        if: steps.identity-build.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -65,18 +64,21 @@ jobs:
       - name: Confirm pinned toolchain / 确认固定工具链
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: rustc --version && cargo --version && rustup target list --installed | grep -Fx wasm32-unknown-unknown
-      - name: Install pinned tools / 安装固定工具
+      - name: Install pinned advisory checker
+        run: command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
+      - name: Check current Rust advisories
+        run: cargo deny --locked check advisories
+      - name: Install pinned build tool
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
           command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
-          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
       - name: Format, lint, and test / 格式、静态检查与测试
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo test --workspace --all-features --locked
-          cargo deny --locked check
+          cargo deny --locked check bans licenses sources
       - name: Verify vendored WebAuthn and WASM / 验证 WebAuthn 补丁与 WASM
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
@@ -120,10 +122,9 @@ jobs:
         with:
           path: apps/${{ matrix.app }}/dist
           key: ${{ runner.os }}-${{ matrix.app }}-validated-v1-${{ hashFiles(format('apps/{0}/**', matrix.app), 'packages/frontend-shared/**', 'package.json', 'package-lock.json', '.github/workflows/ci.yml') }}
-      - name: Lint, typecheck, and test / 静态、类型检查与测试
+      - name: Typecheck and test / 类型检查与测试
         if: steps.frontend-build.outputs.cache-hit != 'true'
         run: |
-          npm run lint --workspace=@moesegfault/${{ matrix.app }}
           npm run typecheck --workspace=@moesegfault/${{ matrix.app }}
           npm run test --workspace=@moesegfault/${{ matrix.app }} -- --run
       - name: Build / 构建

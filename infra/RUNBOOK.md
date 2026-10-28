@@ -228,3 +228,13 @@ Login is the deliberate exception to output reuse: its cheap frontend build stil
 runs on a validated-cache hit because Vite embeds `GITHUB_SHA` into failure support
 receipts. Tests can reuse exact source validation, but a current release must not
 advertise the previous revision in diagnostics.
+
+Rust advisory freshness is deliberately independent of source validation caches.
+The Rust job always restores the pinned tool cache, installs `cargo-deny` if missing,
+and runs `cargo deny --locked check advisories` against the current advisory database.
+The non-advisory bans/licenses/sources policy remains on source-cache misses. Advisory
+databases are not included in the dependency cache. Frontend CI runs one TypeScript
+check, not both `lint` and `typecheck`: these scripts currently invoke the same compiler.
+By default cargo-deny fetches the configured remote advisory database on each check;
+we do not set `--offline` or `--disable-fetch`.
+[Cargo-deny advisory database freshness](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html)

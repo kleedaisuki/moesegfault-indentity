@@ -84,3 +84,10 @@ body. A remaining single-line title mismatch (Decisions accepted embedded CR/LF/
 while Notifications rejects it) was sent to the platform lead for the same domain
 alignment correction. Expiry correction and final journey assertions remain owned
 by the platform lead; review this note against the final source before release.
+
+Integration readback at `9ac2f89` confirms the title/control-character and sender
+slug rules align. Decisions may live for 30 days, while their mail job uses a
+bounded seven-day delivery deadline; a long-lived decision no longer prevents
+its invitation from being accepted. The real named-binding/D1 journey passes
+with the actual staging callback receiver, including a body-less invitation,
+single consumption under concurrent submissions, and stable-event retry.

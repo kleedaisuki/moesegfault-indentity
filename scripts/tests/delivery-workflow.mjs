@@ -113,3 +113,18 @@ test('validated-result caches require exact complete-input keys; deployment pack
   }
   assert.match(workflow, /sha256sum --check release-\$\{GITHUB_SHA\}\.sha256/);
 });
+
+test('dynamic Rust advisories remain fresh on validated source-cache hits', () => {
+  const cargoCache = workflow.match(/      - name: Cache Cargo data[^\n]*\n([\s\S]*?)(?=      - name:)/)?.[1];
+  assert.ok(cargoCache);
+  assert.doesNotMatch(cargoCache, /if:/);
+  for (const name of ['Install pinned advisory checker', 'Check current Rust advisories']) {
+    const step = workflow.match(new RegExp(`      - name: ${name}\\n([\\s\\S]*?)(?=      - name:)`))?.[1];
+    assert.ok(step, name);
+    assert.doesNotMatch(step, /if:/);
+  }
+  assert.match(workflow, /run: cargo deny --locked check advisories/);
+  assert.match(workflow, /cargo deny --locked check bans licenses sources/);
+  assert.match(workflow, /npm run typecheck --workspace=@moesegfault\/\$\{\{ matrix\.app \}\}/);
+  assert.doesNotMatch(workflow, /npm run lint --workspace=@moesegfault\/\$\{\{ matrix\.app \}\}/);
+});
