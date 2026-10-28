@@ -18,9 +18,12 @@ fi
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+: "${CLOUDFLARE_ZONE_ID:?CLOUDFLARE_ZONE_ID is required for platform domains}"
 test -f crates/identity-worker/build/worker/shim.mjs
 test -f apps/login/dist/index.html
 test -f apps/account/dist/index.html
+test -f dist/platform/notifications/index.js
+test -f dist/platform/decisions/index.js
 
 verify_runtime_secrets() {
   local secrets_json secret
@@ -55,10 +58,45 @@ deploy_unit() {
   # of application deploys lets the least-privilege CI token publish code without zone-route access.
   # 域名属于由 bootstrap-cloudflare.sh 调和的长期基础设施。将其与应用发布分离后，
   # 最小权限 CI token 无需 zone-route 权限即可发布代码。
+  case "$config" in
+    wrangler.notifications.jsonc) args+=(dist/platform/notifications/index.js --no-bundle --minify=false) ;;
+    wrangler.decisions.jsonc) args+=(dist/platform/decisions/index.js --no-bundle --minify=false) ;;
+  esac
   npx --no-install wrangler deploy --strict --tag "$RELEASE_TAG" --message "$RELEASE_MESSAGE" "${args[@]}" --config "$config"
 }
 
+ensure_outbox_key() {
+  local config="$1" secrets_json key
+  local -a args
+  mapfile -t args < <(wrangler_env_args "$TARGET")
+  secrets_json="$(npx --no-install wrangler secret list "${args[@]}" --config "$config")"
+  if ! jq -e 'any(.[]; .name == "OUTBOX_KEY")' <<<"$secrets_json" >/dev/null; then
+    # Only create a missing encryption key. Rotation must retain keys for outstanding messages.
+    key="$(node --input-type=module -e "import { randomBytes } from 'node:crypto'; process.stdout.write(randomBytes(32).toString('base64url'))")"
+    printf '%s' "$key" | npx --no-install wrangler secret put OUTBOX_KEY "${args[@]}" --config "$config"
+    unset key
+  fi
+}
+
 verify_runtime_secrets
+node scripts/provision-platform.mjs "$TARGET"
+mapfile -t platform_env_args < <(wrangler_env_args "$TARGET")
+if [[ "$TARGET" == "staging" ]]; then
+  fixture_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/moesegfault-platform-journey-staging")"
+  case "$fixture_status" in
+    200) printf 'staging callback fixture already exists; preserving its full journey bindings\n' ;;
+    404) deploy_unit wrangler.platform-journey-bootstrap.jsonc ;;
+    *) printf 'cannot inspect staging callback fixture: Cloudflare HTTP %s\n' "$fixture_status" >&2; exit 1 ;;
+  esac
+fi
+for unit in notifications decisions; do
+  npx --no-install wrangler d1 migrations apply "moesegfault-${unit}-${TARGET}" --remote "${platform_env_args[@]}" --config "wrangler.${unit}.jsonc"
+  deploy_unit "wrangler.${unit}.jsonc"
+  ensure_outbox_key "wrangler.${unit}.jsonc"
+done
+node scripts/reconcile-platform-domains.mjs "$TARGET"
 
 # Worker rollback cannot restore data; migrations must remain expand/migrate/contract compatible.
 # Worker 回滚无法恢复数据；迁移必须保持扩展—迁移—收缩兼容性。

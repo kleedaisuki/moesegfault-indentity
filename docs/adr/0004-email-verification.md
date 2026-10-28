@@ -5,6 +5,23 @@
 - Owner: Identity service
 - Scope: the email-verification implementation introduced by migration `0004`
 
+## Delivery-boundary update — 2026-10-28
+
+The challenge, encryption, leasing, expiry, and browser/API contracts below remain
+in force. Direct Cloudflare Email Service delivery and Identity-owned templates
+are superseded by the platform notification center. Identity hands the committed
+outbox payload to the private `NotificationsApi` entrypoint through the
+`NOTIFICATIONS` service binding. The center owns `identity@moesegfault.dev`,
+sender creation/reuse, branded rendering, and provider retries.
+
+The original outbox ID is the stable center idempotency key. Payloads include the
+original absolute `expires_at`, not a recalculated duration. A validated `202`
+with `queued` or `sent` transfers delivery responsibility; the existing outbox
+state `delivered` now records durable handoff, not inbox delivery. Center failure
+keeps the encrypted local job retryable. Identity must never fall back to its own
+email provider or retain a second HTML-template implementation. See
+[`../configuration.md`](../configuration.md#cloudflare-bindings) for deployed bindings.
+
 ## Context
 
 The repository already has contacts, an Account UI for entering a verification code, and a verification-completion handler. The missing start handler deliberately returned `503 delivery_unavailable`; no transaction or email was created. Two adjacent defects also matter to this feature:

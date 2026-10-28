@@ -11,11 +11,8 @@ OAUTH_ENABLED=false
 OIDC_ACTIVE_KID=disabled
 PUBLIC_JWKS={"keys":[]}
 WEBAUTHN_RP_ID=localhost
-# Cloudflare's EMAIL binding is configured in wrangler.identity.jsonc; these values
-# define message identity and verification policy. / Cloudflare EMAIL binding 配置在
-# wrangler.identity.jsonc；以下值定义邮件身份与验证策略。
-EMAIL_FROM_ADDRESS=identity@moesegfault.dev
-EMAIL_FROM_NAME=moeSegFault Identity
+# Verification mail is handed to the environment-matched NOTIFICATIONS service binding.
+# The notification center owns identity@moesegfault.dev and all branded templates.
 EMAIL_VERIFICATION_TTL_SECONDS=600
 EMAIL_VERIFICATION_COOLDOWN_SECONDS=60
 EMAIL_VERIFICATION_HOURLY_LIMIT=5

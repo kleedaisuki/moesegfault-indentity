@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "moesegfault-decisions-staging",
+  "main": "./apps/decisions/src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "minify": true,
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "PUBLIC_ORIGIN": "https://decisions-staging.moesegfault.dev",
+    "CALLBACK_SERVICES": "{\"journey\":{\"binding\":\"CALLBACK_JOURNEY\",\"paths\":[\"/v1/results\"]}}"
+  },
+  "services": [
+    { "binding": "NOTIFICATIONS", "service": "moesegfault-notifications-staging", "entrypoint": "NotificationsApi" },
+    { "binding": "CALLBACK_JOURNEY", "service": "moesegfault-platform-journey-staging", "entrypoint": "CallbackReceiver" }
+  ],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "moesegfault-decisions-staging", "database_id": "6c305f96-9b50-4f6b-90e4-d5d8c77c71a3", "migrations_dir": "./migrations/decisions" }
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 } },
+  "env": {
+    "production": {
+      "name": "moesegfault-decisions",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "ENVIRONMENT": "production",
+        "PUBLIC_ORIGIN": "https://decisions.moesegfault.dev",
+        "CALLBACK_SERVICES": "{}"
+      },
+      "services": [
+        { "binding": "NOTIFICATIONS", "service": "moesegfault-notifications", "entrypoint": "NotificationsApi" }
+      ],
+      "d1_databases": [
+        { "binding": "DB", "database_name": "moesegfault-decisions-production", "database_id": "", "migrations_dir": "./migrations/decisions" }
+      ],
+      "triggers": { "crons": ["* * * * *"] }
+    }
+  }
+}

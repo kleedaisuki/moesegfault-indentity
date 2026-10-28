@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/passkey-auth.svg)](https://crates.io/crates/passkey-auth)
 [![docs.rs](https://img.shields.io/docsrs/passkey-auth)](https://docs.rs/passkey-auth)
 [![License](https://img.shields.io/crates/l/passkey-auth.svg)](#license)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://blog.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87-blue.svg)](https://blog.rust-lang.org/)
 [![Dependencies](https://deps.rs/repo/github/marirs/passkey-auth/status.svg)](https://deps.rs/repo/github/marirs/passkey-auth)
 
 Pure-Rust WebAuthn server library focused on the passkey ceremony.
@@ -19,7 +19,7 @@ hardware keys).
 passkey-auth = "0.1"
 ```
 
-MSRV: **Rust 1.85** (edition 2024).
+MSRV: **Rust 1.87** (edition 2024).
 
 ## Why this exists
 

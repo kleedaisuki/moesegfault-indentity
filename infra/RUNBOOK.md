@@ -1,7 +1,7 @@
 # Identity 平台 SRE 手册 / Identity platform SRE runbook
 
-> 本手册描述 `identity`、`login`、`account` 三个独立发布单元。身份 API 是权威；登录与账号管理是可独立回滚的静态前端。
-> This runbook covers three independently deployable units. Identity is authoritative; login and account are independently reversible static frontends.
+> 本手册描述 Identity、Login、Account、Notifications 与 Decisions 五个独立发布单元。身份 API 是账户权威，通知与决策服务分别拥有投递与决策状态。
+> This runbook covers five independently deployable units. Identity owns account authority; Notifications and Decisions own delivery and decision state.
 
 ## 拓扑与责任边界 / Topology and ownership
 
@@ -32,10 +32,10 @@ Rust + frontend matrix + contracts/migrations
  Wrangler dry-runs → checksummed immutable bundle
              │
              ▼
- staging secrets → migration → identity → login → account → smoke
+ staging secrets → migrations → notifications → decisions → identity → login → account → smoke
              │
              ▼ protected approval
- production secrets → migration → identity → login → account → smoke
+ production secrets → migrations → notifications → decisions → identity → login → account → smoke
 ```
 
 CI 对同一个制品做 staging 与 production 提升，不在环境间重建。`concurrency` 串行化每个环境，production job 还会拒绝覆盖更新的 `main`。质量门禁（quality gate）应设为 branch protection 的 required check。
@@ -146,3 +146,151 @@ Cloudflare rollback 会把目标 version 立即恢复至 100% 流量，而且只
 ## Cron 与日常检查 / Cron and routine checks
 
 Production 每 5 分钟排空持久 outbox。每日检查 synthetic 与 error budget；每周检查 outbox oldest age、D1 容量和 trace/log sampling；每次发布核对 deployment annotation；每季度演练一次 staging rollback 与凭据轮换。scheduled handler 必须显式记录完成/失败并保留可重试状态，不能只依赖返回 `Err`。
+
+## Notifications and decisions rollout (0.2.0)
+
+The deployment graph is now `notifications → decisions → identity → login → account`.
+Notifications owns provider delivery and sender identities; Identity retains its public
+verification transaction, expiry and encrypted retry authority, but uses the private
+`NotificationsApi` service binding instead of sending email directly. Decisions owns
+capability-link forms and a durable callback outbox. Its registered callbacks use exact
+service bindings and paths, never an arbitrary caller-supplied Internet URL.
+
+| Unit | Staging | Production | State |
+| --- | --- | --- | --- |
+| Notifications | `notifications-staging.moesegfault.dev` | `notifications.moesegfault.dev` | Dedicated D1, encrypted outbox |
+| Decisions | `decisions-staging.moesegfault.dev` | `decisions.moesegfault.dev` | Dedicated D1, encrypted callbacks |
+
+`release.sh` resolves each new database by its exact environment-specific name through
+`scripts/provision-platform.mjs`. It creates only missing, unpinned databases; a pinned
+UUID mismatch or missing pinned database fails closed rather than replacing state.
+Resolved UUIDs are written into the ephemeral runner checkout, not back into Git.
+Existing Identity D1 identifiers remain strictly pinned. Database creation requires
+D1 Edit. Failed creation or deployment is safe to retry using the same names.
+
+Each service receives a distinct `OUTBOX_KEY`, generated only when the secret does
+not exist. The release logs secret names and resource identifiers, never key values.
+Keys must be retained while encrypted outbox records exist; deleting or replacing a
+key is not a rotation procedure. The first deployment installs each new service and
+its secret before Identity switches transport. Subsequent deployments preserve keys.
+
+The package job stores the already-bundled TypeScript Workers in `dist/platform`.
+Release uses these modules with `--no-bundle`, so staging and production execute the
+same checked artifacts rather than recompiling TypeScript per environment. Environment
+bindings and D1 identifiers remain deployment configuration. Public `/healthz` probes
+verify the services are reachable; public writes to `/v1/messages` and `/v1/decisions`
+must return 404, because only private named entrypoints accept service commands.
+
+Custom domains are reconciled after installing the services using the account-level
+Workers Domains API. Deployment environments need `CLOUDFLARE_ZONE_ID` in addition to
+the existing account ID and token; Workers Scripts Write is required. This is not a
+zone-route permission expansion. Domain errors include the resource and provider
+status so permissions and configuration mistakes can be distinguished.
+
+### Cached validation, not cached assumptions
+
+Rust and frontend jobs cache **successful validated outputs** using complete source,
+lockfile, toolchain and workflow-content hashes. These caches have no partial-key
+restore. A cache miss always runs the original focused checks; a hit still uploads
+an immutable artifact for the current revision. Identity request-boundary integration
+checks similarly reuse only an exact successful runtime-input hash. npm download
+caching is enabled for packaging and both deployments as well as validation jobs.
+The platform validation job remains inexpensive and unconditional. The repository
+lockfile advisory audit remains unconditional in the contracts job.
+
+The checksummed release bundle, per-environment concurrency, staging gate, protected
+production environment, and stale-main rejection are unchanged. Documentation-only
+main pushes still do not redeploy. All PRs still report the required quality gate.
+Caches are an optimization, not an authorization boundary; only trusted branch-scoped
+results are available to a production main run. Bump the cache schema suffix when
+validation semantics change outside the hashed inputs.
+
+Rollback accepts the existing four arguments for compatibility, or two additional
+Notifications and Decisions version IDs. Restore presentations and Identity first,
+then Decisions and Notifications. Never roll back D1 data: that can resurrect already
+consumed links or revoked account authority. New database tables must remain additive
+through the rollback window.
+
+References:
+- [GitHub dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+- [Cloudflare D1 commands](https://developers.cloudflare.com/workers/wrangler/commands/d1/)
+- [Cloudflare Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+
+The staging-only callback fixture is installed from
+`wrangler.platform-journey-bootstrap.jsonc` before Decisions, so its named callback
+entrypoint exists when Cloudflare validates bindings. This initial fixture has no
+API or database bindings. The manually dispatched platform journey workflow installs
+the fully bound fixture, sends a real message, exposes a capability link for the
+browser journey, and verifies the recorded callback. No fixture service or callback
+registration is installed in production.
+
+Login is the deliberate exception to output reuse: its cheap frontend build still
+runs on a validated-cache hit because Vite embeds `GITHUB_SHA` into failure support
+receipts. Tests can reuse exact source validation, but a current release must not
+advertise the previous revision in diagnostics.
+
+Rust advisory freshness is deliberately independent of source validation caches.
+The Rust job always restores the pinned tool cache, installs `cargo-deny` if missing,
+and runs `cargo deny --locked check advisories` against the current advisory database.
+The non-advisory bans/licenses/sources policy remains on source-cache misses. Advisory
+databases are not included in the dependency cache. Frontend CI runs one TypeScript
+check, not both `lint` and `typecheck`: these scripts currently invoke the same compiler.
+By default cargo-deny fetches the configured remote advisory database on each check;
+we do not set `--offline` or `--disable-fetch`.
+[Cargo-deny advisory database freshness](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html)
+
+Hosted run `40648902822` exposed why dependency caches and validated outputs need
+different lifecycles: a newly disclosed Rust advisory failed the job after expensive
+tool/dependency installation, so the former success-only combined cache saved none
+of that reusable work. Tool binaries now use a separate exact version/toolchain key
+without `Cargo.lock`; Cargo registry and target data use a lockfile key with a Rust
+version restore prefix. Both dependency caches use explicit restore/save actions and
+save on failed checks when restoration succeeded and the exact key was absent.
+Both pinned tools are installed before advisory validation, so an advisory failure
+does not freeze an incomplete tool cache. Saving binaries additionally requires both
+tool installation steps to succeed; a failed tool installation cannot publish the
+immutable tools key. Missing binaries are still installed on
+subsequent runs; Cargo fingerprints validate reused target data. Only reproducible
+dependencies are cached this way: the validated Worker output remains success-only,
+and current advisories remain unconditional. Failed quality gates can reuse work,
+never certify a release.
+
+Before the standalone journey workflow exists on the default branch, CI's existing
+manual dispatch can run the same staging probe using `delivery=staging-only` and
+`platform_journey=http` or `mailbox`. The default is `skip`; PR checks, normal main
+promotion and production remain unchanged. The probe reuses the staging deployment
+job's environment and concurrency lock, and its recipient comes only from the staging
+`PLATFORM_JOURNEY_RECIPIENT` secret. HTTP mode verifies actual native provider
+acceptance and the form/callback round trip, not mailbox receipt. Mailbox mode waits
+for the approved recipient to open the delivered link and explicitly submit it.
+The script's `finally` cleanup is backed by an unconditional-on-attempt workflow step
+that deletes the fixture token and reinstalls the inert callback-only fixture after
+success, failure or a step timeout. The separate journey workflow remains available
+for repeated probes once merged; no production entrypoint is exposed.
+
+If an explicitly requested staging journey fails, CI reads at most ten recent
+`service='journey'` rows directly from each service's staging D1 before fixture
+cleanup. Notifications projects only message/sender IDs, state, attempts, stable
+provider error/message IDs, correlation ID and creation time. Decisions joins its
+outbox to journey-owned decisions and projects decision ID, kind, state, attempts
+and stable error code. No recipient, encrypted payload, payload hash, capability
+material or verification code is selected. This separates native provider rejection
+from a broken private fixture status API, as encountered in run `40658243569`.
+Diagnostics are read-only, explicitly use staging configuration plus `--env ''`, and
+cannot block always-run cleanup if a query fails. They never run for PR/main/production
+or an unrequested journey.
+
+For fixture/helper-only acceptance iterations, dispatch the already-registered
+Cloudflare bootstrap workflow with `target=staging` and `platform_journey=http` or
+`mailbox`. This explicit fast path skips infrastructure reconciliation and all app
+build/deploy jobs, checks only the four HTTP helper tests and the local Miniflare
+journey, then probes the already-deployed staging services. Its job shares the
+`cloudflare-staging` deployment lock. Choosing a journey with `target=production`
+skips the entire job; default `platform_journey=skip` retains ordinary bootstrap.
+Source-quality PR checks remain independent and are not replaced by this probe.
+
+CI, bootstrap acceptance and the future standalone workflow share cleanup and
+bounded D1 diagnostic shell helpers rather than divergent inline command copies.
+Remote D1 execution resolves a configured database name when the checked-in UUID is
+empty (the pinned Wrangler implementation's `getDatabaseByNameOrBinding` path), so
+read-only diagnostics need no resource provisioning before a fast-path probe.

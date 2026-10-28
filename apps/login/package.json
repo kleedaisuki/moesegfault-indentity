@@ -1,6 +1,6 @@
 {
   "name": "@moesegfault/login",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,12 +13,12 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@moesegfault/frontend-shared": "0.1.0"
+    "@moesegfault/frontend-shared": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "24.5.2",
     "typescript": "5.9.2",
-    "vite": "7.3.6",
-    "vitest": "4.1.11"
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
   }
 }

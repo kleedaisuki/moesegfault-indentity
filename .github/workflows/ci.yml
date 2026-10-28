@@ -21,6 +21,12 @@ on:
         required: true
         default: verify-only
         options: [verify-only, staging-only]
+      platform_journey:
+        description: Optional staging native-email and decision journey
+        type: choice
+        required: true
+        default: skip
+        options: [skip, http, mailbox]
       verify_client_id:
         description: 'Optional OAuth client ID to read back from staging D1 / 可选的预发布 D1 客户端 ID'
         type: string
@@ -44,38 +50,74 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: Cache Cargo data / 缓存 Cargo 数据
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Reuse validated identity build
+        id: identity-build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: crates/identity-worker/build
+          key: ${{ runner.os }}-identity-validated-v1-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'deny.toml', '.github/workflows/ci.yml') }}
+      - name: Restore pinned Cargo tools
+        id: cargo-tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-rust-1.88.0-tools-wb0.8.5-deny0.20.2-v1
+      - name: Restore Cargo data / 恢复 Cargo 数据
+        id: cargo-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-
+          key: ${{ runner.os }}-rust-1.88.0-data-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rust-1.88.0-data-v1-
       - name: Confirm pinned toolchain / 确认固定工具链
+        if: steps.identity-build.outputs.cache-hit != 'true'
         run: rustc --version && cargo --version && rustup target list --installed | grep -Fx wasm32-unknown-unknown
-      - name: Install pinned tools / 安装固定工具
-        run: |
-          command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
-          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
+      - name: Install pinned advisory checker
+        id: cargo-advisory-tool
+        run: command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
+      - name: Install pinned build tool
+        id: cargo-build-tool
+        run: command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
+      - name: Check current Rust advisories
+        run: cargo deny --locked check advisories
       - name: Format, lint, and test / 格式、静态检查与测试
+        if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo test --workspace --all-features --locked
-          cargo deny --locked check
+          cargo deny --locked check bans licenses sources
       - name: Verify vendored WebAuthn and WASM / 验证 WebAuthn 补丁与 WASM
+        if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
           cargo fmt --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml -- --check
           cargo test --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --locked --lib --tests
           cargo check --manifest-path crates/vendor/passkey-auth-worker/Cargo.toml --locked --target wasm32-unknown-unknown
           cargo check --package identity-worker --target wasm32-unknown-unknown --locked
       - name: Build identity Worker / 构建 Identity Worker
+        if: steps.identity-build.outputs.cache-hit != 'true'
         working-directory: crates/identity-worker
         run: worker-build --release
+      - name: Save pinned Cargo tools even after failed checks
+        if: always() && steps.cargo-tools.outcome == 'success' && steps.cargo-tools.outputs.cache-hit != 'true' && steps.cargo-advisory-tool.outcome == 'success' && steps.cargo-build-tool.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ steps.cargo-tools.outputs.cache-primary-key }}
+      - name: Save Cargo data even after failed checks
+        if: always() && steps.cargo-data.outcome == 'success' && steps.cargo-data.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-data.outputs.cache-primary-key }}
       - name: Upload identity artifact / 上传 Identity 制品
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -102,18 +144,54 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies / 安装锁定依赖
         run: npm ci --ignore-scripts
-      - name: Lint, typecheck, and test / 静态、类型检查与测试
+      - name: Reuse validated frontend build
+        id: frontend-build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: apps/${{ matrix.app }}/dist
+          key: ${{ runner.os }}-${{ matrix.app }}-validated-v1-${{ hashFiles(format('apps/{0}/**', matrix.app), 'packages/frontend-shared/**', 'package.json', 'package-lock.json', '.github/workflows/ci.yml') }}
+      - name: Typecheck and test / 类型检查与测试
+        if: steps.frontend-build.outputs.cache-hit != 'true'
         run: |
-          npm run lint --workspace=@moesegfault/${{ matrix.app }}
           npm run typecheck --workspace=@moesegfault/${{ matrix.app }}
           npm run test --workspace=@moesegfault/${{ matrix.app }} -- --run
       - name: Build / 构建
+        if: steps.frontend-build.outputs.cache-hit != 'true' || matrix.app == 'login'
         run: npm run build --workspace=@moesegfault/${{ matrix.app }}
       - name: Upload immutable frontend artifact / 上传不可变前端制品
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.app }}-assets-${{ github.sha }}
           path: apps/${{ matrix.app }}/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  platform:
+    name: Notifications and decisions contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Validate platform contracts and rendering
+        run: |
+          npm run typecheck:platform
+          npm run test:platform
+          node --test scripts/tests/platform-provisioning.mjs
+      - name: Package platform Workers
+        run: |
+          npx --no-install wrangler deploy --dry-run --outdir=dist/platform/notifications --env production --config wrangler.notifications.jsonc
+          npx --no-install wrangler deploy --dry-run --outdir=dist/platform/decisions --env production --config wrangler.decisions.jsonc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: platform-workers-${{ github.sha }}
+          path: dist/platform
           if-no-files-found: error
           retention-days: 14
 
@@ -152,18 +230,21 @@ jobs:
         run: |
           shellcheck scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
           bash scripts/tests/wrangler-env.sh
-          jq -e . wrangler.identity.jsonc wrangler.login.jsonc wrangler.account.jsonc >/dev/null
+          jq -e . wrangler.*.jsonc >/dev/null
 
   package:
     name: Immutable deployment package
-    needs: [rust, frontend, contracts]
+    needs: [rust, frontend, platform, contracts]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with: {node-version: '${{ env.NODE_VERSION }}'}
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - name: Download tested artifacts / 下载已测试制品
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -172,20 +253,35 @@ jobs:
           path: .temp/artifacts
       - name: Restore artifact layout / 恢复制品目录
         run: |
-          mkdir -p crates/identity-worker/build apps/login/dist apps/account/dist
+          mkdir -p crates/identity-worker/build apps/login/dist apps/account/dist dist/platform
           cp -a .temp/artifacts/identity-worker-${GITHUB_SHA}/. crates/identity-worker/build/
           cp -a .temp/artifacts/login-assets-${GITHUB_SHA}/. apps/login/dist/
           cp -a .temp/artifacts/account-assets-${GITHUB_SHA}/. apps/account/dist/
+          cp -a .temp/artifacts/platform-workers-${GITHUB_SHA}/. dist/platform/
+      - name: Reuse successful identity integration suite
+        id: identity-integration
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .temp/identity-integration-passed
+          key: ${{ runner.os }}-identity-integration-v1-${{ hashFiles('crates/**', 'migrations/**', 'scripts/**', 'wrangler.*.jsonc', 'Cargo.lock', 'package-lock.json', '.github/workflows/ci.yml') }}
       - name: Verify Worker request boundary / 验证 Worker 请求边界
+        if: steps.identity-integration.outputs.cache-hit != 'true'
         run: node scripts/tests/security-boundary.mjs
       - name: Verify contact creation and email-verification contract / 验证联系方式与邮箱验证契约
+        if: steps.identity-integration.outputs.cache-hit != 'true'
         run: npm run test:contact-verification
       - name: Verify mailbox proof before account creation
+        if: steps.identity-integration.outputs.cache-hit != 'true'
         run: npm run test:registration-email
       - name: Verify password authority and session rotation / 验证密码权限与会话轮换
+        if: steps.identity-integration.outputs.cache-hit != 'true'
         run: npm run test:password-security
       - name: Verify session activity RPC budget / 验证会话活动 RPC 预算
+        if: steps.identity-integration.outputs.cache-hit != 'true'
         run: npm run test:session-performance
+      - name: Record successful identity integration suite
+        if: steps.identity-integration.outputs.cache-hit != 'true'
+        run: mkdir -p .temp && printf '%s\n' "$GITHUB_SHA" > .temp/identity-integration-passed
       - name: Dry-run every deployment unit / 演练所有发布单元
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/identity --env production --config wrangler.identity.jsonc
@@ -193,7 +289,7 @@ jobs:
           npx --no-install wrangler deploy --dry-run --outdir=dist/dry-run/account --env production --config wrangler.account.jsonc
       - name: Create checksummed release bundle / 创建带校验和的发布包
         run: |
-          tar -czf release-${GITHUB_SHA}.tar.gz crates/identity-worker/build apps/login/dist apps/account/dist migrations wrangler.*.jsonc scripts
+          tar -czf release-${GITHUB_SHA}.tar.gz crates/identity-worker/build apps/login/dist apps/account/dist dist/platform apps/notifications apps/decisions apps/platform-journey packages/service-platform migrations wrangler.*.jsonc scripts
           sha256sum release-${GITHUB_SHA}.tar.gz > release-${GITHUB_SHA}.sha256
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -216,13 +312,17 @@ jobs:
     concurrency: {group: cloudflare-staging, cancel-in-progress: false}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       RELEASE_MESSAGE: Staging GitHub ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with: {node-version: '${{ env.NODE_VERSION }}'}
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: 'release-${{ github.sha }}'}
@@ -231,6 +331,27 @@ jobs:
           sha256sum --check release-${GITHUB_SHA}.sha256
           tar -xzf release-${GITHUB_SHA}.tar.gz
           scripts/release.sh staging
+      - name: Run the requested staging platform journey
+        id: platform-journey
+        if: github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        timeout-minutes: 18
+        env:
+          PLATFORM_JOURNEY_MODE: ${{ inputs.platform_journey }}
+          PLATFORM_JOURNEY_RECIPIENT: ${{ secrets.PLATFORM_JOURNEY_RECIPIENT }}
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/platform-journey.mjs
+      - name: Diagnose failed staging journey delivery without the fixture API
+        if: always() && steps.platform-journey.outcome == 'failure' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: bash scripts/platform-journey-diagnostics.sh
+      - name: Restore the inert staging fixture after the requested journey
+        if: always() && steps.platform-journey.outcome != 'skipped' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: bash scripts/platform-journey-cleanup.sh
       - name: Read back reviewed OAuth client / 回读已评审客户端
         if: github.event_name == 'workflow_dispatch' && inputs.verify_client_id != ''
         env:
@@ -255,13 +376,17 @@ jobs:
     concurrency: {group: cloudflare-production, cancel-in-progress: false}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       RELEASE_MESSAGE: Production GitHub ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with: {node-version: '${{ env.NODE_VERSION }}'}
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: 'release-${{ github.sha }}'}
@@ -275,13 +400,14 @@ jobs:
   quality-gate:
     name: Required quality gate
     if: always()
-    needs: [rust, frontend, contracts, package]
+    needs: [rust, frontend, platform, contracts, package]
     runs-on: ubuntu-24.04
     steps:
       - name: Require all quality jobs / 要求所有质量任务通过
         env:
           RUST: ${{ needs.rust.result }}
           FRONTEND: ${{ needs.frontend.result }}
+          PLATFORM: ${{ needs.platform.result }}
           CONTRACTS: ${{ needs.contracts.result }}
           PACKAGE: ${{ needs.package.result }}
-        run: test "$RUST $FRONTEND $CONTRACTS $PACKAGE" = "success success success success"
+        run: test "$RUST $FRONTEND $PLATFORM $CONTRACTS $PACKAGE" = "success success success success success"

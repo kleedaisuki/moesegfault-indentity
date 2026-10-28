@@ -1333,58 +1333,21 @@ pub(crate) async fn drain_email_job(
             return Err(error);
         }
     };
-    let content = crate::email_verification::render_email(
+    match crate::notifications::send_verification(
+        env,
+        outbox_id,
         &payload.recipient,
         &payload.code,
-        ((row.expires_at - now + 59) / 60).max(1),
-    );
-    let (sender_name, sender_address) = match email_sender(env) {
-        Ok(sender) => sender,
-        Err(error) => {
-            reschedule_email_job(
-                &db,
-                outbox_id,
-                lease_expires_at,
-                &row,
-                now,
-                "configuration_unavailable",
-                queue,
-            )
-            .await?;
-            return Err(error);
-        }
-    };
-    let sender = EmailAddress::new(&sender_name, &sender_address);
-    let message = SendEmailBuilder::builder_with_email_address_and_str(
-        &sender,
-        &payload.recipient,
-        "moeSegFault 邮箱验证 / Email verification",
+        row.expires_at,
+        correlation,
     )
-    .text(&content.text)
-    .html(&content.html)
-    .build();
-    let email = match env.send_email("EMAIL") {
-        Ok(email) => email,
-        Err(error) => {
-            reschedule_email_job(
-                &db,
-                outbox_id,
-                lease_expires_at,
-                &row,
-                now,
-                "configuration_unavailable",
-                queue,
-            )
-            .await?;
-            return Err(error);
-        }
-    };
-    match email.send_with_builder(&message).await {
+    .await
+    {
         Ok(_) => {
             db.prepare(format!("UPDATE {outbox} SET state='delivered',payload_ciphertext=NULL,payload_nonce=NULL,next_attempt_at=NULL,lease_expires_at=NULL,delivered_at=?3,last_error_code=NULL WHERE outbox_id=?1 AND state='sending' AND lease_expires_at=?2",outbox=queue.outbox))
                 .bind(&[JsValue::from_str(outbox_id),JsValue::from_f64(lease_expires_at as f64),JsValue::from_f64(now_seconds() as f64)])?.run().await?;
             console_log!(
-                "email_verification_delivery_succeeded correlation_id={correlation} outbox_id={outbox_id}"
+                "email_verification_handoff_accepted correlation_id={correlation} outbox_id={outbox_id}"
             );
         }
         Err(error) => {
@@ -1394,12 +1357,12 @@ pub(crate) async fn drain_email_job(
                 lease_expires_at,
                 &row,
                 now,
-                "provider_unavailable",
+                "notifications_unavailable",
                 queue,
             )
             .await?;
             console_error!(
-                "email_verification_delivery_provider_failed correlation_id={correlation} outbox_id={outbox_id} error={error:?}"
+                "email_verification_handoff_failed correlation_id={correlation} outbox_id={outbox_id} error={error:?}"
             );
         }
     }
@@ -2817,30 +2780,6 @@ fn parse_bounded_i64(
         .ok_or_else(|| {
             Error::BindingError(format!("{name} must be an integer between {min} and {max}"))
         })
-}
-
-fn email_sender(env: &Env) -> Result<(String, String)> {
-    let address = env
-        .var("EMAIL_FROM_ADDRESS")
-        .map(|value| value.to_string())
-        .unwrap_or_else(|_| "identity@moesegfault.dev".to_owned());
-    let name = env
-        .var("EMAIL_FROM_NAME")
-        .map(|value| value.to_string())
-        .unwrap_or_else(|_| "moeSegFault Identity".to_owned());
-    if address.is_empty()
-        || address.len() > 254
-        || !address.contains('@')
-        || address.contains(['\r', '\n'])
-        || name.is_empty()
-        || name.len() > 100
-        || name.contains(['\r', '\n'])
-    {
-        return Err(Error::BindingError(
-            "EMAIL_FROM_ADDRESS or EMAIL_FROM_NAME is invalid".into(),
-        ));
-    }
-    Ok((name, address))
 }
 
 fn d1_changed(result: Option<&D1Result>) -> Result<bool> {

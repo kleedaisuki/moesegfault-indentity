@@ -4,8 +4,8 @@ set -euo pipefail
 # shellcheck source=scripts/lib/wrangler-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/wrangler-env.sh"
 
-if [[ $# -ne 4 ]]; then
-  printf 'usage: %s <staging|production> <identity-version-id> <login-version-id> <account-version-id>\n' "$0" >&2
+if [[ $# -ne 4 && $# -ne 6 ]]; then
+  printf 'usage: %s <staging|production> <identity-version-id> <login-version-id> <account-version-id> [<notifications-version-id> <decisions-version-id>]\n' "$0" >&2
   exit 2
 fi
 
@@ -26,4 +26,9 @@ args+=("${env_args[@]}")
 npx --no-install wrangler rollback "$ACCOUNT_VERSION" "${args[@]}" --config wrangler.account.jsonc
 npx --no-install wrangler rollback "$LOGIN_VERSION" "${args[@]}" --config wrangler.login.jsonc
 npx --no-install wrangler rollback "$IDENTITY_VERSION" "${args[@]}" --config wrangler.identity.jsonc
+# Optional arguments retain the established three-unit rollback invocation.
+if [[ $# -eq 6 ]]; then
+  npx --no-install wrangler rollback "$6" "${args[@]}" --config wrangler.decisions.jsonc
+  npx --no-install wrangler rollback "$5" "${args[@]}" --config wrangler.notifications.jsonc
+fi
 scripts/smoke.sh "$TARGET"

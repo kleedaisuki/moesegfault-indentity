@@ -12,10 +12,14 @@ if [[ "$TARGET" == "staging" ]]; then
   readonly IDENTITY_URL="${IDENTITY_URL:-https://identity-staging.moesegfault.dev}"
   readonly LOGIN_URL="${LOGIN_URL:-https://login-staging.moesegfault.dev}"
   readonly ACCOUNT_URL="${ACCOUNT_URL:-https://account-staging.moesegfault.dev}"
+  readonly NOTIFICATIONS_URL="${NOTIFICATIONS_URL:-https://notifications-staging.moesegfault.dev}"
+  readonly DECISIONS_URL="${DECISIONS_URL:-https://decisions-staging.moesegfault.dev}"
 else
   readonly IDENTITY_URL="${IDENTITY_URL:-https://identity.moesegfault.dev}"
   readonly LOGIN_URL="${LOGIN_URL:-https://login.moesegfault.dev}"
   readonly ACCOUNT_URL="${ACCOUNT_URL:-https://account.moesegfault.dev}"
+  readonly NOTIFICATIONS_URL="${NOTIFICATIONS_URL:-https://notifications.moesegfault.dev}"
+  readonly DECISIONS_URL="${DECISIONS_URL:-https://decisions.moesegfault.dev}"
 fi
 
 # Keep transient probe artifacts inside the repository. The fixed prefix is not caller-controlled;
@@ -146,3 +150,19 @@ jq -e '.status == 403 and .error_code == "invalid_request" and .title == "Origin
 header_has_line "$tmp_dir/account-browser-scope.headers" "access-control-allow-origin: $ACCOUNT_URL"
 
 printf 'smoke checks passed / 冒烟检查通过: %s, %s, %s\n' "$IDENTITY_URL" "$LOGIN_URL" "$ACCOUNT_URL"
+
+for unit in notifications decisions; do
+  if [[ "$unit" == "notifications" ]]; then
+    platform_url="$NOTIFICATIONS_URL"
+    private_path="/v1/messages"
+  else
+    platform_url="$DECISIONS_URL"
+    private_path="/v1/decisions"
+  fi
+  retry_curl "$tmp_dir/$unit-health.json" "$platform_url/healthz"
+  jq -e '.status == "ok"' "$tmp_dir/$unit-health.json" >/dev/null
+  private_status="$(request_status "$tmp_dir/$unit-private.json" --request POST \
+    --header 'Content-Type: application/json' --data '{}' "$platform_url$private_path")"
+  test "$private_status" = "404"
+done
+printf 'platform smoke checks passed: %s, %s\n' "$NOTIFICATIONS_URL" "$DECISIONS_URL"

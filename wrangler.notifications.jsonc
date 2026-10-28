@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "moesegfault-notifications-staging",
+  "main": "./apps/notifications/src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "minify": true,
+  "vars": { "ENVIRONMENT": "staging", "ACCOUNT_ORIGIN": "https://account-staging.moesegfault.dev" },
+  "send_email": [{ "name": "EMAIL" }],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "moesegfault-notifications-staging",
+    "database_id": "121c47f4-71b5-44f3-92cb-73ada2cb98d9",
+    "migrations_dir": "./migrations/notifications"
+  }],
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
+  "env": {
+    "production": {
+      "name": "moesegfault-notifications",
+      "vars": { "ENVIRONMENT": "production", "ACCOUNT_ORIGIN": "https://account.moesegfault.dev" },
+      "send_email": [{ "name": "EMAIL" }],
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "moesegfault-notifications-production",
+        "database_id": "",
+        "migrations_dir": "./migrations/notifications"
+      }],
+      "triggers": { "crons": ["* * * * *"] }
+    }
+  }
+}

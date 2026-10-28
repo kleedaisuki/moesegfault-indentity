@@ -12,6 +12,7 @@ mod ceremony_state;
 mod email_verification;
 mod guard;
 mod idempotency;
+mod notifications;
 mod oauth;
 pub(crate) mod oauth_repository;
 mod password;

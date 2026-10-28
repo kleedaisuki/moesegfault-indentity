@@ -11,7 +11,7 @@
 
 [package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 name = "passkey-auth"
 version = "0.1.3"
 authors = ["Sriram <marirs@gmail.com>"]
@@ -75,15 +75,16 @@ version = "0.22"
 version = "0.2"
 
 [dependencies.const-oid]
-version = "0.9"
+version = "0.10"
 
 [dependencies.ed25519-dalek]
 version = "2"
 features = ["pkcs8"]
 
 [dependencies.p256]
-version = "0.13"
-features = ["ecdsa"]
+version = "0.14"
+default-features = false
+features = ["ecdsa", "alloc"]
 
 [dependencies.rand]
 version = "0.8"
@@ -105,7 +106,7 @@ version = "2"
 version = "2"
 
 [dependencies.x509-cert]
-version = "0.2"
+version = "0.3"
 features = ["std"]
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies.js-sys]
@@ -135,7 +136,7 @@ features = [
 version = "0.4"
 
 [dev-dependencies.p256]
-version = "0.13"
+version = "0.14"
 features = [
     "ecdsa",
     "pkcs8",
@@ -157,6 +158,11 @@ features = ["bundled"]
 version = "0.10"
 features = ["oid"]
 
+[dev-dependencies.sha2-p256]
+package = "sha2"
+version = "0.11"
+features = ["oid"]
+
 [dev-dependencies.tokio]
 version = "1"
 features = [
@@ -173,7 +179,7 @@ features = [
 ]
 
 [dev-dependencies.x509-cert]
-version = "0.2"
+version = "0.3"
 features = [
     "builder",
     "std",
