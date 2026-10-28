@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const journeyDiagnostics = readFileSync(new URL('../platform-journey-diagnostics.sh', import.meta.url), 'utf8');
+const journeyCleanup = readFileSync(new URL('../platform-journey-cleanup.sh', import.meta.url), 'utf8');
 const ignoredPaths = [
   "docs/**/*.md",
   "skills/**/*.md",
@@ -169,7 +171,47 @@ test('optional platform journey is dispatch-only staging and always restores the
   assert.match(journey, /run: node scripts\/platform-journey\.mjs/);
   assert.ok(staging.indexOf('scripts/release.sh staging') < staging.indexOf('id: platform-journey'));
   assert.match(staging, /if: always\(\) && steps.platform-journey.outcome != 'skipped'/);
-  assert.match(staging, /secret delete JOURNEY_TOKEN --config wrangler\.platform-journey-bootstrap\.jsonc \|\| true/);
-  assert.match(staging, /wrangler deploy --config wrangler\.platform-journey-bootstrap\.jsonc/);
+  assert.match(staging, /run: bash scripts\/platform-journey-cleanup\.sh/);
+  assert.match(journeyCleanup, /secret delete JOURNEY_TOKEN --env '' --config wrangler\.platform-journey-bootstrap\.jsonc \|\| true/);
+  assert.match(journeyCleanup, /wrangler deploy --env '' --config wrangler\.platform-journey-bootstrap\.jsonc/);
   assert.doesNotMatch(production, /platform-journey|PLATFORM_JOURNEY_RECIPIENT/);
+});
+
+test('failed manual staging journeys expose bounded delivery metadata independently of the fixture', () => {
+  const diagnostics = workflow.match(/- name: Diagnose failed staging journey delivery without the fixture API\n([\s\S]*?)(?=      - name:)/)?.[1];
+  assert.ok(diagnostics);
+  assert.match(diagnostics, /if: always\(\) && steps.platform-journey.outcome == 'failure' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'/);
+  assert.match(diagnostics, /continue-on-error: true/);
+  assert.match(diagnostics, /timeout-minutes: 1/);
+  assert.match(diagnostics, /run: bash scripts\/platform-journey-diagnostics\.sh/);
+  assert.match(journeyDiagnostics, /moesegfault-notifications-staging --remote --env '' --config wrangler\.notifications\.jsonc/);
+  assert.match(journeyDiagnostics, /moesegfault-decisions-staging --remote --env '' --config wrangler\.decisions\.jsonc/);
+  const queries = [...journeyDiagnostics.matchAll(/--command="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(queries.length, 2);
+  assert.match(queries[0], /^SELECT message_id,sender,state,attempt_count,last_error_code,provider_message_id,correlation_id,created_at FROM notification_messages WHERE service='journey' ORDER BY created_at DESC,message_id DESC LIMIT 10$/);
+  assert.match(queries[1], /^SELECT o\.decision_id,o\.kind,o\.state,o\.attempts,o\.last_error_code FROM decision_outbox o JOIN decisions d ON d\.decision_id=o\.decision_id WHERE d\.service='journey' ORDER BY o\.created_at DESC,o\.outbox_id DESC LIMIT 10$/);
+  assert.doesNotMatch(journeyDiagnostics, /\b(payload|payload_hash|recipient|token_digest|request_digest|idempotency_key|JOURNEY_TOKEN)\b/);
+  assert.ok(workflow.indexOf('Diagnose failed staging journey') < workflow.indexOf('Restore the inert staging fixture after the requested journey'));
+});
+
+test('bootstrap offers an explicit staging acceptance fast path without infrastructure or app deployment', () => {
+  const bootstrap = readFileSync(new URL('../../.github/workflows/bootstrap.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(bootstrap, /platform_journey:\n[\s\S]*?default: skip\n        options: \[skip, http, mailbox\]/);
+  assert.match(bootstrap, /if: inputs.platform_journey == 'skip' \|\| inputs.target == 'staging'/);
+  assert.match(bootstrap, /concurrency: \{group: 'cloudflare-\$\{\{ inputs.target \}\}', cancel-in-progress: false\}/);
+  assert.match(bootstrap, /if: inputs.platform_journey == 'skip'\n        run: scripts\/bootstrap-cloudflare\.sh/);
+  assert.match(bootstrap, /node --test scripts\/tests\/platform-journey-http\.mjs\n          node scripts\/tests\/platform-journey\.mjs/);
+  const journey = bootstrap.match(/id: platform-journey\n([\s\S]*?)(?=      - name:)/)?.[1];
+  assert.ok(journey);
+  assert.match(journey, /if: inputs.target == 'staging' && inputs.platform_journey != 'skip'/);
+  assert.match(journey, /PLATFORM_JOURNEY_RECIPIENT: \$\{\{ secrets.PLATFORM_JOURNEY_RECIPIENT \}\}/);
+  assert.match(journey, /PLATFORM_JOURNEY_MODE: \$\{\{ inputs.platform_journey \}\}/);
+  assert.match(journey, /run: node scripts\/platform-journey\.mjs/);
+  assert.match(bootstrap, /if: always\(\) && steps.platform-journey.outcome == 'failure' && inputs.target == 'staging'/);
+  assert.match(bootstrap, /run: bash scripts\/platform-journey-diagnostics\.sh/);
+  assert.match(bootstrap, /if: always\(\) && steps.platform-journey.outcome != 'skipped' && inputs.target == 'staging'/);
+  assert.match(bootstrap, /run: bash scripts\/platform-journey-cleanup\.sh/);
+  assert.doesNotMatch(bootstrap, /scripts\/release\.sh|npm run build|worker-build|cargo test|wrangler deploy/);
+  const standalone = readFileSync(new URL('../../.github/workflows/platform-journey.yml', import.meta.url), 'utf8');
+  assert.match(standalone, /run: bash scripts\/platform-journey-cleanup\.sh/);
 });

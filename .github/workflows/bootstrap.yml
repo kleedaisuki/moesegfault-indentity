@@ -9,6 +9,12 @@ on:
         default: staging
         type: choice
         options: [staging, production]
+      platform_journey:
+        description: Optional acceptance probe against already-deployed staging
+        type: choice
+        required: true
+        default: skip
+        options: [skip, http, mailbox]
 
 permissions:
   contents: read
@@ -20,9 +26,11 @@ concurrency:
 jobs:
   bootstrap:
     name: Reconcile Cloudflare infrastructure
+    if: inputs.platform_journey == 'skip' || inputs.target == 'staging'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     environment: cloudflare-${{ inputs.target }}
+    concurrency: {group: 'cloudflare-${{ inputs.target }}', cancel-in-progress: false}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -41,4 +49,31 @@ jobs:
       - name: Install locked tooling / 安装锁定工具
         run: npm ci --ignore-scripts
       - name: Reconcile data, domains, and email / 调和数据、域名与邮件
+        if: inputs.platform_journey == 'skip'
         run: scripts/bootstrap-cloudflare.sh "${{ inputs.target }}"
+      - name: Validate the staging journey helpers and fixture
+        if: inputs.target == 'staging' && inputs.platform_journey != 'skip'
+        run: |
+          node --test scripts/tests/platform-journey-http.mjs
+          node scripts/tests/platform-journey.mjs
+      - name: Probe the already-deployed staging platform
+        id: platform-journey
+        if: inputs.target == 'staging' && inputs.platform_journey != 'skip'
+        timeout-minutes: 18
+        env:
+          PLATFORM_JOURNEY_RECIPIENT: ${{ secrets.PLATFORM_JOURNEY_RECIPIENT }}
+          PLATFORM_JOURNEY_MODE: ${{ inputs.platform_journey }}
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/platform-journey.mjs
+      - name: Diagnose failed staging journey delivery without the fixture API
+        if: always() && steps.platform-journey.outcome == 'failure' && inputs.target == 'staging' && inputs.platform_journey != 'skip'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: bash scripts/platform-journey-diagnostics.sh
+      - name: Restore the inert staging fixture after the requested journey
+        if: always() && steps.platform-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.platform_journey != 'skip'
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: bash scripts/platform-journey-cleanup.sh

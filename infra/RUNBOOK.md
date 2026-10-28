@@ -267,3 +267,30 @@ The script's `finally` cleanup is backed by an unconditional-on-attempt workflow
 that deletes the fixture token and reinstalls the inert callback-only fixture after
 success, failure or a step timeout. The separate journey workflow remains available
 for repeated probes once merged; no production entrypoint is exposed.
+
+If an explicitly requested staging journey fails, CI reads at most ten recent
+`service='journey'` rows directly from each service's staging D1 before fixture
+cleanup. Notifications projects only message/sender IDs, state, attempts, stable
+provider error/message IDs, correlation ID and creation time. Decisions joins its
+outbox to journey-owned decisions and projects decision ID, kind, state, attempts
+and stable error code. No recipient, encrypted payload, payload hash, capability
+material or verification code is selected. This separates native provider rejection
+from a broken private fixture status API, as encountered in run `40658243569`.
+Diagnostics are read-only, explicitly use staging configuration plus `--env ''`, and
+cannot block always-run cleanup if a query fails. They never run for PR/main/production
+or an unrequested journey.
+
+For fixture/helper-only acceptance iterations, dispatch the already-registered
+Cloudflare bootstrap workflow with `target=staging` and `platform_journey=http` or
+`mailbox`. This explicit fast path skips infrastructure reconciliation and all app
+build/deploy jobs, checks only the four HTTP helper tests and the local Miniflare
+journey, then probes the already-deployed staging services. Its job shares the
+`cloudflare-staging` deployment lock. Choosing a journey with `target=production`
+skips the entire job; default `platform_journey=skip` retains ordinary bootstrap.
+Source-quality PR checks remain independent and are not replaced by this probe.
+
+CI, bootstrap acceptance and the future standalone workflow share cleanup and
+bounded D1 diagnostic shell helpers rather than divergent inline command copies.
+Remote D1 execution resolves a configured database name when the checked-in UUID is
+empty (the pinned Wrangler implementation's `getDatabaseByNameOrBinding` path), so
+read-only diagnostics need no resource provisioning before a fast-path probe.

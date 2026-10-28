@@ -37,9 +37,13 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Send mail and wait for the real browser confirmation
+        id: platform-journey
         run: node scripts/platform-journey.mjs
+      - name: Diagnose failed staging journey delivery without the fixture API
+        if: always() && steps.platform-journey.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: bash scripts/platform-journey-diagnostics.sh
       - name: Restore the inert staging fixture after interruption
         if: always()
-        run: |
-          npx --no-install wrangler secret delete JOURNEY_TOKEN --config wrangler.platform-journey-bootstrap.jsonc || true
-          npx --no-install wrangler deploy --config wrangler.platform-journey-bootstrap.jsonc
+        run: bash scripts/platform-journey-cleanup.sh

@@ -340,13 +340,18 @@ jobs:
           PLATFORM_JOURNEY_RECIPIENT: ${{ secrets.PLATFORM_JOURNEY_RECIPIENT }}
           WRANGLER_SEND_METRICS: false
         run: node scripts/platform-journey.mjs
+      - name: Diagnose failed staging journey delivery without the fixture API
+        if: always() && steps.platform-journey.outcome == 'failure' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: bash scripts/platform-journey-diagnostics.sh
       - name: Restore the inert staging fixture after the requested journey
         if: always() && steps.platform-journey.outcome != 'skipped' && github.event_name == 'workflow_dispatch' && inputs.delivery == 'staging-only' && inputs.platform_journey != 'skip'
         env:
           WRANGLER_SEND_METRICS: false
-        run: |
-          npx --no-install wrangler secret delete JOURNEY_TOKEN --config wrangler.platform-journey-bootstrap.jsonc || true
-          npx --no-install wrangler deploy --config wrangler.platform-journey-bootstrap.jsonc
+        run: bash scripts/platform-journey-cleanup.sh
       - name: Read back reviewed OAuth client / 回读已评审客户端
         if: github.event_name == 'workflow_dispatch' && inputs.verify_client_id != ''
         env:
