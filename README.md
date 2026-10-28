@@ -12,12 +12,19 @@ registration + sign-in    profile + contacts + security
             \              /
              identity.moesegfault.dev
              D1 authority + OAuth/OIDC + R2 audit
+
+first-party Workers ──private binding── notifications.moesegfault.dev
+                                      branded transactional email
+                              decisions.moesegfault.dev
+                              email link → explicit submission → registered service
 ```
 
 | 单元 / Unit | 职责 / Responsibility |
 | --- | --- |
 | `apps/login` | 注册、密码/Passkey 登录、恢复与 OAuth 恢复；不再承载账号管理 / registration, authentication, recovery, OAuth resume |
 | `apps/account` | 资料、头像、联系方式、偏好、凭据、会话与应用授权体验 / modern self-service account experience |
+| `apps/notifications` | 第一方服务共享发件身份、品牌邮件和持久重试 / private first-party notification API, sender registry, branded email and durable delivery |
+| `apps/decisions` | 邮件决策链接、表单确认与持久服务回调 / capability links, explicit form confirmation and registered-service callbacks |
 | `crates/identity-domain` | 平台无关的领域类型与不变量 / platform-independent domain invariants |
 | `crates/identity-worker` | D1/R2、HTTP、OAuth/OIDC 与定时任务适配 / authority and protocol adapter |
 | `openapi/identity.yaml` | OpenAPI 3.1.1 唯一 HTTP 契约 / canonical HTTP contract |
@@ -26,6 +33,23 @@ registration + sign-in    profile + contacts + security
 其他服务不“调用 Login 来验证 Token”。它们通过 `/.well-known/openid-configuration` 接入 Identity 的 OpenID Connect（OIDC），使用 Authorization Code + Proof Key for Code Exchange（PKCE）；浏览器应用优先采用前端专属后端（Backend for Frontend, BFF），令牌不进入浏览器存储。
 
 平台设计见 [`ADR-0003`](docs/adr/0003-account-platform-redesign.md)，Cloudflare 邮箱验证与持久投递边界见 [`ADR-0004`](docs/adr/0004-email-verification.md)；视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
+
+## Notifications and Decisions · 0.2.0
+
+Identity delegates all verification mail to Notifications. Other first-party Workers
+bind its named `NotificationsApi` entrypoint and select a sender such as `identity`,
+`accounts`, or `security`. The first message creates the outbound identity
+`<sender>@moesegfault.dev`; later messages reuse it. Public HTTP is not a sending API.
+Verification, security, informational and decision messages share localized branded
+HTML and plain text. See the [Notifications integration contract](apps/notifications/README.md).
+
+Decisions adds expiring email links and validated choice/form inputs. Opening a link
+never executes an action: the recipient explicitly confirms a submission. The result
+is durably delivered to a deployment-registered private service binding with a stable
+event ID. Consumers must deduplicate retries. See the
+[Decisions integration contract](apps/decisions/README.md) for callback registration,
+input schemas and trust boundaries. A forwarded link confers its bearer authority;
+use Identity step-up in the consuming service for high-risk account changes.
 
 接入新应用请从 [`docs/integrating-app.md`](docs/integrating-app.md) 开始：它区分当前已实现的 OIDC 能力与长期设计，说明客户端登记、PKCE、回调校验、令牌与运维验收。 / New applications should start with the implemented-contract [integration guide](docs/integrating-app.md), including reviewed client provisioning and an acceptance checklist.
 
