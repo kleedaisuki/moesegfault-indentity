@@ -868,7 +868,7 @@ async fn exchange_code(
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
+        .with_redirect(RequestRedirect::Manual)
         .with_body(Some(body.into()));
     let request = Request::new_with_init(&provider.token_endpoint, &init)
         .map_err(|_| ProviderFailure::Temporary("token_request_construction"))?;
@@ -1100,7 +1100,7 @@ async fn fetch_json_get(
         .map_err(|_| ProviderFailure::Temporary("request_headers"))?;
     let mut init = RequestInit::new();
     init.with_headers(headers)
-        .with_redirect(RequestRedirect::Error);
+        .with_redirect(RequestRedirect::Manual);
     let request = Request::new_with_init(endpoint, &init)
         .map_err(|_| ProviderFailure::Temporary("request_construction"))?;
     let mut response = Fetch::Request(request)

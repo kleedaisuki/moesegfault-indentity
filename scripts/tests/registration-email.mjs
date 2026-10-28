@@ -6,15 +6,20 @@ import { resolve, join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 
 const root = resolve(import.meta.dirname, "../..");
+// Workers rejects redirect:"error" before sending. Browser Fetch supports it;
+// this guard deliberately applies only to Rust Worker request construction.
+for (const name of readdirSync(join(root, "crates/identity-worker/src")).filter(name => name.endsWith(".rs"))) {
+  assert.doesNotMatch(readFileSync(join(root, "crates/identity-worker/src", name), "utf8"), /\bRequestRedirect\s*::\s*Error\b/, `${name}: use manual redirects and enforce the expected response status`);
+}
 const temp = join(root, ".temp", "registration-email");
 mkdirSync(temp, { recursive: true });
 const state = mkdtempSync(join(temp, "worker-"));
-const build = join(root, "crates/identity-worker/build");
+const build = process.env.IDENTITY_BUILD_DIR ? resolve(process.env.IDENTITY_BUILD_DIR) : join(root, "crates/identity-worker/build");
 const pepper = "fixture-only-email-pepper";
 const origin = "https://login.example.test";
 const notificationRequests = [];
 let notificationStatus = 202;
-const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: root, modules: [
+const identityWorker = { name: "identity", modulesRoot: root, modules: [
   { type: "ESModule", path: join(build, "index.js") },
   { type: "CompiledWasm", path: join(build, "index_bg.wasm") },
 ], compatibilityDate: "2026-09-15", bindings: {
@@ -24,12 +29,25 @@ const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: root, modules:
   REGISTRATION_PEPPER: "fixture-only-registration", TRANSACTION_PEPPER: "fixture-only-transaction",
   TRANSACTION_STATE_KEY: Buffer.alloc(32, 8).toString("base64url"),
   CONTACT_VERIFICATION_PEPPER: pepper, EMAIL_OUTBOX_KEY_V1: Buffer.alloc(32, 7).toString("base64url"),
-}, serviceBindings: { NOTIFICATIONS: async request => {
-  const value = await request.json();
-  notificationRequests.push({ value, key: request.headers.get("idempotency-key"), correlation: request.headers.get("x-moesegfault-correlation-id"), url: request.url });
-  return Response.json(notificationStatus === 202 ? { message_id: randomUUID(), state: "queued" } : { error: "fixture unavailable" }, { status: notificationStatus });
-} }, d1Databases: { DB: "signup-tests" }, persist: state }));
-const db = await mf.getD1Database("DB");
+}, serviceBindings: { NOTIFICATIONS: { name: "notifications-capture", entrypoint: "NotificationsApi" } }, d1Databases: { DB: "signup-tests" } };
+const captureWorker = {
+  name: "notifications-capture", modules: true, compatibilityDate: "2026-09-15",
+  script: `import { WorkerEntrypoint } from 'cloudflare:workers';
+    export class NotificationsApi extends WorkerEntrypoint {
+      async fetch(request) {
+        if (request.redirect !== 'manual') throw new TypeError('fixture_requires_manual_redirect');
+        return this.env.SINK.fetch(request);
+      }
+    }
+    export default { fetch() { return new Response(null, {status: 404}); } };`,
+  serviceBindings: { SINK: async request => {
+    const value = await request.json();
+    notificationRequests.push({ value, key: request.headers.get("idempotency-key"), correlation: request.headers.get("x-moesegfault-correlation-id"), url: request.url });
+    return Response.json(notificationStatus === 202 ? { message_id: randomUUID(), state: "queued" } : { error: "fixture unavailable" }, { status: notificationStatus, headers: notificationStatus === 302 ? {location: "https://not-an-approved-recipient.example.test/redirect"} : {} });
+  } },
+};
+const mf = new Miniflare(convertV4MiniflareOptions({ persist: state, workers: [identityWorker, captureWorker] }));
+const db = await mf.getD1Database("DB", "identity");
 const request = (path, init) => mf.dispatchFetch(`https://identity.example.test${path}`, init);
 
 /** Keep response diagnostics useful without printing passwords, tokens, or codes. */
@@ -83,6 +101,7 @@ try {
   assert.equal(challengeResponse.headers.get("set-cookie").split(";")[0], first.cookie);
   const challenge = await body(challengeResponse, 201);
   const handoff = notificationRequests.at(-1);
+  assert.ok(handoff, "verification must reach the private named NotificationsApi entrypoint");
   assert.equal(handoff.url, "https://notifications.internal/v1/messages");
   assert.equal(handoff.value.service, "identity");
   assert.equal(handoff.value.sender, "identity");
@@ -309,5 +328,11 @@ try {
   assert.equal(delayedRow.last_error_code, "notifications_unavailable");
   assert.ok(delayedRow.payload_ciphertext);
   assert.ok(delayedRow.next_attempt_at);
+  notificationStatus = 302;
+  const redirected = await body(await post("/v1/registration-email-transactions", { email: "redirected@example.test" }, await browser()), 201);
+  const redirectRow = await db.prepare("SELECT state,last_error_code FROM registration_email_outbox WHERE transaction_id=?").bind(redirected.transaction_id).first();
+  assert.equal(redirectRow.state, "pending", "a redirected center response never transfers delivery responsibility");
+  assert.equal(redirectRow.last_error_code, "notifications_unavailable");
+  assert.equal(notificationRequests.at(-1).value.to, "redirected@example.test");
   console.log("registration email: no-account-before-proof, password/passkey bypass prevention, email/browser binding, atomic single-use race, expiry, parallel guessing limits, and full profile read/write/null/legacy roundtrip passed");
 } finally { await mf.dispose(); }

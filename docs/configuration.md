@@ -71,6 +71,18 @@ on retries. Center failures preserve the encrypted local job with bounded retry;
 the center must not send after expiry. Logs distinguish handoff acceptance from
 provider delivery and retain correlation/outbox IDs without recipient/code values.
 
+Worker outbound HTTP uses `redirect: "manual"` and exact expected status
+checks: `202` for notification acceptance, `200` for external-provider
+OIDC token/discovery/JWKS reads. [Workers does not support Fetch's `error`
+redirect mode](https://developers.cloudflare.com/workers/runtime-apis/request/);
+it throws before any receiver sees the request. Redirects must not be followed
+with notification payloads, provider credentials, or authorization codes.
+Browser Fetch clients may continue to use their supported `redirect: "error"`.
+The real-Worker registration harness binds the same named `NotificationsApi`
+entrypoint shape and checks success, center outage, and redirect rejection.
+Transport failure diagnostics retain binding, operation, bounded JS error class,
+and known reason rather than collapsing all runtime errors to one opaque label.
+
 D1 迁移的公共源文件位于 `migrations/`，发行方专属客户端配置位于 `migrations/environments/{staging,production}/`。运行 `node scripts/prepare-migrations.mjs <target>` 后，Wrangler 从 `.temp/migration-streams/<target>` 读取该环境独有的迁移流；既有迁移 basename 保持不变。必须使用 database name（而不是易变 binding name）执行远端迁移，且不得在未物化正确环境流时运行。生产正确性读使用 primary-first D1 Session/bookmark；KV 不得承担 credential、transaction、session、revocation、Binding 唯一性或幂等权威。
 
 ## Workers Secrets
