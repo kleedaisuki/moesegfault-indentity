@@ -31,7 +31,7 @@ export function createShell(t: (key: MessageKey) => string, inApp: boolean, sign
   banner?.setAttribute("hidden", "");
   const bottomNav = el("nav", { className: "bottom-nav", attrs: { "aria-label": t("account"), hidden: true } }, ...links.map((link) => link.cloneNode(true) as HTMLAnchorElement));
   const root = el("div", { className: "app-shell" },
-    el("header", { className: "mobile-header moe-glass" }, el("a", { className: "brand", attrs: { href: "/" }, dataset: { route: "/" } }, el("img", { attrs: { src: "/icons/logo.svg", alt: "" } }), "moeSegFault", el("small", {}, t("account"))), mobileControls, mobileSignOut),
+    el("header", { className: "mobile-header moe-glass" }, el("a", { className: "brand", attrs: { href: "/", "aria-label": `moeSegFault ${t("account")}` }, dataset: { route: "/" } }, el("img", { attrs: { src: "/icons/logo.svg", alt: "" } }), el("span", { className: "brand-name" }, "moeSegFault"), el("small", {}, t("account"))), el("div", { className: "header-actions" }, mobileControls, mobileSignOut)),
     el("aside", { className: "sidebar" },
       el("a", { className: "brand desktop-brand", attrs: { href: "/" }, dataset: { route: "/" } }, el("img", { attrs: { src: "/icons/logo.svg", alt: "" } }), el("span", {}, "moeSegFault", el("small", {}, t("account")))),
       sideNav,
@@ -53,6 +53,7 @@ export function createShell(t: (key: MessageKey) => string, inApp: boolean, sign
         if (entry) link.querySelector("span")!.textContent = t(entry[1]);
       }
       for (const label of root.querySelectorAll(".brand small")) label.textContent = t("account");
+      root.querySelector(".mobile-header .brand")!.setAttribute("aria-label", `moeSegFault ${t("account")}`);
       for (const navigation of [sideNav, bottomNav]) navigation.setAttribute("aria-label", t("account"));
       userChip.querySelector("small")!.textContent = t("signOut");
       mobileSignOut.setAttribute("aria-label", t("signOut")); mobileSignOut.title = t("signOut");

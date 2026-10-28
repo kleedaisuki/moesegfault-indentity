@@ -112,9 +112,17 @@ input, select, textarea { width: 100%; min-height: 2.85rem; padding: .62rem .75r
 /* The authenticated user chip is a command, not an OAuth navigation link. */
 button.user-chip { font: inherit; text-align: start; cursor: pointer; width: 100%; }
 button.user-chip:disabled { cursor: progress; }
-/* Keep sign-out outside replaceable preference controls and allow narrow headers to wrap. */
+/* Keep account commands together while preference feedback wraps within its own host. */
 .mobile-header { flex-wrap: wrap; gap: .45rem; }
-.mobile-sign-out { flex: 0 0 2.65rem; }
+.header-actions { display: flex; flex: 1; min-width: 0; align-items: flex-start; justify-content: flex-end; gap: .45rem; }
+.mobile-header .header-controls { min-width: 0; margin-left: 0; justify-content: flex-end; }
+.mobile-header .compact-select { max-width: 100%; }
+.header-actions .icon-button { width: 2.75rem; min-height: 2.75rem; flex: 0 0 2.75rem; }
+.mobile-sign-out { flex: 0 0 2.75rem; }
+@media (max-width: 34rem) {
+  .mobile-header .brand { min-width: 2.75rem; min-height: 2.75rem; justify-content: center; gap: 0; }
+  .mobile-header .brand-name { display: none; }
+}
 
 /* Native modal top-layer behavior supplies focus containment and inert background content. */
 .draft-dialog { width: min(30rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; padding: 1.5rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-strong); color: var(--text); box-shadow: var(--shadow); }
