@@ -45,7 +45,7 @@ describe("boundary utilities", () => {
   });
   it("hardens every capability response", () => {
     const response = secure(new Response("ok"));
-    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("Referrer-Policy")).toBe("strict-origin");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   });

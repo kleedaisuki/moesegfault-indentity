@@ -93,7 +93,13 @@ arbitrate concurrent confirmations. A conditional update affecting zero rows is 
 mistaken for a transaction failure.
 
 The recipient surface uses escaped text, no external scripts/assets, restrictive
-CSP, no-referrer, no-store, no framing, and noindex. Automatic invocation logging is
+CSP, origin-only `Referrer-Policy: strict-origin`, no-store, no framing, and noindex.
+The policy strips capability paths and query strings from every Referer while
+preserving the real Origin on same-HTTPS native form POSTs. `no-referrer` would
+instead serialize native navigation POST Origin as `null` under Fetch, making
+our exact-Origin check correctly reject legitimate submissions. Null Origin remains
+rejected; this is a document-policy correction, not an authorization exception.
+Automatic invocation logging is
 disabled for Decisions so capability paths are not incidentally copied into routine
 request logs; explicit structured events retain decision/event IDs and diagnostic
 codes without bearer links or form content.
@@ -111,6 +117,9 @@ D1, sender reuse/creation, provider retry, encrypted retention/erasure, idempote
 GET non-consumption, cookie/CSRF/Origin rejection, concurrent confirmation, callback
 allowlisting, and stable-event callback retry. It is part of the hosted platform
 quality gate, rather than requiring a heavyweight local full-suite run.
+Hosted Chromium additionally exercises real native form navigation, browser-created
+Origin/Referer, secure cookies, explicit confirmation, and the registered callback.
+Node fetches with a manually supplied Origin cannot certify that browser contract.
 
 The manually dispatched `Platform mailbox and browser journey` workflow has two
 explicit modes. `http` sends through the native provider, submits the form with
@@ -150,6 +159,9 @@ outboxes and service bindings needed by the deployed Identity version.
   rather than a misleading cross-service exactly-once promise.
 - [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
   motivates Origin plus token protection rather than relying on SameSite alone.
+- [WHATWG Fetch: append a request Origin header](https://fetch.spec.whatwg.org/#append-a-request-origin-header)
+  specifies that non-CORS non-GET/HEAD requests under `no-referrer` serialize Origin
+  as `null`; `strict-origin` preserves it for non-downgrade native navigation.
 - [OWASP SSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
   motivates eliminating untrusted callback destinations instead of attempting a
   fragile denylist of private network ranges.

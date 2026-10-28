@@ -117,7 +117,7 @@ Owning services must not interpret mailbox-link possession as a recent Identity
 login or MFA proof. Confidential/high-impact operations should obtain any
 additional authentication in their own service before acting on the event.
 
-Public pages are `no-store`, `no-referrer`, `noindex`, frame-denied and have a
+Public pages are `no-store`, `Referrer-Policy: strict-origin`, `noindex`, frame-denied and have a
 restrictive Content Security Policy. Default invocation logs are disabled to
 avoid copying capability URLs; structured events retain decision, event, service,
 correlation and delivery-error IDs without response content. Application logs do

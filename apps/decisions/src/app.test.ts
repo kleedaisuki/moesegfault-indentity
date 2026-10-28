@@ -31,7 +31,7 @@ describe("public decision journey boundaries", () => {
     const response = await publicApp.request(`${origin}/d/${token}`, undefined, env);
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toMatch(/__Host-decision-.*HttpOnly.*Secure.*SameSite=Strict/);
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(batch).not.toHaveBeenCalled();
@@ -45,6 +45,11 @@ describe("public decision journey boundaries", () => {
   });
   it("rejects cross-origin submissions before accessing D1", async () => {
     const response = await publicApp.request(`${origin}/d/${token}/submit`, { method: "POST", headers: { origin: "https://evil.example" } }, env);
+    expect(response.status).toBe(403);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+  it("rejects opaque null Origin rather than weakening the native form boundary", async () => {
+    const response = await publicApp.request(`${origin}/d/${token}/submit`, { method: "POST", headers: { origin: "null" } }, env);
     expect(response.status).toBe(403);
     expect(db.prepare).not.toHaveBeenCalled();
   });

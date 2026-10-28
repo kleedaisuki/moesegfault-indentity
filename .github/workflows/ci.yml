@@ -184,6 +184,31 @@ jobs:
           npm run typecheck:platform
           npm run test:platform
           node --test scripts/tests/platform-provisioning.mjs
+      - name: Resolve pinned Chromium runtime
+        id: playwright
+        run: node -p "'version=' + require('playwright/package.json').version" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned Chromium
+        id: chromium-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium and its system dependencies
+        id: chromium-install
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Save installed Chromium before browser assertions
+        if: steps.chromium-cache.outputs.cache-hit != 'true' && steps.chromium-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .cache/ms-playwright
+          key: ${{ steps.chromium-cache.outputs.cache-primary-key }}
+      - name: Verify native browser decision confirmation
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+          PLATFORM_NATIVE_BROWSER: 1
+        run: node scripts/tests/platform-journey.mjs
       - name: Package platform Workers
         run: |
           npx --no-install wrangler deploy --dry-run --outdir=dist/platform/notifications --env production --config wrangler.notifications.jsonc

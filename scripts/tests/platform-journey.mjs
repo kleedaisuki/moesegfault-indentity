@@ -121,7 +121,7 @@ try {
   const path = new URL(accepted.url).pathname;
   const page = await request("DPUBLIC", path);
   assert.equal(page.status, 200);
-  assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(page.headers.get("referrer-policy"), "strict-origin");
   assert.equal(page.headers.get("cache-control"), "no-store");
   assert.ok(page.headers.get("content-security-policy").includes("form-action 'self'"));
   const content = await page.text();
@@ -174,6 +174,11 @@ try {
   exhausted = await ddb.prepare("SELECT state,attempts,last_error_code FROM decision_outbox WHERE outbox_id=?").bind(cachedJob.outbox_id).first();
   assert.deepEqual(exhausted, {state: "failed", attempts: 12, last_error_code: "attempts_exhausted"}, "A worker dying during its final attempt must become terminal after lease expiry");
   assert.equal(callbacks.length, exhaustedCalls, "Final-lease recovery must never resend beyond the attempt budget");
+  if (process.env.PLATFORM_NATIVE_BROWSER === "1") {
+    const {runNativeFormJourney} = await import("./platform-native-form.mjs");
+    callbackStatus = 204;
+    await runNativeFormJourney({mf, post, ddb, callbacks, decision});
+  }
   console.log("PASS: named service capabilities, sender reuse/create, branded mail, encrypted durable retries, explicit form confirmation, CSRF, callback registration, single consumption and idempotent callback recovery.");
 } finally {
   await mf.dispose();
