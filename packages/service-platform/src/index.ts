@@ -73,7 +73,8 @@ export function problem(status: number, code: string, detail?: string): Response
 export function secure(response: Response): Response {
   const secured = new Response(response.body, response);
   secured.headers.set("Cache-Control", "no-store");
-  secured.headers.set("Referrer-Policy", "no-referrer");
+  // Fetch serializes native form POST Origin as null under no-referrer.
+  secured.headers.set("Referrer-Policy", "strict-origin");
   secured.headers.set("X-Content-Type-Options", "nosniff");
   secured.headers.set("X-Frame-Options", "DENY");
   secured.headers.set("X-Robots-Tag", "noindex, nofollow");

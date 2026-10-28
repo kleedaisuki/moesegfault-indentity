@@ -90,7 +90,7 @@ publicApp.post("/d/:token/submit", async (c) => {
   if (!submitted) return html(expiredPage(), 410);
   console.log(JSON.stringify({ event: "decision_submitted", decision_id: row.decision_id, service: row.service, event_id: eventId, correlation_id: correlationId(c.req.raw) }));
   c.executionCtx.waitUntil(drain(c.env));
-  return new Response(null, { status: 303, headers: { location: `/d/${token}`, "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+  return new Response(null, { status: 303, headers: { location: `/d/${token}` } });
 });
 
 privateApp.post("/v1/decisions", async (c) => {

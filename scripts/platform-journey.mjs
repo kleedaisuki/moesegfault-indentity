@@ -69,7 +69,7 @@ try {
   if (mode === "http") {
     const page = await fetch(accepted.decision_url);
     assert.equal(page.status, 200, "Decision page did not open");
-    assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(page.headers.get("referrer-policy"), "strict-origin");
     const html = await page.text();
     const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1];
     const cookie = page.headers.get("set-cookie")?.split(";")[0];
