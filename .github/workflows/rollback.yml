@@ -21,6 +21,14 @@ on:
         description: Account Worker version ID / Account Worker 版本 ID
         required: true
         type: string
+      notifications_version:
+        description: Optional Notifications Worker version ID
+        required: false
+        type: string
+      decisions_version:
+        description: Optional Decisions Worker version ID
+        required: false
+        type: string
       reason:
         description: Auditable rollback reason / 可审计回滚理由
         required: true
@@ -46,6 +54,8 @@ jobs:
       IDENTITY_VERSION: ${{ inputs.identity_version }}
       LOGIN_VERSION: ${{ inputs.login_version }}
       ACCOUNT_VERSION: ${{ inputs.account_version }}
+      NOTIFICATIONS_VERSION: ${{ inputs.notifications_version }}
+      DECISIONS_VERSION: ${{ inputs.decisions_version }}
       TARGET: ${{ inputs.target }}
       ROLLBACK_REASON: ${{ inputs.reason }}
     steps:
@@ -60,4 +70,10 @@ jobs:
       - name: Install locked deployment tooling / 安装锁定发布工具
         run: npm ci --ignore-scripts
       - name: Roll back and smoke / 回滚并冒烟检查
-        run: scripts/rollback.sh "$TARGET" "$IDENTITY_VERSION" "$LOGIN_VERSION" "$ACCOUNT_VERSION"
+        run: |
+          if [[ -n "$NOTIFICATIONS_VERSION" || -n "$DECISIONS_VERSION" ]]; then
+            test -n "$NOTIFICATIONS_VERSION" && test -n "$DECISIONS_VERSION"
+            scripts/rollback.sh "$TARGET" "$IDENTITY_VERSION" "$LOGIN_VERSION" "$ACCOUNT_VERSION" "$NOTIFICATIONS_VERSION" "$DECISIONS_VERSION"
+          else
+            scripts/rollback.sh "$TARGET" "$IDENTITY_VERSION" "$LOGIN_VERSION" "$ACCOUNT_VERSION"
+          fi

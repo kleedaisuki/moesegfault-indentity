@@ -1,0 +1,45 @@
+name: Platform mailbox and browser journey
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: HTTP form round trip or actual mailbox/browser confirmation
+        type: choice
+        options: [http, mailbox]
+        default: http
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-staging
+  cancel-in-progress: false
+
+jobs:
+  journey:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: cloudflare-staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PLATFORM_JOURNEY_RECIPIENT: ${{ secrets.PLATFORM_JOURNEY_RECIPIENT }}
+      PLATFORM_JOURNEY_MODE: ${{ inputs.mode }}
+      WRANGLER_SEND_METRICS: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.8.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Send mail and wait for the real browser confirmation
+        run: node scripts/platform-journey.mjs
+      - name: Restore the inert staging fixture after interruption
+        if: always()
+        run: |
+          npx --no-install wrangler secret delete JOURNEY_TOKEN --config wrangler.platform-journey-bootstrap.jsonc || true
+          npx --no-install wrangler deploy --config wrangler.platform-journey-bootstrap.jsonc

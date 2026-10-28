@@ -85,5 +85,31 @@ test("deployment still requires tested package and staging; PR and manual produc
   assert.match(production, /if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'/);
   assert.match(production, /needs: deploy-staging/);
   assert.ok(production.includes('test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"'));
-  assert.match(workflow, /quality-gate:\n[\s\S]*?if: always\(\)\n    needs: \[rust, frontend, contracts, package\]/);
+  assert.match(workflow, /quality-gate:\n[\s\S]*?if: always\(\)\n    needs: \[rust, frontend, platform, contracts, package\]/);
+});
+
+test('five-unit delivery keeps private services inaccessible and promotes bundled platform code', () => {
+  assert.match(workflow, /needs: \[rust, frontend, platform, contracts\]/);
+  assert.match(workflow, /npm run typecheck:platform/);
+  assert.match(workflow, /npm run test:platform/);
+  assert.match(workflow, /dist\/platform/);
+  const release = readFileSync(new URL('../release.sh', import.meta.url), 'utf8');
+  assert.match(release, /node scripts\/provision-platform\.mjs "\$TARGET"/);
+  assert.match(release, /for unit in notifications decisions/);
+  assert.match(release, /dist\/platform\/notifications\/index\.js --no-bundle/);
+  assert.match(release, /dist\/platform\/decisions\/index\.js --no-bundle/);
+  assert.ok(release.indexOf('for unit in notifications decisions') < release.indexOf('deploy_unit "$IDENTITY_CONFIG"'));
+  assert.match(release, /if ! jq -e 'any\(\.\[\]; \.name == "OUTBOX_KEY"\)'/);
+});
+
+test('validated-result caches require exact complete-input keys; deployment package remains checksummed', () => {
+  for (const id of ['identity-build', 'frontend-build', 'identity-integration']) {
+    const block = workflow.match(new RegExp(`id: ${id}\\n([\\s\\S]*?)(?=      - name:|      - uses:)`))?.[1];
+    assert.ok(block, id);
+    assert.match(block, /hashFiles\(/);
+    assert.match(block, /\.github\/workflows\/ci\.yml/);
+    assert.doesNotMatch(block, /restore-keys:/);
+    assert.ok(workflow.includes(`steps.${id}.outputs.cache-hit != 'true'`));
+  }
+  assert.match(workflow, /sha256sum --check release-\$\{GITHUB_SHA\}\.sha256/);
 });
