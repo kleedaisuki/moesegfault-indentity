@@ -19,9 +19,9 @@ for (const service of ["notifications", "decisions"]) {
   const className = service === "notifications" ? "NotificationsApi" : "DecisionsApi";
   const operation = service === "notifications" ? "drain" : "maintain";
   const source = `import {WorkerEntrypoint} from 'cloudflare:workers';
-    import {${operation}} from './apps/${service}/src/outbox.ts';
+    import {${operation},deliver} from './apps/${service}/src/outbox.ts';
     export {default,${className}} from './apps/${service}/src/index.ts';
-    export class TestAdmin extends WorkerEntrypoint {async fetch(){await ${operation}(this.env);return new Response('ok')}}`;
+    export class TestAdmin extends WorkerEntrypoint {async fetch(request){if(new URL(request.url).pathname==='/deliver'){const cached=await request.json();await deliver(this.env,cached.outbox_id)}else await ${operation}(this.env);return new Response('ok')}}`;
   await build({stdin: {contents: source, resolveDir: root, sourcefile: `${service}-test.ts`, loader: "ts"}, bundle: true, format: "esm", platform: "neutral", conditions: ["workerd", "worker", "browser"], external: ["cloudflare:workers"], outfile: join(state, `${service}.mjs`)});
 }
 await build({entryPoints: [join(root, "apps/platform-journey/src/index.ts")], bundle: true, format: "esm", platform: "neutral", external: ["cloudflare:workers"], outfile: join(state, "journey-fixture.mjs")});
@@ -148,6 +148,23 @@ try {
   const fixtureStatus = await json(await request("FIXTURE", `/status/${accepted.decision_id}`, {headers: {authorization: "Bearer a-fixture-only-one-time-token-with-at-least-32-characters"}}), 200);
   assert.equal(fixtureStatus.received, true);
   assert.equal(fixtureStatus.valid, true, "Actual staging CallbackReceiver must persist only the validated callback outcome");
+  const cachedJob = await ddb.prepare("SELECT outbox_id,decision_id,kind,attempts FROM decision_outbox WHERE decision_id=? AND kind='callback'").bind(accepted.decision_id).first();
+  callbackStatus = 503;
+  await ddb.prepare("UPDATE decision_outbox SET state='queued',attempts=11,available_at=0,lease_id='expired-previous-worker',lease_until=? WHERE outbox_id=?").bind(now() - 1, cachedJob.outbox_id).run();
+  await post("DADMIN", "/deliver", cachedJob);
+  let exhausted = await ddb.prepare("SELECT state,attempts,last_error_code FROM decision_outbox WHERE outbox_id=?").bind(cachedJob.outbox_id).first();
+  assert.deepEqual(exhausted, {state: "failed", attempts: 12, last_error_code: "callback_http_503"}, "A stale drain snapshot must use the authoritative twelfth claim for terminal settlement");
+  const exhaustedCalls = callbacks.length;
+  await post("DADMIN", "/deliver", cachedJob);
+  assert.equal(callbacks.length, exhaustedCalls, "A stale snapshot cannot send a thirteenth attempt");
+  await ddb.prepare("UPDATE decision_outbox SET state='queued',lease_id='crashed-final-worker',lease_until=? WHERE outbox_id=?").bind(now() + 60, cachedJob.outbox_id).run();
+  await request("DADMIN", "/drain");
+  assert.equal(await ddb.prepare("SELECT state FROM decision_outbox WHERE outbox_id=?").bind(cachedJob.outbox_id).first("state"), "queued", "An active final-attempt lease must not be reaped early");
+  await ddb.prepare("UPDATE decision_outbox SET lease_until=? WHERE outbox_id=?").bind(now() - 1, cachedJob.outbox_id).run();
+  await request("DADMIN", "/drain");
+  exhausted = await ddb.prepare("SELECT state,attempts,last_error_code FROM decision_outbox WHERE outbox_id=?").bind(cachedJob.outbox_id).first();
+  assert.deepEqual(exhausted, {state: "failed", attempts: 12, last_error_code: "attempts_exhausted"}, "A worker dying during its final attempt must become terminal after lease expiry");
+  assert.equal(callbacks.length, exhaustedCalls, "Final-lease recovery must never resend beyond the attempt budget");
   console.log("PASS: named service capabilities, sender reuse/create, branded mail, encrypted durable retries, explicit form confirmation, CSRF, callback registration, single consumption and idempotent callback recovery.");
 } finally {
   await mf.dispose();

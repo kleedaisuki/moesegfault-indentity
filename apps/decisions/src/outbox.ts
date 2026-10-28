@@ -2,6 +2,7 @@ import { decryptJson, providerError, retryDelay } from "@moesegfault/service-pla
 import { callbackTarget, type DecisionPayload, type DecisionRow, type Env } from "./model";
 
 interface OutboxRow { outbox_id: string; decision_id: string; kind: "notification" | "callback"; attempts: number }
+const maxAttempts = 12;
 
 function deliveryError(code: string): Error {
   return Object.assign(new Error(code), { code });
@@ -39,32 +40,36 @@ async function dispatch(env: Env, job: OutboxRow, row: DecisionRow): Promise<voi
   if (!response.ok) throw deliveryError(`callback_http_${response.status}`);
 }
 
-async function deliver(env: Env, job: OutboxRow): Promise<void> {
+export async function deliver(env: Env, outboxId: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const lease = crypto.randomUUID();
-  const claimed = await env.DB.prepare("UPDATE decision_outbox SET lease_id=?,lease_until=?,attempts=attempts+1 WHERE outbox_id=? AND state='queued' AND available_at<=? AND (lease_until IS NULL OR lease_until<?) RETURNING outbox_id")
-    .bind(lease, now + 60, job.outbox_id, now, now).first();
-  if (!claimed) return;
+  const job = await env.DB.prepare("UPDATE decision_outbox SET lease_id=?,lease_until=?,attempts=attempts+1 WHERE outbox_id=? AND state='queued' AND attempts<? AND available_at<=? AND (lease_until IS NULL OR lease_until<=?) RETURNING outbox_id,decision_id,kind,attempts")
+    .bind(lease, now + 60, outboxId, maxAttempts, now, now).first<OutboxRow>();
+  if (!job) return;
   try {
     const decision = await env.DB.prepare("SELECT * FROM decisions WHERE decision_id=?").bind(job.decision_id).first<DecisionRow>();
     if (!decision) throw new Error("decision_unavailable");
     await dispatch(env, job, decision);
     await env.DB.prepare("UPDATE decision_outbox SET state='delivered',delivered_at=?,lease_id=NULL,lease_until=NULL,last_error_code=NULL WHERE outbox_id=? AND lease_id=?")
-      .bind(now, job.outbox_id, lease).run();
-    console.log(JSON.stringify({ event: "decision_delivery", decision_id: job.decision_id, kind: job.kind, outcome: "delivered", attempt: job.attempts + 1 }));
+      .bind(Math.floor(Date.now() / 1000), job.outbox_id, lease).run();
+    console.log(JSON.stringify({ event: "decision_delivery", decision_id: job.decision_id, kind: job.kind, outcome: "delivered", attempt: job.attempts }));
   } catch (error) {
     const detail = providerError(error);
-    const failed = job.attempts + 1 >= 12;
+    const failed = job.attempts >= maxAttempts;
     await env.DB.prepare("UPDATE decision_outbox SET state=?,available_at=?,lease_id=NULL,lease_until=NULL,last_error_code=? WHERE outbox_id=? AND lease_id=?")
-      .bind(failed ? "failed" : "queued", now + retryDelay(job.attempts + 1), detail.code, job.outbox_id, lease).run();
-    console.error(JSON.stringify({ event: "decision_delivery", decision_id: job.decision_id, kind: job.kind, outcome: failed ? "failed" : "retry", attempt: job.attempts + 1, error_code: detail.code, error_message: detail.message }));
+      .bind(failed ? "failed" : "queued", Math.floor(Date.now() / 1000) + retryDelay(job.attempts), detail.code, job.outbox_id, lease).run();
+    console.error(JSON.stringify({ event: "decision_delivery", decision_id: job.decision_id, kind: job.kind, outcome: failed ? "failed" : "retry", attempt: job.attempts, error_code: detail.code, error_message: detail.message }));
   }
 }
 
 export async function drain(env: Env): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
-  const jobs = await env.DB.prepare("SELECT outbox_id,decision_id,kind,attempts FROM decision_outbox WHERE state='queued' AND available_at<=? AND (lease_until IS NULL OR lease_until<?) ORDER BY available_at LIMIT 20").bind(now, now).all<OutboxRow>();
-  for (const job of jobs.results) await deliver(env, job);
+  const exhausted = await env.DB.prepare("UPDATE decision_outbox SET state='failed',lease_id=NULL,lease_until=NULL,last_error_code='attempts_exhausted' WHERE state='queued' AND attempts>=? AND (lease_until IS NULL OR lease_until<=?) RETURNING decision_id,kind,attempts")
+    .bind(maxAttempts, now).all<{ decision_id: string; kind: string; attempts: number }>();
+  for (const job of exhausted.results) console.error(JSON.stringify({ event: "decision_delivery", decision_id: job.decision_id, kind: job.kind, outcome: "failed", attempt: job.attempts, error_code: "attempts_exhausted" }));
+  const jobs = await env.DB.prepare("SELECT outbox_id FROM decision_outbox WHERE state='queued' AND attempts<? AND available_at<=? AND (lease_until IS NULL OR lease_until<=?) ORDER BY available_at LIMIT 20")
+    .bind(maxAttempts, now, now).all<{ outbox_id: string }>();
+  for (const job of jobs.results) await deliver(env, job.outbox_id);
 }
 
 export async function maintain(env: Env): Promise<void> {

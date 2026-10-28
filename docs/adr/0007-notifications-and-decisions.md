@@ -61,6 +61,9 @@ receipt. Provider failures remain observable via the private message status API.
 Atomic conditional lease claims prevent concurrent drains normally sending the same
 job. Notifications retries at most eight attempts until its absolute expiry;
 Decisions retries at most twelve attempts with a bounded exponential backoff.
+The atomic lease claim returns the authoritative attempt count; queue scans carry
+only job IDs so a stale scan cannot reset the budget. An expired final-attempt
+lease becomes a terminal `attempts_exhausted` result instead of sending again.
 Scheduling remains a simple D1 outbox at this workload instead of introducing a
 second queue/state system. Workers may crash after a downstream send and before
 recording acknowledgement, so delivery is **at least once**, not exactly once.
