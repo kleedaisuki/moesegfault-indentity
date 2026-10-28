@@ -1,0 +1,4 @@
+interface:
+  display_name: "moeSegFault Decisions"
+  short_description: "Integrate decision links and private response callbacks"
+  default_prompt: "Use $moesegfault-decisions to integrate this service with moeSegFault decision emails and private callbacks."
