@@ -238,3 +238,19 @@ check, not both `lint` and `typecheck`: these scripts currently invoke the same 
 By default cargo-deny fetches the configured remote advisory database on each check;
 we do not set `--offline` or `--disable-fetch`.
 [Cargo-deny advisory database freshness](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html)
+
+Hosted run `40648902822` exposed why dependency caches and validated outputs need
+different lifecycles: a newly disclosed Rust advisory failed the job after expensive
+tool/dependency installation, so the former success-only combined cache saved none
+of that reusable work. Tool binaries now use a separate exact version/toolchain key
+without `Cargo.lock`; Cargo registry and target data use a lockfile key with a Rust
+version restore prefix. Both dependency caches use explicit restore/save actions and
+save on failed checks when restoration succeeded and the exact key was absent.
+Both pinned tools are installed before advisory validation, so an advisory failure
+does not freeze an incomplete tool cache. Saving binaries additionally requires both
+tool installation steps to succeed; a failed tool installation cannot publish the
+immutable tools key. Missing binaries are still installed on
+subsequent runs; Cargo fingerprints validate reused target data. Only reproducible
+dependencies are cached this way: the validated Worker output remains success-only,
+and current advisories remain unconditional. Failed quality gates can reuse work,
+never certify a release.

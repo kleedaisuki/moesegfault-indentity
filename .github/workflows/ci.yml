@@ -50,28 +50,34 @@ jobs:
         with:
           path: crates/identity-worker/build
           key: ${{ runner.os }}-identity-validated-v1-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'deny.toml', '.github/workflows/ci.yml') }}
-      - name: Cache Cargo data / 缓存 Cargo 数据
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore pinned Cargo tools
+        id: cargo-tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-rust-1.88.0-tools-wb0.8.5-deny0.20.2-v1
+      - name: Restore Cargo data / 恢复 Cargo 数据
+        id: cargo-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-1.88.0-wb0.8.5-deny0.20.2-
+          key: ${{ runner.os }}-rust-1.88.0-data-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rust-1.88.0-data-v1-
       - name: Confirm pinned toolchain / 确认固定工具链
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: rustc --version && cargo --version && rustup target list --installed | grep -Fx wasm32-unknown-unknown
       - name: Install pinned advisory checker
+        id: cargo-advisory-tool
         run: command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.20.2 --locked
+      - name: Install pinned build tool
+        id: cargo-build-tool
+        run: command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
       - name: Check current Rust advisories
         run: cargo deny --locked check advisories
-      - name: Install pinned build tool
-        if: steps.identity-build.outputs.cache-hit != 'true'
-        run: |
-          command -v worker-build >/dev/null || cargo install worker-build --version 0.8.5 --locked
       - name: Format, lint, and test / 格式、静态检查与测试
         if: steps.identity-build.outputs.cache-hit != 'true'
         run: |
@@ -90,6 +96,22 @@ jobs:
         if: steps.identity-build.outputs.cache-hit != 'true'
         working-directory: crates/identity-worker
         run: worker-build --release
+      - name: Save pinned Cargo tools even after failed checks
+        if: always() && steps.cargo-tools.outcome == 'success' && steps.cargo-tools.outputs.cache-hit != 'true' && steps.cargo-advisory-tool.outcome == 'success' && steps.cargo-build-tool.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ steps.cargo-tools.outputs.cache-primary-key }}
+      - name: Save Cargo data even after failed checks
+        if: always() && steps.cargo-data.outcome == 'success' && steps.cargo-data.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-data.outputs.cache-primary-key }}
       - name: Upload identity artifact / 上传 Identity 制品
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

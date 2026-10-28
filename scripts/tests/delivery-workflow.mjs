@@ -115,7 +115,7 @@ test('validated-result caches require exact complete-input keys; deployment pack
 });
 
 test('dynamic Rust advisories remain fresh on validated source-cache hits', () => {
-  const cargoCache = workflow.match(/      - name: Cache Cargo data[^\n]*\n([\s\S]*?)(?=      - name:)/)?.[1];
+  const cargoCache = workflow.match(/      - name: Restore Cargo data[^\n]*\n([\s\S]*?)(?=      - name:)/)?.[1];
   assert.ok(cargoCache);
   assert.doesNotMatch(cargoCache, /if:/);
   for (const name of ['Install pinned advisory checker', 'Check current Rust advisories']) {
@@ -127,4 +127,28 @@ test('dynamic Rust advisories remain fresh on validated source-cache hits', () =
   assert.match(workflow, /cargo deny --locked check bans licenses sources/);
   assert.match(workflow, /npm run typecheck --workspace=@moesegfault\/\$\{\{ matrix\.app \}\}/);
   assert.doesNotMatch(workflow, /npm run lint --workspace=@moesegfault\/\$\{\{ matrix\.app \}\}/);
+});
+
+test('dependency caches survive failed gates without certifying failed build artifacts', () => {
+  for (const id of ['cargo-tools', 'cargo-data']) {
+    const restore = workflow.match(new RegExp(`id: ${id}\\n([\\s\\S]*?)(?=      - name:)`))?.[1];
+    assert.ok(restore, id);
+    assert.match(restore, /uses: actions\/cache\/restore@/);
+    const save = workflow.match(new RegExp(`if: always\\(\\) && steps\\.${id}\\.outcome == 'success' && steps\\.${id}\\.outputs\\.cache-hit != 'true'[^\\n]*\\n([\\s\\S]*?)(?=      - name:)`))?.[1];
+    assert.ok(save, id);
+    assert.match(save, /uses: actions\/cache\/save@/);
+    assert.ok(save.includes(`key: \${{ steps.${id}.outputs.cache-primary-key }}`));
+    if (id === 'cargo-tools') assert.doesNotMatch(restore, /Cargo\.lock|restore-keys:/);
+    else assert.match(restore, /restore-keys:/);
+  }
+  const validatedBuild = workflow.match(/id: identity-build\n([\s\S]*?)(?=      - name:)/)?.[1];
+  assert.ok(validatedBuild);
+  assert.match(validatedBuild, /uses: actions\/cache@/);
+  assert.doesNotMatch(validatedBuild, /always\(\)|actions\/cache\/save@/);
+  const toolSaveCondition = workflow.match(/- name: Save pinned Cargo tools[^\n]*\n        if: ([^\n]+)/)?.[1];
+  assert.ok(toolSaveCondition);
+  for (const id of ['cargo-advisory-tool', 'cargo-build-tool']) {
+    assert.ok(toolSaveCondition.includes(`steps.${id}.outcome == 'success'`));
+  }
+  assert.ok(workflow.indexOf('id: cargo-build-tool') < workflow.indexOf('- name: Check current Rust advisories'));
 });
