@@ -118,6 +118,23 @@ async function review(prompt, authenticate) {
   if (clientName) assert.ok(text.includes(clientName), 'Consent must display the registered client name');
   assert.ok(text.includes('openid profile offline_access'), 'Consent must show the requested scopes');
 }
+async function cleanupBrowserSession() {
+  const cookies = await page.context().cookies(issuer);
+  sessionCookie ??= cookies.find(cookie => cookie.name === '__Host-identity_session')?.value;
+  if (!sessionCookie) return undefined;
+  const headers = {cookie: `__Host-identity_session=${sessionCookie}`};
+  const response = await fetch(`${issuer}/v1/me`, {headers});
+  if (response.status === 401) return 401;
+  const current = await responseJson(response);
+  const sessions = await responseJson(await fetch(`${issuer}/v1/principals/self/sessions`, {headers}));
+  const currentSession = sessions.items.find(item => item.is_current && !item.revoked_at);
+  assert.ok(currentSession, 'The authenticated fixture must have a current session to sign out');
+  const signedOut = await fetch(`${issuer}/v1/principals/self/sessions/${currentSession.session_id}`, {
+    method: 'DELETE', headers: {...headers, origin: loginOrigin, 'x-moesegfault-csrf': current.csrf_token, 'idempotency-key': crypto.randomUUID()},
+  });
+  assert.equal(signedOut.status, 204, 'The staging browser session must sign out');
+  return signedOut.status;
+}
 try {
   if (generatedFixture) fixture = await createDeviceJourneyFixture();
   clientId ??= fixture?.clientId;
@@ -202,19 +219,11 @@ try {
   if (persisted?.refresh_token) {
     await fetch(metadata.revocation_endpoint, {method: 'POST', body: new URLSearchParams({client_id: clientId, token: persisted.refresh_token, token_type_hint: 'refresh_token'}), redirect: 'error'}).catch(() => {});
   }
-  if (browser && page) {
-    const cookies = await page.context().cookies(issuer).catch(() => []);
-    sessionCookie ??= cookies.find(cookie => cookie.name === '__Host-identity_session')?.value;
-    if (sessionCookie) {
-      const current = await responseJson(await fetch(`${issuer}/v1/me`, {headers: {cookie: `__Host-identity_session=${sessionCookie}`}})).catch(() => undefined);
-      if (current?.csrf_token) {
-        const sessions = await responseJson(await fetch(`${issuer}/v1/principals/self/sessions`, {headers: {cookie: `__Host-identity_session=${sessionCookie}`}})).catch(() => undefined);
-        const currentSession = sessions?.items.find(item => item.is_current && !item.revoked_at);
-        if (currentSession) {
-          const signedOut = await fetch(`${issuer}/v1/principals/self/sessions/${currentSession.session_id}`, {method: 'DELETE', headers: {cookie: `__Host-identity_session=${sessionCookie}`, origin: loginOrigin, 'x-moesegfault-csrf': current.csrf_token, 'idempotency-key': crypto.randomUUID()}}).catch(() => undefined);
-          summary.session_cleanup_status = signedOut?.status;
-        }
-      }
+  if (page) {
+    try { summary.session_cleanup_status = await cleanupBrowserSession(); }
+    catch (error) {
+      summary.outcome = 'failed';
+      summary.session_cleanup_error = error instanceof Error ? error.message : String(error);
     }
   }
   await browser?.close();
@@ -232,5 +241,6 @@ try {
   summary.completed_at = new Date().toISOString();
   await writeFile(join(state, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, {mode: 0o600});
   process.stdout.write(`Staging journey evidence: ${join(state, 'summary.json')}\n`);
-  if (summary.cleanup_error) throw new Error(summary.cleanup_error);
+  const cleanupError = summary.cleanup_error ?? summary.session_cleanup_error;
+  if (cleanupError) throw new Error(cleanupError);
 }
