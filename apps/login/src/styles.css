@@ -86,3 +86,11 @@
 .support-details summary { cursor: pointer; }
 .support-details pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; }
 .support-details summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+
+@layer components {
+.device-details { display: grid; gap: .5rem; margin-block: 1.5rem; }
+.device-details dt { color: var(--muted); font-size: .875rem; }
+.device-details dd { margin: 0 0 .75rem; overflow-wrap: anywhere; }
+.device-details small { display: block; font-size: .75rem; opacity: .75; }
+.device-code { font-size: 1.5rem; font-weight: 700; letter-spacing: .12em; }
+}

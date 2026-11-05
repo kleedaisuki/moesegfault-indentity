@@ -32,6 +32,27 @@ The complete registration form is shown immediately: profile, optional avatar, e
 
 Avatar selection previews the actual square prepared image; replace or skip actions do not upload. Selection and discard lock together during signup. Pending, replaced, discarded and uploaded previews release their object URLs.
 
+## Device authorization / 设备码登录
+
+`/device` accepts a manually entered code; `/device?user_code=…` preselects the
+public code without approving it. The browser reads the current session, then
+calls `POST /v1/oauth/device-authorizations/lookup` with session CSRF. Review shows
+the application name and ID, account, canonical code, requested scopes, and expiry.
+Only the explicit allow or deny buttons call the sibling `/decision` endpoint.
+The browser never polls the token endpoint or receives the device client's tokens.
+
+An anonymous visitor follows the existing password/Passkey sign-in flow. The public
+`device_user_code` query preserves this intent across sign-in, signup and recovery;
+after authentication the browser returns to `/device` for a separate decision.
+Passkey signup and recovery continue to show recovery codes before that return.
+No device code or credential is added to browser storage. The device client keeps
+its separate, secret `device_code`; it must never send that value to this SPA.
+
+Language changes preserve the current code or review without replaying requests.
+Approval refreshes the current principal and CSRF so another tab cannot silently
+change the account displayed for consent. Request errors retain server descriptions
+and correlation IDs; an expired request directs the user to restart on the device.
+
 ## 内联 Passkey 再认证
 
 增加/撤销 Passkey、建立/解除 Identity Binding 和轮换恢复码等高风险操作以服务端的近期认证策略为准。首次请求如果返回结构化错误 `reauthentication_required`，前端会在当前页面中：

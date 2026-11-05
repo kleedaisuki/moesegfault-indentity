@@ -9,6 +9,15 @@ export { normalizeLocale };
 
 const messages = {
   "zh-CN": {
+    deviceAccountChanged: "登录账号已变化，请重新核对这次请求，再选择是否允许。", deviceDeciding: "正在提交你的选择…",
+    deviceTitle: "登录另一台设备", deviceIntro: "输入设备上显示的代码，再确认要登录的应用。",
+    deviceCode: "设备上显示的代码", deviceContinue: "继续设备登录", deviceLoading: "正在查找请求…",
+    deviceSignIn: "请先确认你的身份", deviceSignInIntro: "使用密码或 Passkey 登录后，你仍需要明确确认这次设备登录。",
+    deviceReview: "确认是你发起的登录", deviceApplication: "应用", deviceAccount: "登录账号", deviceScope: "申请的权限", deviceExpires: "过期时间",
+    deviceWarning: "请核对代码与你正在使用的设备一致。不要批准他人通过邮件、聊天或电话发来的登录请求。",
+    deviceApprove: "确认并允许登录", deviceDeny: "拒绝登录", deviceApproved: "设备登录已获准", deviceDenied: "已拒绝这次登录",
+    deviceReturn: "可以关闭此页面，回到发起登录的设备。", deviceExpired: "设备登录请求已过期", deviceRestart: "请在原设备重新发起登录，获取新代码。", deviceFailed: "设备登录没有完成",
+
     mobileInternationalPrefix: "国际号码请使用 +国家区号，不支持 00 前缀；请同时核对所选国家或地区。",
     mobileInvalid: "请输入有效的数字号码，含国家区号最多 15 位；支持空格、括号和连字符。", mobileCountryMismatch: "号码的 +国家区号与所选国家或地区不符。请调整区号选择，或输入该地区的本国号码。",
     signupContextChanged: "浏览器验证状态已变化，请在此页重新发送验证码后再确认。已填资料和头像预览会保留。",
@@ -55,6 +64,15 @@ const messages = {
     verifyEmailTitle: "验证你的邮箱", verifyEmailIntro: "账号已创建。请输入邮件中的 8 位验证码，然后再继续。", verificationCode: "8 位验证码", confirmEmail: "确认邮箱", resendCode: "重新发送", sendingCode: "正在发送验证码…", verifyingCode: "正在验证…", codeSent: "验证码已发送至", codeSendFailed: "验证码暂未发出，可以重试。", codeInvalid: "验证没有完成，请检查验证码或重新发送。", emailVerified: "邮箱已验证！",
   },
   en: {
+    deviceAccountChanged: "The signed-in account changed. Review this request again before deciding.", deviceDeciding: "Submitting your choice…",
+    deviceTitle: "Sign in on another device", deviceIntro: "Enter the code shown on your device, then review the application requesting access.",
+    deviceCode: "Code shown on your device", deviceContinue: "Continue device sign-in", deviceLoading: "Finding your request…",
+    deviceSignIn: "Confirm your identity first", deviceSignInIntro: "Sign in with your password or passkey. You will still explicitly confirm the device request afterwards.",
+    deviceReview: "Confirm you started this sign-in", deviceApplication: "Application", deviceAccount: "Account", deviceScope: "Requested permissions", deviceExpires: "Expires at",
+    deviceWarning: "Check that this code matches the device you are using. Do not approve requests sent by someone else through email, chat or phone.",
+    deviceApprove: "Confirm and allow sign-in", deviceDeny: "Deny sign-in", deviceApproved: "Device sign-in approved", deviceDenied: "Sign-in denied",
+    deviceReturn: "You can close this page and return to the device that started sign-in.", deviceExpired: "Device request expired", deviceRestart: "Start sign-in again on the original device to get a new code.", deviceFailed: "Device sign-in was not completed",
+
     mobileInternationalPrefix: "Use +country code for an international number, not a 00 prefix. Check the selected country or region too.",
     mobileInvalid: "Enter a valid numeric number, at most 15 digits including the country code. Spaces, parentheses and hyphens are accepted.", mobileCountryMismatch: "The number's +country code does not match the selected country or region. Change the selection or enter its national number.",
     signupContextChanged: "Your browser verification context changed. Resend the code on this page, then confirm it. Your draft and avatar preview are kept.",
@@ -101,6 +119,15 @@ const messages = {
     verifyEmailTitle: "Verify your email", verifyEmailIntro: "Your account is ready. Enter the eight-digit code from the email before continuing.", verificationCode: "8-digit verification code", confirmEmail: "Verify email", resendCode: "Resend code", sendingCode: "Sending verification code…", verifyingCode: "Verifying…", codeSent: "Verification code sent to", codeSendFailed: "The code could not be sent yet. You can retry.", codeInvalid: "Verification wasn't completed. Check the code or send a new one.", emailVerified: "Email verified!",
   },
   ja: {
+    deviceAccountChanged: "ログイン中のアカウントが変わりました。リクエストを再確認してから許可するか選んでください。", deviceDeciding: "選択を送信中…",
+    deviceTitle: "別の端末でログイン", deviceIntro: "端末に表示されたコードを入力し、ログイン先のアプリを確認してください。",
+    deviceCode: "端末に表示されたコード", deviceContinue: "端末のログインを続ける", deviceLoading: "リクエストを確認中…",
+    deviceSignIn: "先に本人確認をしてください", deviceSignInIntro: "パスワードまたは Passkey でログインした後、この端末のリクエストを明示的に確認します。",
+    deviceReview: "自分が開始したログインか確認", deviceApplication: "アプリ", deviceAccount: "アカウント", deviceScope: "要求された権限", deviceExpires: "有効期限",
+    deviceWarning: "コードが使用中の端末と一致するか確認してください。他人がメール・チャット・電話で送ったリクエストを承認しないでください。",
+    deviceApprove: "確認してログインを許可", deviceDeny: "ログインを拒否", deviceApproved: "端末のログインを許可しました", deviceDenied: "ログインを拒否しました",
+    deviceReturn: "このページを閉じて、ログインを開始した端末に戻ってください。", deviceExpired: "端末のリクエストが期限切れです", deviceRestart: "元の端末でログインをやり直し、新しいコードを取得してください。", deviceFailed: "端末のログインが完了しませんでした",
+
     mobileInternationalPrefix: "国際番号は 00 ではなく +国番号で入力し、選択した国・地域も確認してください。",
     mobileInvalid: "国番号を含めて15桁以内の数字で入力してください。空白・括弧・ハイフンを使用できます。", mobileCountryMismatch: "+国番号と選択した国・地域が一致しません。国番号の選択を変更するか、その地域の国内番号を入力してください。",
     signupContextChanged: "ブラウザーの確認状態が変わりました。このページでコードを再送信して確認してください。入力内容とアバタープレビューは保持されます。",

@@ -1,3 +1,4 @@
+import { renderDeviceAuthorization } from "./device";
 import { PageLifecycle } from "./page-lifecycle";
 import { ApiError, createIdempotencyKey, IdentityApiClient } from "./api/client";
 import type { Account, Identifier, PasswordAuthenticationInput, PasswordSessionResult, RegistrationResult, RegistrationStart } from "./api/types";
@@ -11,7 +12,7 @@ import { el, errorMessage, field, replace, setButtonBusy, statePanel } from "./u
 import { icon, iconLabel } from "./ui/icons";
 import { pageHeading } from "./ui/shell";
 import { InlineStepUpCoordinator } from "./step-up";
-import { authRouteHref, resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
+import { authRouteHref, deviceContinuation, resolveAccountReturnUri, validateAccountReturnUri } from "./environment";
 import { avatarFilePicker } from "./ui/file-picker";
 import { createRegistrationEmailVerifier } from "./registration-email";
 import { failureReceipt, type SupportOperation } from "./support-receipt";
@@ -33,6 +34,7 @@ export async function renderPage(route: AppRoute, main: HTMLElement, api: Identi
   replace(main, statePanel("loading", "…", t("signingIn")), accountManagement && accountReturnLink(t));
   try {
     if (route === "/register") renderRegister(main, api, signal, t, lifecycle);
+    else if (route === "/device") await renderDeviceAuthorization(main, api, signal, lifecycle);
     else if (route === "/recovery") renderRecovery(main, api, signal, t, lifecycle);
     else if (route === "/passkey/enroll") await renderPasskeyEnrollment(main, api, signal, t);
     else if (route === "/recovery-codes/rotate") await renderRecoveryCodeRotation(main, api, signal, t);
@@ -323,7 +325,7 @@ function renderRecovery(main: HTMLElement, api: IdentityApiClient, signal: Abort
       const result = await api.completeRecovery(started.transaction_id, started.csrf_token, credential, signal);
       if (signal.aborted) return;
       rememberCsrf(result.csrf_token);
-      const show = () => replace(main, pageHeading("RECOVERY_COMPLETE", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t));
+      const show = () => replace(main, pageHeading("RECOVERY_COMPLETE", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t, deviceContinuation(location)));
       lifecycle.present(show); show();
     } catch (error) {
       recovering = false;
@@ -488,7 +490,7 @@ function recoveryCodePanel(codes: string[], t: (key: MessageKey) => string, next
   const download = el("button", { className: "button button--secondary", attrs: { type: "button" } }, t("downloadCodes"));
   download.addEventListener("click", () => { const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain;charset=utf-8" })); const anchor = el("a", { attrs: { href: url, download: "moesegfault-recovery-codes.txt" } }); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0); });
   const proceed = nextUri
-    ? el("button", { className: "button button--primary", attrs: { type: "button" }, on: { click: () => navigateToHttpUrl(nextUri) } }, t("continueAccount"))
+    ? el("button", { className: "button button--primary", attrs: { type: "button" }, on: { click: () => navigateToHttpUrl(nextUri) } }, t(deviceContinuation(location) && nextUri === deviceContinuation(location) ? "deviceContinue" : "continueAccount"))
     : accountLink(t);
   return el("section", { className: "moe-glass auth-card recovery-codes", attrs: { "aria-labelledby": "recovery-code-title" } }, el("h2", { attrs: { id: "recovery-code-title" } }, t("codesTitle")), el("p", { className: "hint" }, t("codesIntro")), el("ul", {}, ...codes.map((code) => el("li", {}, el("code", {}, code)))), el("div", { className: "button-pair" }, copy, download), showProceed && proceed);
 }
@@ -544,7 +546,7 @@ function stepUpCoordinator(api: IdentityApiClient, expectedPrincipalId: string):
 
 function finishAuthentication(main: HTMLElement, result: PasswordSessionResult, t: (key: MessageKey) => string, returnUri?: string): void {
   rememberCsrf(result.csrf_token);
-  const destination = postAuthenticationDestination(result, returnUri);
+  const destination = postAuthenticationDestination(result, deviceContinuation(location) ?? returnUri);
   if (destination) { navigateToHttpUrl(destination); return; }
   replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t)));
 }
@@ -555,8 +557,9 @@ export function postAuthenticationDestination(result: Pick<PasswordSessionResult
 }
 function finishRegistration(main: HTMLElement, result: RegistrationResult, t: (key: MessageKey) => string): void {
   rememberCsrf(result.csrf_token);
-  if (result.recovery_codes?.length) { replace(main, pageHeading("ACCOUNT_CREATED", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t, result.next_uri)); return; }
-  if (result.next_uri) { navigateToHttpUrl(result.next_uri); return; }
+  const nextUri = result.next_uri ?? deviceContinuation(location);
+  if (result.recovery_codes?.length) { replace(main, pageHeading("ACCOUNT_CREATED", t("success"), t("signedIn")), recoveryCodePanel(result.recovery_codes, t, nextUri)); return; }
+  if (nextUri) { navigateToHttpUrl(nextUri); return; }
   replace(main, statePanel("success", t("success"), t("signedIn"), accountLink(t)));
 }
 /** Offer explicit secondary navigation without starting or implying cancellation of a credential mutation. */

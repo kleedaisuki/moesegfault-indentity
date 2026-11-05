@@ -330,3 +330,15 @@ export interface AccountSessionEnvelope {
   csrf_token: string;
   csrf_expires_at: string;
 }
+
+/** Authenticated, display-only view of a pending RFC 8628 request. */
+export interface DeviceAuthorization {
+  user_code: string;
+  client_id: string;
+  client_name: string;
+  scope: string;
+  expires_in: number;
+  state: "pending";
+}
+
+export type DeviceDecision = "approve" | "deny";

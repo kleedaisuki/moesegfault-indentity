@@ -63,6 +63,7 @@ function routeTitle(route: ReturnType<typeof resolveRoute>, locale: DisplayPrefe
   return {
     "/register": translate(locale, "register"),
     "/login": translate(locale, "login"),
+    "/device": translate(locale, "deviceTitle"),
     "/recovery": translate(locale, "recovery"),
     "/passkey/enroll": translate(locale, "enrollTitle"),
     "/recovery-codes/rotate": translate(locale, "rotateTitle"),

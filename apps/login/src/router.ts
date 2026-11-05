@@ -1,6 +1,7 @@
 /** 应用支持的静态路由。Static routes supported by the application. */
 export type AppRoute =
   | "/register"
+  | "/device"
   | "/login"
   | "/recovery"
   | "/passkey/enroll"
@@ -9,6 +10,7 @@ export type AppRoute =
 const routes = new Set<AppRoute>([
   "/register",
   "/login",
+  "/device",
   "/recovery",
   "/passkey/enroll",
   "/recovery-codes/rotate",

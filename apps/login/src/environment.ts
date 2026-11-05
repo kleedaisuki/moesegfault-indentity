@@ -40,8 +40,22 @@ export function resolveAccountReturnUri(location: Pick<Location, "hostname" | "h
   return validateAccountReturnUri(location) ?? resolveAccountOrigin(location);
 }
 
-/** Build internal auth links carrying only the validated paired-Account destination, never secrets. */
+/** Build auth links carrying a public device code or a validated paired-Account destination. */
 export function authRouteHref(route: "/login" | "/register" | "/recovery" | "/passkey/enroll", location?: Pick<Location, "hostname" | "href">): string {
+  const code = location && deviceUserCode(location);
+  if (code) return `${route}?${new URLSearchParams({ device_user_code: code })}`;
   const returnUri = location && validateAccountReturnUri(location);
   return returnUri ? `${route}?${new URLSearchParams({ return_uri: returnUri })}` : route;
+}
+
+/** A public device user code preserves intent across sign-in, registration and recovery. */
+export function deviceUserCode(location: Pick<Location, "href">): string | undefined {
+  const url = new URL(location.href);
+  return (url.pathname.replace(/\/$/u, "") === "/device" ? url.searchParams.get("user_code") : url.searchParams.get("device_user_code"))?.trim() || undefined;
+}
+
+/** Always returns to this Login origin; device codes never supply a redirect destination. */
+export function deviceContinuation(location: Pick<Location, "href">): string | undefined {
+  const code = deviceUserCode(location);
+  return code ? new URL(`/device?${new URLSearchParams({ user_code: code })}`, location.href).href : undefined;
 }
