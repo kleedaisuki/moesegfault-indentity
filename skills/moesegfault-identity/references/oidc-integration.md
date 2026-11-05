@@ -7,6 +7,7 @@ Read this reference for an external web application, native application, resourc
 The checked-in implementation currently advertises:
 
 - Authorization Code with S256 PKCE;
+- opt-in RFC 8628 device authorization for human-operated CLI/headless clients; see [device login](device-login.md);
 - rotating refresh tokens when `offline_access` is granted;
 - confidential clients authenticated with `private_key_jwt`;
 - pre-registered native clients using token endpoint authentication method `none`;
@@ -17,7 +18,7 @@ It does **not** currently route a client-credentials grant, token introspection,
 
 The current signer also fixes an access token's `aud` to its OAuth `client_id`. A separate API audience or one shared by several clients is not an implemented integration surface, even though the data model contains audience-related fields. If the consuming architecture needs that shape, report a provider-contract gap; never compensate by accepting the wrong audience.
 
-Re-check live discovery before relying on this snapshot. When changing Identity itself, compare discovery, [`../../../openapi/identity.yaml`](../../../openapi/identity.yaml), the route table in [`../../../crates/identity-worker/src/lib.rs`](../../../crates/identity-worker/src/lib.rs), and OAuth handlers in [`../../../crates/identity-worker/src/oauth.rs`](../../../crates/identity-worker/src/oauth.rs).
+Re-check live discovery before relying on this snapshot. When changing Identity itself, compare discovery, [`openapi/identity.yaml`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/openapi/identity.yaml), the route table in [`crates/identity-worker/src/lib.rs`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/crates/identity-worker/src/lib.rs), and OAuth handlers in [`crates/identity-worker/src/oauth.rs`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/crates/identity-worker/src/oauth.rs).
 
 ## Registration contract
 
@@ -33,7 +34,7 @@ Request a reviewed registration from the Identity deployment owner. Supply:
 | Sector | A deliberate pairwise-subject sector; coordinate related clients rather than joining accounts later by email |
 | Client key | Public JWK and `kid` for confidential clients; the private key never leaves the client backend |
 
-Registration is deployment-owned D1/configuration data. There is no supported self-service registration endpoint or checked-in registration CLI. Do not fabricate one-off SQL as an application integration step; route provisioning through the reviewed deployment workflow described in [`../../../docs/configuration.md`](../../../docs/configuration.md).
+Registration is deployment-owned D1/configuration data. There is no supported self-service registration endpoint. The Identity repository has a create-only migration generator, not a runtime registration API. Do not fabricate one-off SQL as an application integration step; route provisioning through the reviewed deployment workflow described in [`docs/configuration.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/configuration.md).
 
 ## Web/BFF login
 
@@ -63,7 +64,7 @@ Use the same authorization-code and PKCE validation, but open the system browser
 
 ## `private_key_jwt`
 
-For each token or revocation request, create a new short-lived assertion signed by the registered client key:
+For each device-authorization start, token, or revocation request, create a new short-lived assertion signed by the registered client key:
 
 ```json
 {
@@ -84,7 +85,7 @@ Send it as `client_assertion` with:
 client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
 ```
 
-Use only an algorithm registered for that client. Keep assertion lifetime at or below five minutes and never reuse `jti`. The current server authenticates revocation requests against the token-endpoint audience too; use the exact behavior verified from the handler until this becomes explicit in the public contract.
+Use only an algorithm registered for that client. Keep assertion lifetime at or below five minutes and never reuse `jti`. Device-authorization start uses the exact discovered `device_authorization_endpoint` audience. Token polling and revocation use the token-endpoint audience; use the exact behavior verified from the handler until this becomes explicit in the public contract.
 
 ## Access-token validation
 

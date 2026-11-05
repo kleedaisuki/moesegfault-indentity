@@ -21,7 +21,7 @@ first-party Workers ──private binding── notifications.moesegfault.dev
 
 | 单元 / Unit | 职责 / Responsibility |
 | --- | --- |
-| `apps/login` | 注册、密码/Passkey 登录、恢复与 OAuth 恢复；不再承载账号管理 / registration, authentication, recovery, OAuth resume |
+| `apps/login` | 注册、密码/Passkey 登录、恢复、OAuth 恢复与设备授权确认 / registration, authentication, recovery, OAuth resume and device approval |
 | `apps/account` | 资料、头像、联系方式、偏好、凭据、会话与应用授权体验 / modern self-service account experience |
 | `apps/notifications` | 第一方服务共享发件身份、品牌邮件和持久重试 / private first-party notification API, sender registry, branded email and durable delivery |
 | `apps/decisions` | 邮件决策链接、表单确认与持久服务回调 / capability links, explicit form confirmation and registered-service callbacks |
@@ -30,7 +30,7 @@ first-party Workers ──private binding── notifications.moesegfault.dev
 | `openapi/identity.yaml` | OpenAPI 3.1.1 唯一 HTTP 契约 / canonical HTTP contract |
 | `migrations` | 只向前的 D1 模式演进 / forward-only D1 schema |
 
-其他服务不“调用 Login 来验证 Token”。它们通过 `/.well-known/openid-configuration` 接入 Identity 的 OpenID Connect（OIDC），使用 Authorization Code + Proof Key for Code Exchange（PKCE）；浏览器应用优先采用前端专属后端（Backend for Frontend, BFF），令牌不进入浏览器存储。
+其他服务不“调用 Login 来验证 Token”。它们通过 `/.well-known/openid-configuration` 接入 Identity 的 OpenID Connect（OIDC），使用 Authorization Code + Proof Key for Code Exchange（PKCE）；CLI 或无回调的远端服务可选择显式启用的设备授权（Device Authorization，RFC 8628），由另一台设备的浏览器确认；浏览器应用优先采用前端专属后端（Backend for Frontend, BFF），令牌不进入浏览器存储。
 
 平台设计见 [`ADR-0003`](docs/adr/0003-account-platform-redesign.md)，Cloudflare 邮箱验证与持久投递边界见 [`ADR-0004`](docs/adr/0004-email-verification.md)；视觉与同好社区研究见 [`docs/research/moesegfault-style-and-community-identity.md`](docs/research/moesegfault-style-and-community-identity.md)。
 
@@ -55,7 +55,7 @@ use Identity step-up in the consuming service for high-risk account changes.
 
 | Skill | Use when |
 | --- | --- |
-| [`moesegfault-identity`](skills/moesegfault-identity/SKILL.md) | Integrating human sign-in, OIDC, or first-party account APIs |
+| [`moesegfault-identity`](skills/moesegfault-identity/SKILL.md) | Integrating human sign-in, OIDC, remote/CLI device login, or first-party account APIs |
 | [`moesegfault-notifications`](skills/moesegfault-notifications/SKILL.md) | Sending branded transactional email from a trusted first-party service |
 | [`moesegfault-decisions`](skills/moesegfault-decisions/SKILL.md) | Collecting an explicitly confirmed email-linked response and delivering it to the owning service |
 
@@ -63,11 +63,13 @@ From the consuming service's repository, install just the required skills with t
 [Skills CLI](https://github.com/vercel-labs/skills#install-a-skill):
 
 ```bash
+npx skills add kleedaisuki/moesegfault-indentity --skill moesegfault-identity
+# Add these only when the consuming service needs the corresponding platform API.
 npx skills add kleedaisuki/moesegfault-indentity --skill moesegfault-notifications --skill moesegfault-decisions
 ```
 
 Alternatively, copy the corresponding skill directory into your agent's configured
-skill directory. The Notifications and Decisions directories are self-contained;
+skill directory. All three skill directories are self-contained;
 they do not require this repository's build tools or an installed sibling skill.
 Start with `SKILL.md`, then load only the reference for the current integration
 step. Examples cover environment-matched private bindings, stable retries, and
@@ -80,6 +82,7 @@ callback ownership; installing instructions does not provision runtime access.
 - Username、必填 Email、可选国际手机号（独立国家区号并规范化为 E.164）。
 - 通过 Cloudflare Email Service 发送 8 位邮箱验证码；D1 加密投递箱在供应商暂时不可用时异步重试。
 - Unicode display name、avatar、bio、status、pronouns、favorite character、interest tags 与隐私可见性。
+- CLI 与无回调远端服务支持 RFC 8628 设备码登录；浏览器核对应用与码后明确批准，令牌由发起端保存，客户端需按环境显式登记启用。 / Opt-in device-code login for human-operated remote clients; see the [portable integration reference](skills/moesegfault-identity/references/device-login.md).
 - 密码与 Passkey 并存；认证方法参考（Authentication Method Reference, AMR）和多因素认证（Multi-Factor Authentication, MFA）模型可扩展至 TOTP 等方式。
 - 简体中文、English、日本語；`light`、`dark`、`system` 三态主题。
 - 320px 起的响应式布局、安全区、动态视口和内置浏览器降级；无法使用 Passkey 时密码路径仍可用。

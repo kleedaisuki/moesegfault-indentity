@@ -96,7 +96,7 @@ D1 迁移的公共源文件位于 `migrations/`，发行方专属客户端配置
 | `EMAIL_OUTBOX_KEY_V1` | XChaCha20-Poly1305 的 32 字节 base64url 密钥，用于加密持久投递箱中的收件人与验证码；当前行以 `key_revision=1` 标识。 | 新 revision 必须先部署并用于新写入；V1 保留到所有 V1 行进入 `delivered`/`dead` 且密文被清除。 |
 | `RECOVERY_CODE_PEPPER` | Recovery code HMAC-SHA-256。 | 使所有既有 recovery code 失效。 |
 | `REGISTRATION_PEPPER` | 一次性注册 capability HMAC。 | 使未消费 capability 失效。 |
-| `AUTHORIZATION_CODE_PEPPER` | Authorization Code digest。 | 使未消费 code 失效。 |
+| `AUTHORIZATION_CODE_PEPPER` | Authorization Code 与域分离的 device/user-code keyed digests。 / Code digests, including domain-separated device/user codes. | 使未消费 authorization/device code 失效。 / Invalidates unconsumed authorization and device codes. |
 | `REFRESH_TOKEN_PEPPER` | Refresh Token digest。 | 使全部 refresh family 失效。 |
 | `PAIRWISE_SUBJECT_KEY` | 按 sector 派生 OIDC pairwise `sub`。 | 必须版本化；盲目轮换会改变客户端看到的 `sub`。 |
 | `BINDING_PKCE_AEAD_KEY_V1` | 短期加密 provider PKCE verifier。 | 旧 key 保留到所有相关 transaction 过期并清理。 |
@@ -112,6 +112,12 @@ D1 迁移的公共源文件位于 `migrations/`，发行方专属客户端配置
 - 单例 `registration_policy`（初始迁移为 `invite_only`，`0003_open_registration.sql` 将当前部署基线改为 `open`）及一次性 capability；
 - `binding_providers` 及 provider client metadata；
 - `oauth_clients`、public keys、redirect/post-logout URI 与 scope grants；
+  `oauth_clients.device_authorization_enabled` is an explicit deployment-owned opt-in
+  (default false). Device-only clients may have no redirect; enabling the grant does
+  not change their scopes, subject sector, or token audience. Device grants use a
+  ten-minute lifetime and initial five-second polling interval; these are protocol
+  policy constants, not new environment variables. Apply
+  `0012_device_authorization.sql` before deploying the device-enabled Worker. See [ADR-0008](adr/0008-device-authorization.md).
 - `signing_keys` 的公开 JWK 和状态（私钥仍在 Secret）。
 
 新应用的部署管理客户端清单、当前实际 OIDC 能力和只生成非秘密 SQL 的迁移工具见 [应用接入指南](integrating-app.md)。生成器不直接写 D1；评审后的迁移由现有发布流程应用。/ For a new application, use the [integration guide](integrating-app.md); its generator only prepares a public-metadata migration for review and never writes D1 itself.
