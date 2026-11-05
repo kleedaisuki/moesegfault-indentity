@@ -187,3 +187,19 @@ describe("IdentityApiClient", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("device authorization client", () => {
+  it("normalizes OAuth errors while preserving descriptions and diagnostic correlation", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response(JSON.stringify({ error: "expired_token", error_description: "Start again on the device", correlation_id: "device-correlation" }), {
+      status: 400, headers: { "content-type": "application/json" },
+    }));
+    const client = new IdentityApiClient("https://identity.moesegfault.dev", fetchMock);
+    await expect(client.lookupDeviceAuthorization("ABCD-EFGH", { csrfToken: "session", idempotencyKey: "lookup" })).rejects.toMatchObject({
+      status: 400, message: "Start again on the device", correlationId: "device-correlation", problem: { error_code: "expired_token" },
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("https://identity.moesegfault.dev/v1/oauth/device-authorizations/lookup");
+    expect(JSON.parse(String(init?.body))).toEqual({ user_code: "ABCD-EFGH" });
+    expect(new Headers(init?.headers).get("x-moesegfault-csrf")).toBe("session");
+  });
+});

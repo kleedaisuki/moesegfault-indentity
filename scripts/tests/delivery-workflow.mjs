@@ -197,9 +197,14 @@ test('failed manual staging journeys expose bounded delivery metadata independen
 test('bootstrap offers an explicit staging acceptance fast path without infrastructure or app deployment', () => {
   const bootstrap = readFileSync(new URL('../../.github/workflows/bootstrap.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(bootstrap, /platform_journey:\n[\s\S]*?default: skip\n        options: \[skip, http, mailbox\]/);
-  assert.match(bootstrap, /if: inputs.platform_journey == 'skip' \|\| inputs.target == 'staging'/);
+  assert.match(bootstrap, /if: \(inputs.platform_journey == 'skip' && !inputs.device_journey\) \|\| inputs.target == 'staging'/);
   assert.match(bootstrap, /concurrency: \{group: 'cloudflare-\$\{\{ inputs.target \}\}', cancel-in-progress: false\}/);
-  assert.match(bootstrap, /if: inputs.platform_journey == 'skip'\n        run: scripts\/bootstrap-cloudflare\.sh/);
+  assert.match(bootstrap, /if: inputs.platform_journey == 'skip' && !inputs.device_journey\n        run: scripts\/bootstrap-cloudflare\.sh/);
+  assert.match(bootstrap, /device_journey:\n[\s\S]*?type: boolean\n        required: true\n        default: false/);
+  assert.match(bootstrap, /id: device-journey\n        if: inputs.target == 'staging' && inputs.device_journey/);
+  assert.match(bootstrap, /if: always\(\) && steps.device-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.device_journey/);
+  assert.match(bootstrap, /run: node scripts\/lib\/device-journey-fixture\.mjs --cleanup/);
+  assert.match(bootstrap, /name: device-journey-\$\{\{ github.run_id \}\}\n          include-hidden-files: true\n          path: \|\n            \.temp\/device-staging-\*\/summary.json\n            \.temp\/device-staging-\*\/\*.png/);
   assert.match(bootstrap, /node --test scripts\/tests\/platform-journey-http\.mjs\n          node scripts\/tests\/platform-journey\.mjs/);
   const journey = bootstrap.match(/id: platform-journey\n([\s\S]*?)(?=      - name:)/)?.[1];
   assert.ok(journey);

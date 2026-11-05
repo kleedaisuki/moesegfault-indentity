@@ -8,8 +8,8 @@ Identity owns principals, identifiers, contacts, authenticators, identity sessio
 
 The repository clients are implementation examples, not a package:
 
-- [`../../../apps/login/src/api/client.ts`](../../../apps/login/src/api/client.ts) covers browser context, password/passkey ceremonies, recovery, session/authenticator/binding management, and OAuth resume.
-- [`../../../apps/account/src/api/client.ts`](../../../apps/account/src/api/client.ts) covers profile, avatar, contact verification, preferences, credentials, sessions, and connected applications.
+- [`apps/login/src/api/client.ts`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/apps/login/src/api/client.ts) covers browser context, password/passkey ceremonies, recovery, session/authenticator/binding management, and OAuth resume.
+- [`apps/account/src/api/client.ts`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/apps/account/src/api/client.ts) covers profile, avatar, contact verification, preferences, credentials, sessions, and connected applications.
 
 Extend or refactor the relevant client instead of creating a third subtly different request wrapper.
 
@@ -46,7 +46,7 @@ Use OpenAPI operation IDs and schemas rather than copying endpoint details into 
 | Sessions and connected apps | List/revoke sessions or grants | Revoking a session, grant, refresh family, or current browser cookie has different scope |
 | External identity bindings | List providers/bindings, start server-directed redirect, remove binding | Navigate only to the URL returned by Identity; the callback belongs to Identity |
 
-Before adding a feature, inspect the relevant operations in [`../../../openapi/identity.yaml`](../../../openapi/identity.yaml), then the domain invariants and handler tests. Do not infer a mutation body from a TypeScript view model.
+Before adding a feature, inspect the relevant operations in [`openapi/identity.yaml`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/openapi/identity.yaml), then the domain invariants and handler tests. Do not infer a mutation body from a TypeScript view model.
 
 For the registration/account verification sequence, its ID compatibility rule, and `Contact was not found` triage, read [contact verification](contact-verification.md).
 
@@ -69,6 +69,26 @@ When Identity sends Login an opaque authorization transaction:
 
 The Login JavaScript must never receive or forward the authorization code itself. Identity validates and consumes the resume transaction before redirecting to the relying party's exact registered URI.
 Password and Passkey completions must use the **same absolute issuer-rooted URI contract**. A root-relative `/v1/oauth/.../resume` value is not equivalent: resolving it against `login[-staging].moesegfault.dev` sends the browser to a Login page instead of the Identity Worker and leaves the transaction authenticated but unfinished. Preserve the issuer boundary when changing either ceremony or the Login navigation code; exercise the real OAuth password route in staging after deployment.
+
+## Device authorization inside Login
+
+The device grant is a separate first-party presentation flow, not an opaque
+OAuth authorization-code resume transaction. Open `/device` with an optional
+`user_code` query. Retain the code across ordinary password/Passkey sign-in, then
+bootstrap session/CSRF and call `lookupDeviceAuthorization`. Compare the displayed
+registered client name, code and requested scopes before sending
+`decideDeviceAuthorization` with `approve` or `deny`. Both calls require the Identity
+session cookie and session CSRF; neither carries an OAuth access token. They use
+OAuth JSON errors and the correlation-ID response header rather than Problem
+Details. These endpoints use conditional one-time state changes, not the ordinary
+domain Idempotency-Key wrapper.
+
+Opening a complete verification URL must only pre-fill the code. Never approve
+from a GET, route entry, authentication completion, or background page effect.
+A signed-out person returns to the pending device confirmation after sign-in,
+not to the Account landing page. Show approval success as a request to return to
+the initiating device, not as proof the remote application persisted its tokens.
+The remote caller polls the public device grant; it never calls these cookie APIs.
 
 ## Errors and retries
 
@@ -93,4 +113,4 @@ For a changed capability, cover the success path plus the boundary it relies on:
 - response parsing with problem JSON and non-JSON proxy failure;
 - OAuth resume as top-level navigation, not `fetch`.
 
-Use the repository's existing Vitest suites and run only the affected workspace first. OpenAPI changes also require `npm run lint:openapi`; cross-surface contract changes require the broader repository checks documented in [`../../../README.md`](../../../README.md).
+Use the repository's existing Vitest suites and run only the affected workspace first. OpenAPI changes also require `npm run lint:openapi`; cross-surface contract changes require the broader repository checks documented in [`README.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/README.md).

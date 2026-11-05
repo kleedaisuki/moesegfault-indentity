@@ -9,6 +9,7 @@ This is the **implemented** first-release contract, not the larger target in ADR
 | --- | --- | --- | --- |
 | Server-backed web app | `confidential` | `private_key_jwt` (`RS256` or `ES256`) | Backend for Frontend (BFF): hold tokens server-side and issue a host-only, HttpOnly, Secure, SameSite application cookie. |
 | Installed desktop/mobile app | `native` | `none` plus mandatory PKCE S256 | External system browser; exact claimed HTTPS redirect or a registered loopback URI. |
+| Human-operated CLI / headless remote service | `native`, or `confidential` for a key-holding backend; explicit `device_authorization_enabled: true` | `none` or `private_key_jwt` respectively | RFC 8628 device authorization; separate browser approval; tokens stay on the initiating host/backend. |
 | Browser-only SPA | **Not yet registered as a client type** | — | Put a BFF in front of it; do not assume `client_secret_basic`, token CORS, or browser token storage is supported. |
 
 There is **no dynamic client registration or ordinary user-facing client-management API**. A deployment operator must review and provision the D1 client rows before an app can sign in. Migrations create scopes but **no application client**. This is the largest current onboarding friction; it is not solved by discovering the issuer alone. Do not insert keys or clients through an ordinary account session. See [configuration ownership](configuration.md#bootstrap-与部署配置--bootstrap-and-deployment-owned-configuration).
@@ -36,6 +37,8 @@ Give the Identity operator the following non-secret manifest. The operator shoul
 }
 ```
 
+Device login is opt-in through manifest `device_authorization_enabled: true` (default false). Device-only clients may use `redirect_uris: []`; a client also using authorization-code login still needs registered redirects. This does not enable machine credentials or broaden token audiences.
+
 Required D1 rows are `oauth_clients`, `oauth_redirect_uris`, `oauth_client_scopes`, and, for confidential clients, `oauth_client_keys`; optional logout redirects go in `oauth_post_logout_redirect_uris`. The `oauth_scopes` table already contains the implemented `openid`, `profile`, and `offline_access` grants. Use an exact redirect URI including its scheme, case, path, and query; no wildcard. A native loopback redirect may use `native_loopback_any_port` only for `http://127.0.0.1/...` or `http://[::1]/...`, with the same path and query. For other native redirects, register exact strings. Choose and retain the sector deliberately: changing it changes the app-visible pairwise `sub` and can sever accounts.
 
 管理员应写入 `oauth_clients`、`oauth_redirect_uris`、`oauth_client_scopes`，机密客户端还需 `oauth_client_keys`；登出回调可选。redirect URI 须逐字匹配，不接受通配符。`sector_identifier` 一旦改变会改变应用看到的成对 `sub`，不可当作普通配置重命名。
@@ -62,7 +65,7 @@ The generated migration writes the reviewed client facts **and** an immutable `i
 
 ```bash
 npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc \
-  --command="SELECT client_id,client_type,token_endpoint_auth_method,sector_identifier,state FROM oauth_clients WHERE client_id='new-app-staging'"
+  --command="SELECT client_id,client_type,token_endpoint_auth_method,device_authorization_enabled,sector_identifier,state FROM oauth_clients WHERE client_id='new-app-staging'"
 npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc \
   --command="SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id='new-app-staging'"
 npx --no-install wrangler d1 execute moesegfault-identity-staging --remote --config wrangler.identity.jsonc \
@@ -92,12 +95,83 @@ Identity owns human authentication and the registered-client authorization mecha
 
 For a loopback HTML result, bundle a static self-contained success/error page, avoid external resources and reflected callback/error fields, send `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and apply a restrictive Content Security Policy. Provide a clear return-to-application instruction; keep detailed diagnostics in the application's private diagnostic channel, never in a page URL. Existing Identity clients are not required to adopt a new redirect or completion API. Updating Identity does not replace a completion page embedded in an already-installed native binary.
 
+## Device-code login / 设备码登录
+
+For a CLI or a human-operated remote moeSegFault service that cannot receive a
+browser callback, use RFC 8628 instead of forwarding Identity passwords or exposing
+a temporary callback port. Keep ordinary callback clients on Authorization Code +
+PKCE. The installable [device-login reference](../skills/moesegfault-identity/references/device-login.md)
+is self-contained: registration manifest, HTTP forms, polling state machine,
+confidential assertion audiences, token verification, refresh, and acceptance.
+
+远端终端展示设备登录码，用户在另一台设备的浏览器中登录并核对应用与码，再明确批准或拒绝。
+这是用户委托登录，不是机器身份、SSH 登录，也不授予所有服务的 API 权限。
+
+1. Require discovery's exact issuer, `device_authorization_endpoint` and
+   `urn:ietf:params:oauth:grant-type:device_code` in `grant_types_supported`.
+2. POST form `client_id` and optional `scope` to that endpoint. Native clients use
+   no secret; confidential clients authenticate with a fresh `private_key_jwt` whose
+   audience is the device endpoint (not the token endpoint).
+3. Retain `device_code` privately; display `user_code` and `verification_uri`.
+   The optional `verification_uri_complete` pre-fills the code but never approves it.
+4. Poll the token endpoint with form `grant_type=urn:ietf:params:oauth:grant-type:device_code`,
+   `client_id` and `device_code`, waiting the returned `interval` first. Continue on
+   `authorization_pending`; increase the interval by five seconds on `slow_down`.
+   Stop on denial, expiry, cancellation, or other terminal errors. Use a fresh
+   token-endpoint-audience assertion per confidential-client poll.
+5. Validate the returned ID token's RS256 signature, exact issuer/client audience,
+   expiry, issuance time, subject, and `token_use=id` before persisting tokens and creating the
+   application's local session. Device ID tokens have no nonce. Refresh/revocation
+   and access-token audiences are the same as for callback login.
+
+The repository includes a public-native-client helper, also shipped inside the
+Identity skill. Run from the repository root (Node.js 24+):
+
+```bash
+node scripts/device-login.mjs \
+  --issuer https://identity-staging.moesegfault.dev \
+  --client-id YOUR_REGISTERED_DEVICE_CLIENT \
+  --scope 'openid profile offline_access' \
+  --output .temp/device-tokens.json
+```
+
+The output must be a new protected local file; the helper does not overwrite an
+existing token set. The consuming app still owns protected long-term storage,
+refresh serialization, local session creation and business permissions. Do not
+commit tokens or report success before validation/persistence. A browser approval
+page cannot certify the remote service's local-session result.
+
+The new `oauth_clients.device_authorization_enabled` column defaults to false so
+existing registrations and callback flows are unchanged. Apply `0012_device_authorization.sql`
+before deploying the new Worker, then provision/review each intended client in its
+environment overlay. Discovery advertises server capability, not client enablement.
+Do not claim a deployed feature from this document alone. The rationale and
+cross-device phishing trade-off are in [ADR-0008](adr/0008-device-authorization.md).
+
+### Focused local acceptance / 增量验收
+
+```bash
+npm run test:device-login
+npm run test:device-authorization
+# Optional real Chromium Login → Identity → remote token journey; localhost:5173 must be free.
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.temp/browsers" npx playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.temp/browsers" npm run test:device-authorization -- --browser
+```
+
+The first command checks the portable consumer; the second uses the real local
+Worker and isolated D1 for approval/denial, polling, expiry, client authentication,
+one-time consumption, refresh, and callback compatibility. The browser option
+adds the Login UI and password sign-in to that same journey. These are focused
+local acceptance commands, not new CI quality gates or a production rollout.
+After the protocol checks pass, use `--browser-only` instead of `--browser` to
+iterate on the browser journey without repeating the protocol cases.
+
 ## What is and is not available / 当前能力边界
 
 | Surface / 能力 | Implemented today / 当前实现 |
 | --- | --- |
 | Discovery / JWKS | Issuer-specific metadata, RS256 signing JWKS; require issuance configuration. |
-| OAuth | Authorization Code + PKCE S256; refresh rotation; revocation; RP-initiated logout; `private_key_jwt` or native `none`. |
+| OAuth | Authorization Code + PKCE S256; opt-in RFC 8628 device authorization; refresh rotation; revocation; RP-initiated logout; `private_key_jwt` or native `none`. |
 | Advertised scopes | `openid`, `profile`, `offline_access`. The latter controls refresh issuance; `profile` currently yields `name` and `preferred_username`. |
 | UserInfo | `sub`, and only with `profile`, `name` and `preferred_username`. Do not design onboarding around `email` or `phone` claims yet, even though their scope rows exist in D1. |
 | Not implemented | Dynamic registration, client credentials, introspection, generic consent UI, account API bearer scopes, `email`/`phone` claims, browser-only OAuth client type, `client_secret_*` authentication. |
@@ -114,6 +188,7 @@ For the existing first-party Account contact UI, `/v1/me/contacts` responses use
 - [ ] Staging discovery returns 200, its exact issuer and every endpoint URL use staging, and JWKS contains the signing `kid`.
 - [ ] Operator verifies client, redirect, key, and scope rows; unknown client or unregistered redirect fails without forwarding the browser to an attacker URL.
 - [ ] A login round-trip validates `state`, `iss`, PKCE, and ID token `nonce`; repeat exchange of the same code fails.
+- [ ] If device login is enabled: remote start → separate browser authentication → compare client/code → explicit approval → validated/persisted token set creates the correct local session; denial, expiry, slow-down, wrong-client and code replay paths behave correctly.
 - [ ] A new refresh token replaces the old value atomically; old-token replay is treated as session compromise.
 - [ ] App session remains HttpOnly and host-only; no Identity tokens appear in browser storage, logs, URLs, or frontend bundles.
 - [ ] Production uses distinct issuer, client ID, keys, and redirect URI; no staging credential is reused.

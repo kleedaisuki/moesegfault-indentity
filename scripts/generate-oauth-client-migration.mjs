@@ -11,7 +11,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const allowedFields = new Set(['client_id', 'display_name', 'client_type', 'token_endpoint_auth_method', 'sector_identifier', 'subject_salt_revision', 'redirect_uris', 'post_logout_redirect_uris', 'scopes', 'public_jwks']);
+const allowedFields = new Set(['client_id', 'display_name', 'client_type', 'token_endpoint_auth_method', 'sector_identifier', 'subject_salt_revision', 'redirect_uris', 'post_logout_redirect_uris', 'scopes', 'public_jwks', 'device_authorization_enabled']);
 const allowedScopes = new Set(['openid', 'profile', 'offline_access']);
 const allowedJwkFields = new Set(['kty', 'crv', 'n', 'e', 'x', 'y', 'alg', 'use', 'kid']);
 
@@ -79,13 +79,14 @@ function publicJwk(jwk) {
 export function renderClientMigration(manifest) {
   requireField(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'manifest must be an object');
   requireField(Object.keys(manifest).every((key) => allowedFields.has(key)), 'unknown manifest field');
-  const { client_id: id, display_name: name, client_type: type, token_endpoint_auth_method: auth, sector_identifier: sector, subject_salt_revision: revision, redirect_uris: redirects, post_logout_redirect_uris: logout = [], scopes, public_jwks: keys = [] } = manifest;
+  const { client_id: id, display_name: name, client_type: type, token_endpoint_auth_method: auth, sector_identifier: sector, subject_salt_revision: revision, redirect_uris: redirects = [], device_authorization_enabled: deviceEnabled = false, post_logout_redirect_uris: logout = [], scopes, public_jwks: keys = [] } = manifest;
   requireField(typeof id === 'string' && /^[A-Za-z0-9._~-]{1,128}$/.test(id), 'invalid client_id');
   requireField(typeof name === 'string' && name.length >= 1 && name.length <= 100, 'invalid display_name');
   requireField((type === 'confidential' && auth === 'private_key_jwt') || (type === 'native' && auth === 'none'), 'client type and auth method mismatch');
   requireField(typeof sector === 'string' && sector.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(sector), 'sector_identifier must be a lowercase DNS name');
   requireField(Number.isSafeInteger(revision) && revision > 0, 'invalid subject_salt_revision');
-  requireField(Array.isArray(redirects) && redirects.length > 0 && redirects.length <= 20, '1–20 redirect URIs required');
+  requireField(typeof deviceEnabled === 'boolean', 'device_authorization_enabled must be boolean');
+  requireField(Array.isArray(redirects) && (deviceEnabled || redirects.length > 0) && redirects.length <= 20, '1–20 redirect URIs required unless device authorization is enabled');
   requireField(Array.isArray(logout) && logout.length <= 20, 'invalid post-logout redirect list');
   requireField(Array.isArray(scopes) && scopes.length > 0 && scopes.length <= 3 && scopes[0] === 'openid' && scopes.every((scope) => allowedScopes.has(scope)) && new Set(scopes).size === scopes.length, 'scopes must start with openid and use implemented grants only');
   requireField(Array.isArray(keys) && ((type === 'native' && keys.length === 0) || (type === 'confidential' && keys.length >= 1 && keys.length <= 5)), 'wrong public key count');
@@ -105,7 +106,7 @@ export function renderClientMigration(manifest) {
   const statements = [
     '-- Deployment-owned OAuth client; public metadata only. / 部署所有的 OAuth 客户端，仅含公开元数据。',
     '-- Apply as a reviewed forward-only D1 migration, not as separate CLI statements. / 作为已评审的只向前 D1 migration 应用，不得逐条执行。',
-    `INSERT INTO oauth_clients(client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,subject_salt_revision,state,created_at,updated_at) VALUES(${sql(id)},${sql(name)},${sql(type)},${sql(auth)},${sql(sector)},${revision},'enabled',${now},${now});`,
+    `INSERT INTO oauth_clients(client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,subject_salt_revision,device_authorization_enabled,state,created_at,updated_at) VALUES(${sql(id)},${sql(name)},${sql(type)},${sql(auth)},${sql(sector)},${revision},${deviceEnabled ? 1 : 0},'enabled',${now},${now});`,
   ];
   for (const { uri, mode } of parsedRedirects) statements.push(`INSERT INTO oauth_redirect_uris(redirect_uri_id,client_id,redirect_uri,match_mode,created_at) VALUES(${sql(uuidv7())},${sql(id)},${sql(uri)},${sql(mode)},${now});`);
   for (const { uri } of parsedLogout) statements.push(`INSERT INTO oauth_post_logout_redirect_uris(post_logout_redirect_uri_id,client_id,redirect_uri,created_at) VALUES(${sql(uuidv7())},${sql(id)},${sql(uri)},${now});`);

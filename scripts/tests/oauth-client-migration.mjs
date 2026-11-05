@@ -151,3 +151,17 @@ test('environment streams register only their own native client in isolated D1',
     assert.deepEqual(redirects, [{ redirect_uri: 'http://127.0.0.1/callback', match_mode: 'native_loopback_any_port' }]);
   }
 });
+
+test('device-only registration needs explicit opt-in and retains a stable pairwise sector', () => {
+  const manifest = { ...confidential(), client_type: 'native', token_endpoint_auth_method: 'none', public_jwks: [], redirect_uris: [], device_authorization_enabled: true };
+  const sql = renderClientMigration(manifest);
+  assert.match(sql, /subject_salt_revision,device_authorization_enabled,state/);
+  assert.match(sql, /,1,1,'enabled'/);
+  assert.doesNotMatch(sql, /UPDATE oauth_clients/);
+  assert.doesNotMatch(sql, /INSERT INTO oauth_redirect_uris/);
+  assert.match(sql, /app\.example\.com/);
+  manifest.device_authorization_enabled = false;
+  assert.throws(() => renderClientMigration(manifest), /redirect URIs required/);
+  manifest.device_authorization_enabled = 'true';
+  assert.throws(() => renderClientMigration(manifest), /must be boolean/);
+});

@@ -9,6 +9,8 @@ mod api;
 mod binding_repository;
 mod bindings;
 mod ceremony_state;
+mod device;
+mod device_repository;
 mod email_verification;
 mod guard;
 mod idempotency;
@@ -324,6 +326,9 @@ async fn route_request(request: Request, env: Env) -> Result<Response> {
                 SecretResult
             ),
         )
+        .post_async("/v1/oauth/device-authorizations", device::start)
+        .post_async("/v1/oauth/device-authorizations/lookup", device::lookup)
+        .post_async("/v1/oauth/device-authorizations/decision", device::decide)
         .post_async("/v1/oauth/tokens", oauth::token)
         .get_async("/v1/oauth/authorizations", oauth::authorize)
         .get_async(
@@ -402,6 +407,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _context: ScheduleConte
     let now = (Date::now().as_millis() / 1_000) as i64;
     match env.d1("DB") {
         Ok(db) => {
+            if let Err(error) = device_repository::purge_expired(&db, now, 500).await {
+                console_error!("device_authorization_expiry_purge_failed error={error}");
+            }
             if let Err(error) = idempotency::purge_expired(&db, now, 500).await {
                 console_error!("idempotency_expiry_purge_failed error={error}");
             }

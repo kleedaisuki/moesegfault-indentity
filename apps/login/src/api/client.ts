@@ -1,5 +1,7 @@
 import { apiOrigin, parseProblem } from "@moesegfault/frontend-shared";
 import type {
+  DeviceAuthorization,
+  DeviceDecision,
   RegistrationEmailAuthorizationContext,
   AuthenticationResult,
   AuthenticationStart,
@@ -207,6 +209,20 @@ export class IdentityApiClient {
     return this.#request<AccountSessionEnvelope>("/v1/principals/self", { method: "GET", signal });
   }
 
+  /** Resolve a public user code without approving the requesting device. */
+  public lookupDeviceAuthorization(userCode: string, controls: MutationControls) {
+    return this.#request<DeviceAuthorization>("/v1/oauth/device-authorizations/lookup", {
+      method: "POST", body: { user_code: userCode }, ...controls,
+    });
+  }
+
+  /** Record only the decision explicitly selected in the browser. */
+  public decideDeviceAuthorization(userCode: string, decision: DeviceDecision, controls: MutationControls) {
+    return this.#request<{ state: "approved" | "denied" }>("/v1/oauth/device-authorizations/decision", {
+      method: "POST", body: { user_code: userCode, decision }, ...controls,
+    });
+  }
+
   /** 修改可展示资料。Updates display-only profile fields. */
   public updatePrincipal(input: { display_name: string }, controls: MutationControls) {
     return this.#request<Account>("/v1/principals/self", { method: "PATCH", contentType: "application/merge-patch+json", body: input, ...controls });
@@ -353,7 +369,12 @@ export class IdentityApiClient {
 
     const correlationId = response.headers.get("x-moesegfault-correlation-id") ?? undefined;
     if (!response.ok) {
-      throw new ApiError(response.status, await parseProblem<ProblemDetails>(response), correlationId);
+      const problem = await parseProblem<ProblemDetails & { error?: string; error_description?: string }>(response);
+      const details = problem?.error ? {
+        ...problem, type: `urn:moesegfault:problem:${problem.error}`, title: problem.error,
+        status: response.status, detail: problem.error_description, error_code: problem.error,
+      } : problem;
+      throw new ApiError(response.status, details, correlationId);
     }
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;

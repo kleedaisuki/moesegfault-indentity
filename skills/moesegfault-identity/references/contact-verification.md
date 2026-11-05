@@ -10,7 +10,7 @@ Use only for Login/Account registration verification, account contact management
 4. Submit the eight-digit code to `completeContactVerification` at `/v1/me/contacts/{contact_id}/verification-transactions/{transaction_id}/completion`, with the same session/security headers and JSON `{ "code": "12345678" }`. The code here is an example shape, never a test or production value. A successful `200` returns the verified contact.
 5. For a resend, start a new transaction when allowed and replace the active `transaction_id`; the old challenge is cancelled. Never retry account registration to resend mail.
 
-The documented endpoint contract is [`../../../openapi/identity.yaml`](../../../openapi/identity.yaml), operation IDs `listMyContacts`, `createContactVerification`, and `completeContactVerification`. The state-machine rationale is [`../../../docs/adr/0004-email-verification.md`](../../../docs/adr/0004-email-verification.md); registration presentation is [`../../../docs/adr/0005-registration-email-avatar-and-anonymous-account.md`](../../../docs/adr/0005-registration-email-avatar-and-anonymous-account.md).
+The documented endpoint contract is [`openapi/identity.yaml`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/openapi/identity.yaml), operation IDs `listMyContacts`, `createContactVerification`, and `completeContactVerification`. The state-machine rationale is [`docs/adr/0004-email-verification.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0004-email-verification.md); registration presentation is [`docs/adr/0005-registration-email-avatar-and-anonymous-account.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0005-registration-email-avatar-and-anonymous-account.md).
 
 ## Diagnose `Contact was not found`
 
@@ -25,7 +25,7 @@ The start handler returns this 404 before generating a code or queuing mail when
 | 503 on mobile | Mobile verification delivery is not implemented | Do not present an SMS completion flow |
 | Invalid/expired/wrong code | Check active transaction ID, expiry, last resend, and error code without logging the code | Keep the form, allow bounded resend when eligible |
 
-The start handler's ownership query is in [`../../../crates/identity-worker/src/account.rs`](../../../crates/identity-worker/src/account.rs) (`start_contact_verification`). Completion also scopes the transaction by contact and principal. Do not turn a contact-not-found error into a generic provider failure, and do not expose whether another user's contact exists.
+The start handler's ownership query is in [`crates/identity-worker/src/account.rs`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/crates/identity-worker/src/account.rs) (`start_contact_verification`). Completion also scopes the transaction by contact and principal. Do not turn a contact-not-found error into a generic provider failure, and do not expose whether another user's contact exists.
 
 ## Invariants and tests
 

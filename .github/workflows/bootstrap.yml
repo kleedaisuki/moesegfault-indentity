@@ -15,6 +15,11 @@ on:
         required: true
         default: skip
         options: [skip, http, mailbox]
+      device_journey:
+        description: Run the real device-code CLI and browser journey against deployed staging
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +31,7 @@ concurrency:
 jobs:
   bootstrap:
     name: Reconcile Cloudflare infrastructure
-    if: inputs.platform_journey == 'skip' || inputs.target == 'staging'
+    if: (inputs.platform_journey == 'skip' && !inputs.device_journey) || inputs.target == 'staging'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     environment: cloudflare-${{ inputs.target }}
@@ -48,9 +53,41 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked tooling / 安装锁定工具
         run: npm ci --ignore-scripts
+      - name: Select one staging acceptance journey
+        if: inputs.device_journey
+        run: test '${{ inputs.target }}' = staging && test '${{ inputs.platform_journey }}' = skip
       - name: Reconcile data, domains, and email / 调和数据、域名与邮件
-        if: inputs.platform_journey == 'skip'
+        if: inputs.platform_journey == 'skip' && !inputs.device_journey
         run: scripts/bootstrap-cloudflare.sh "${{ inputs.target }}"
+      - name: Install the device journey browser
+        if: inputs.target == 'staging' && inputs.device_journey
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.temp/browsers
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Verify remote device login through the real browser and CLI
+        id: device-journey
+        if: inputs.target == 'staging' && inputs.device_journey
+        timeout-minutes: 10
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.temp/browsers
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/device-journey.mjs
+      - name: Remove owned staging device credentials and protocol state
+        if: always() && steps.device-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.device_journey
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/lib/device-journey-fixture.mjs --cleanup
+      - name: Save device journey evidence without credential files
+        if: always() && steps.device-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.device_journey
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: device-journey-${{ github.run_id }}
+          include-hidden-files: true
+          path: |
+            .temp/device-staging-*/summary.json
+            .temp/device-staging-*/*.png
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Validate the staging journey helpers and fixture
         if: inputs.target == 'staging' && inputs.platform_journey != 'skip'
         run: |

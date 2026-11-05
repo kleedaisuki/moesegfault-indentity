@@ -9,14 +9,14 @@ Create a short, reviewable integration record in the application's own repositor
 | Decision | Record |
 | --- | --- |
 | Environment pair | Fixed Identity issuer and application origin for local, staging, and production separately |
-| Caller | Web BFF/confidential, installed native/public, or resource service; do not label an SPA confidential |
+| Caller | Web BFF/confidential, installed native/public, human-operated remote/device client, or resource service; do not label an SPA confidential |
 | Registration | Reviewed `client_id`, client type, authentication method, public JWK/`kid` if confidential, exact login and post-logout URIs, allowed scopes, pairwise-subject sector |
 | User key | `(issuer, sub)`; define how existing product accounts map or migrate without joining by mutable email |
 | Token custody | Server-side store for BFF; platform-protected store for native; browser holds only its local application session |
 | Authorization | Product-local roles/policy, with required token scopes and the exact accepted audience documented per route |
 | Lifecycle | Login transaction lifetime, refresh serialization and atomic replacement, local logout, optional Identity logout, error telemetry |
 
-Do not copy example IDs, secrets, issuer URLs, or redirects into production. Registration is deployment-owned D1 data; schema migrations alone do not provision an application client. Use the manifest, reviewed provisioning handoff, and environment acceptance checklist in [`../../../docs/integrating-app.md`](../../../docs/integrating-app.md), with configuration ownership in [`../../../docs/configuration.md`](../../../docs/configuration.md). Put reviewed client SQL in `migrations/environments/staging/` or `migrations/environments/production/`, never the shared migration root: `scripts/prepare-migrations.mjs <target>` composes shared history plus the selected overlay before D1 apply. A deployment must verify the client exists in its intended D1 only, not infer registration from a manifest or generator output. If registration is absent, deliver the registration request and application-side code/configuration separately rather than fabricating a working client. Local `.dev.vars.example` has `OAUTH_ENABLED=false`: enabling OAuth and creating a local client are explicit setup steps, not evidence that login works out of the box.
+Do not copy example IDs, secrets, issuer URLs, or redirects into production. Registration is deployment-owned D1 data; schema migrations alone do not provision an application client. Use the manifest, reviewed provisioning handoff, and environment acceptance checklist in [`docs/integrating-app.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/integrating-app.md), with configuration ownership in [`docs/configuration.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/configuration.md). Put reviewed client SQL in `migrations/environments/staging/` or `migrations/environments/production/`, never the shared migration root: `scripts/prepare-migrations.mjs <target>` composes shared history plus the selected overlay before D1 apply. A deployment must verify the client exists in its intended D1 only, not infer registration from a manifest or generator output. If registration is absent, deliver the registration request and application-side code/configuration separately rather than fabricating a working client. Local `.dev.vars.example` has `OAUTH_ENABLED=false`: enabling OAuth and creating a local client are explicit setup steps, not evidence that login works out of the box.
 
 ## Choose the architecture by what must be protected
 
@@ -30,17 +30,21 @@ Account APIs are cookie/CSRF-bound first-party operations, not resource endpoint
 
 Register a public/native client and use the system browser with PKCE. Prefer a platform-bound HTTPS callback; use a loopback callback only where registered and supported. Store refresh material in platform-protected storage, not a bundled secret or ordinary app preferences.
 
+### Human-operated CLI or remote service
+
+Use [device-code login](device-login.md) when the initiating device cannot receive a browser callback. Register `device_authorization_enabled: true` explicitly; a device-only client may use `redirect_uris: []`. Keep device codes and token sets on the initiating process/backend, and bind the pending attempt to the correct local user. Browser approval alone does not establish a successful application session: validate and persist the returned token set first. This is not unattended machine authentication.
+
 ### Resource service
 
 The current access-token `aud` is the OAuth `client_id`, not a configurable API identifier. A resource service may accept a token only if **that exact client ID is its intended audience** and it can enforce signature, issuer, time, `token_use=access`, and scopes. If several clients need one independently addressed API, do not relax audience checks: raise a provider capability decision for a resource audience/token-exchange design.
 
 ### Machine workload
 
-No advertised `client_credentials` grant or introspection endpoint exists. Do not repurpose human refresh tokens. Treat workload identity as a separate design and provisioning request rather than a client-configuration trick.
+No advertised `client_credentials` grant or introspection endpoint exists. Independent workload identity needs a separate design and provisioning contract. Human-approved `offline_access` may support a service acting in the authorizing user's context in the background; it is still delegated human authority, not a way to impersonate a machine or unrelated users.
 
 ## Implementation slice and acceptance evidence
 
-Begin with one product login and one protected route, not every account feature. Use an established framework OIDC/JOSE client. Configure exact issuer, discovery, redirect, client authentication, PKCE, state, nonce, callback `iss`, ID-token verification, and local session creation. Then add the lifecycle needed by this product: refresh if `offline_access` is justified; otherwise short local sessions; local logout and optional RP-initiated Identity logout.
+Begin with one product login and one protected route, not every account feature. Use an established framework OIDC/JOSE client. Configure exact issuer, discovery, client authentication, ID-token verification, and local session creation. For callback login, also configure redirect, PKCE, state, nonce, and callback `iss`; for device login, configure bounded serialized polling and explicit browser approval. Then add the lifecycle needed by this product: refresh if `offline_access` is justified; otherwise short local sessions; local logout and optional RP-initiated Identity logout.
 
 An integration is not complete merely because the login page opens. Demonstrate:
 
