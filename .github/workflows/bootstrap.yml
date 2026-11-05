@@ -20,6 +20,11 @@ on:
         type: boolean
         required: true
         default: false
+      amail_device_client:
+        description: Enable the existing amail native client's device grant only, without service deployment
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -55,9 +60,17 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Select one staging acceptance journey
         if: inputs.device_journey
-        run: test '${{ inputs.target }}' = staging && test '${{ inputs.platform_journey }}' = skip
+        run: test '${{ inputs.target }}' = staging && test '${{ inputs.platform_journey }}' = skip && test '${{ inputs.amail_device_client }}' != true
+      - name: Select registration-only operation
+        if: inputs.amail_device_client
+        run: test '${{ inputs.platform_journey }}' = skip && test '${{ inputs.device_journey }}' != true
+      - name: Enable only the existing amail client's device grant
+        if: inputs.amail_device_client
+        env:
+          WRANGLER_SEND_METRICS: false
+        run: node scripts/enable-amail-device-client.mjs '${{ inputs.target }}'
       - name: Reconcile data, domains, and email / 调和数据、域名与邮件
-        if: inputs.platform_journey == 'skip' && !inputs.device_journey
+        if: inputs.platform_journey == 'skip' && !inputs.device_journey && !inputs.amail_device_client
         run: scripts/bootstrap-cloudflare.sh "${{ inputs.target }}"
       - name: Install the device journey browser
         if: inputs.target == 'staging' && inputs.device_journey

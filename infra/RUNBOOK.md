@@ -314,3 +314,39 @@ Public driver routes still return 404 without the removed credential. The consum
 small event-ID/hash receipt ledger is no longer pruned after one day: duplicate
 callbacks remain idempotent across asynchronous user response times. Explicit staging
 operator maintenance, not a CI job ending, owns eventual receipt cleanup.
+
+### Enable amail device login without redeploying services
+
+The existing public native clients `amail-cli-staging` and `amail-cli` keep their
+registered sector identifiers, subject-salt revisions, scopes and loopback
+redirects. Environment migration `0013_amail_device_authorization.sql` changes
+only their device-grant opt-in and update time. Do not provision a replacement
+client: that would change the pairwise subject used for Mail ownership.
+
+After reviewing the migration and the registration-only bootstrap path, dispatch
+the reviewed source ref with these inputs:
+
+```bash
+gh workflow run bootstrap.yml --repo kleedaisuki/moesegfault-indentity \
+  --ref "$IDENTITY_REF" -f target=staging -f platform_journey=skip \
+  -f device_journey=false -f amail_device_client=true
+# Complete the actual native amail staging journey before enabling production.
+gh workflow run bootstrap.yml --repo kleedaisuki/moesegfault-indentity \
+  --ref "$IDENTITY_REF" -f target=production -f platform_journey=skip \
+  -f device_journey=false -f amail_device_client=true
+```
+
+This uses the existing environment secrets and deployment lock. The helper checks
+the exact existing client and deployed shared schema, admits no unrelated pending
+migration, applies the normal environment D1 migration stream, and reads back the
+enabled flag plus unchanged client identity/scopes/redirects. An already applied
+migration is read-only verification, not a replay. No Worker, Login, Account,
+Notifications, Decisions, domain, R2 or email resource is redeployed/reconciled.
+Normal release migration application still recognizes the same migration name.
+
+The amail consumer's `scripts/staging_device_journey.mjs` runs its actual native
+executable against the existing protected staging username/password fixture and
+real Login browser. It separately confirms native credential persistence, denial,
+Billing short-code navigation and explicit cancellation, then logs out and revokes
+only its current browser session. Identity's portable-helper fixture journey does
+not replace that consumer-binary acceptance.
