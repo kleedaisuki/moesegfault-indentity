@@ -204,6 +204,7 @@ test('bootstrap offers an explicit staging acceptance fast path without infrastr
   assert.match(bootstrap, /id: device-journey\n        if: inputs.target == 'staging' && inputs.device_journey/);
   assert.match(bootstrap, /if: always\(\) && steps.device-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.device_journey/);
   assert.match(bootstrap, /run: node scripts\/lib\/device-journey-fixture\.mjs --cleanup/);
+  assert.match(bootstrap, /name: device-journey-\$\{\{ github.run_id \}\}\n          include-hidden-files: true\n          path: \|\n            \.temp\/device-staging-\*\/summary.json\n            \.temp\/device-staging-\*\/\*.png/);
   assert.match(bootstrap, /node --test scripts\/tests\/platform-journey-http\.mjs\n          node scripts\/tests\/platform-journey\.mjs/);
   const journey = bootstrap.match(/id: platform-journey\n([\s\S]*?)(?=      - name:)/)?.[1];
   assert.ok(journey);
