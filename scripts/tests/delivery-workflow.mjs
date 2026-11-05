@@ -199,7 +199,7 @@ test('bootstrap offers an explicit staging acceptance fast path without infrastr
   assert.match(bootstrap, /platform_journey:\n[\s\S]*?default: skip\n        options: \[skip, http, mailbox\]/);
   assert.match(bootstrap, /if: \(inputs.platform_journey == 'skip' && !inputs.device_journey\) \|\| inputs.target == 'staging'/);
   assert.match(bootstrap, /concurrency: \{group: 'cloudflare-\$\{\{ inputs.target \}\}', cancel-in-progress: false\}/);
-  assert.match(bootstrap, /if: inputs.platform_journey == 'skip' && !inputs.device_journey\n        run: scripts\/bootstrap-cloudflare\.sh/);
+  assert.match(bootstrap, /if: inputs.platform_journey == 'skip' && !inputs.device_journey && !inputs.amail_device_client\n        run: scripts\/bootstrap-cloudflare\.sh/);
   assert.match(bootstrap, /device_journey:\n[\s\S]*?type: boolean\n        required: true\n        default: false/);
   assert.match(bootstrap, /id: device-journey\n        if: inputs.target == 'staging' && inputs.device_journey/);
   assert.match(bootstrap, /if: always\(\) && steps.device-journey.outcome != 'skipped' && inputs.target == 'staging' && inputs.device_journey/);
