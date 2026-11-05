@@ -50,7 +50,7 @@ jobs:
           query() {
             npx --no-install wrangler d1 execute "$db" --remote --config wrangler.identity.jsonc "${env_args[@]}" --command="$1" --json
           }
-          client="$(query "SELECT client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,state FROM oauth_clients WHERE client_id='$CLIENT_ID'")"
+          client="$(query "SELECT client_id,display_name,client_type,token_endpoint_auth_method,sector_identifier,device_authorization_enabled,state FROM oauth_clients WHERE client_id='$CLIENT_ID'")"
           jq -e --arg id "$CLIENT_ID" '[.[].results[] | select(.client_id == $id)] | length == 1' <<<"$client" >/dev/null
           printf 'client:\n'; jq '[.[].results[]]' <<<"$client"
           printf 'redirects:\n'; query "SELECT redirect_uri,match_mode FROM oauth_redirect_uris WHERE client_id='$CLIENT_ID' ORDER BY redirect_uri" | jq '[.[].results[]]'
