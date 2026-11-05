@@ -43,7 +43,8 @@ pub async fn discovery(_request: Request, context: RouteContext<()>) -> Result<R
             "end_session_endpoint":format!("{issuer}/v1/oidc/logout-requests"),
             "authorization_response_iss_parameter_supported":true,
             "response_types_supported":["code"], "response_modes_supported":["query"],
-            "grant_types_supported":["authorization_code","refresh_token"],
+            "device_authorization_endpoint":format!("{issuer}/v1/oauth/device-authorizations"),
+            "grant_types_supported":["authorization_code","refresh_token",crate::device::GRANT_TYPE],
             "subject_types_supported":["pairwise"], "id_token_signing_alg_values_supported":["RS256"],
             "scopes_supported":["openid","profile","offline_access"],
             "token_endpoint_auth_methods_supported":["private_key_jwt","none"],
@@ -370,6 +371,13 @@ pub async fn token(mut request: Request, context: RouteContext<()>) -> Result<Re
             "client_assertion_type",
             "client_assertion",
         ][..],
+        Some(crate::device::GRANT_TYPE) => &[
+            "grant_type",
+            "device_code",
+            "client_id",
+            "client_assertion_type",
+            "client_assertion",
+        ][..],
         Some("refresh_token") => &[
             "grant_type",
             "refresh_token",
@@ -410,6 +418,19 @@ pub async fn token(mut request: Request, context: RouteContext<()>) -> Result<Re
     match fields.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
             exchange_code(
+                &context.env,
+                &db,
+                &client,
+                &fields,
+                &issuer,
+                &kid,
+                &private_key,
+                &correlation,
+            )
+            .await
+        }
+        Some(crate::device::GRANT_TYPE) => {
+            exchange_device(
                 &context.env,
                 &db,
                 &client,
@@ -828,6 +849,189 @@ async fn exchange_code(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn exchange_device(
+    env: &Env,
+    db: &D1Database,
+    client: &repo::OAuthClient,
+    fields: &BTreeMap<String, String>,
+    issuer: &str,
+    kid: &str,
+    key: &str,
+    correlation: &str,
+) -> Result<Response> {
+    use crate::{device, device_repository};
+    if client.device_authorization_enabled != 1 {
+        return oauth_problem(
+            "unauthorized_client",
+            "Device authorization is not enabled for this client",
+            400,
+            correlation,
+        );
+    }
+    let Some(wire) = fields.get("device_code").filter(|v| !v.is_empty()) else {
+        return oauth_problem(
+            "invalid_request",
+            "device_code is required",
+            400,
+            correlation,
+        );
+    };
+    let now = now_seconds();
+    let digest = device::digest(env, "device-code", wire)?;
+    let Some(poll) = device_repository::poll(db, &digest.0, &client.client_id, now).await? else {
+        return oauth_problem(
+            "invalid_grant",
+            "Device code is invalid for this client",
+            400,
+            correlation,
+        );
+    };
+    if poll.expires_at <= now {
+        return oauth_problem(
+            "expired_token",
+            "Device authorization has expired",
+            400,
+            correlation,
+        );
+    }
+    if poll.state == "denied" {
+        return oauth_problem(
+            "access_denied",
+            "The user denied this request",
+            400,
+            correlation,
+        );
+    }
+    if poll.state == "consumed" {
+        return oauth_problem(
+            "invalid_grant",
+            "Device authorization was already consumed",
+            400,
+            correlation,
+        );
+    }
+    if poll.slow_down != 0 {
+        let response = oauth_problem(
+            "slow_down",
+            "Increase the polling interval by five seconds",
+            400,
+            correlation,
+        )?;
+        response
+            .headers()
+            .set("retry-after", &poll.poll_interval.to_string())?;
+        return Ok(response);
+    }
+    if poll.state == "pending" {
+        return oauth_problem(
+            "authorization_pending",
+            "The user has not approved this request",
+            400,
+            correlation,
+        );
+    }
+    let Some(grant) = device_repository::grant(db, &poll.id).await? else {
+        return oauth_problem(
+            "invalid_grant",
+            "Device authorization is no longer active",
+            400,
+            correlation,
+        );
+    };
+    if grant.client_id != client.client_id
+        || grant.expires_at <= now
+        || grant.session_revoked_at.is_some()
+        || grant.session_idle_expires_at <= now
+        || grant.session_absolute_expires_at <= now
+    {
+        return oauth_problem(
+            "invalid_grant",
+            "The authorizing session is no longer active",
+            400,
+            correlation,
+        );
+    }
+    let subject = pairwise(
+        db,
+        env,
+        &grant.sector_identifier,
+        &grant.principal_id,
+        grant.subject_salt_revision,
+        now,
+    )
+    .await?;
+    let public_sid = repo::ensure_client_session_id(
+        db,
+        &grant.client_id,
+        &grant.identity_session_id,
+        &random_public_sid(),
+        now,
+    )
+    .await?;
+    let refresh = if grant.scope.split(' ').any(|v| v == "offline_access") {
+        let wire = random_secret();
+        let digest = SecretDigest::hmac(
+            secret(env, "REFRESH_TOKEN_PEPPER")?.as_bytes(),
+            wire.as_bytes(),
+        );
+        Some((
+            wire,
+            TokenFamilyId::new_v7(worker::Date::now().as_millis()).to_string(),
+            Uuid::now_v7().to_string(),
+            digest,
+        ))
+    } else {
+        None
+    };
+    // Sign before consuming authority: an unavailable signing key must not burn the one-shot grant.
+    let tokens = sign_tokens(
+        key,
+        kid,
+        issuer,
+        &subject,
+        &grant.client_id,
+        &public_sid,
+        &grant.scope,
+        None,
+        grant.authenticated_at,
+        &grant.amr_json,
+        &grant.acr,
+        &grant.display_name,
+        &grant.username,
+        now,
+        config_seconds(env, "TOKEN_TTL_SECONDS", 300, 300),
+    )
+    .await?;
+    let refresh_exp = (now
+        + config_seconds(env, "REFRESH_TOKEN_TTL_SECONDS", 2_592_000, 31_536_000))
+    .min(grant.session_absolute_expires_at);
+    if !device_repository::consume(
+        db,
+        &grant,
+        refresh
+            .as_ref()
+            .map(|(_, f, t, d)| (f.as_str(), t.as_str(), d.0.as_slice())),
+        now_seconds(),
+        refresh_exp,
+    )
+    .await?
+    {
+        return oauth_problem(
+            "invalid_grant",
+            "Device authorization was consumed or revoked",
+            400,
+            correlation,
+        );
+    }
+    console_log!(
+        "device_authorization_consumed correlation_id={correlation} authorization_id={} client_id={}",
+        grant.id,
+        client.client_id
+    );
+    token_response(tokens, refresh.map(|v| v.0), correlation)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn exchange_refresh(
     env: &Env,
     db: &D1Database,
@@ -1058,12 +1262,21 @@ fn token_response(
     Ok(response)
 }
 
-async fn authenticate_client(
+pub(crate) async fn authenticate_client(
     db: &D1Database,
     client_id: &str,
     fields: &BTreeMap<String, String>,
     issuer: &str,
     _env: &Env,
+) -> Result<repo::OAuthClient> {
+    authenticate_client_at(db, client_id, fields, &format!("{issuer}/v1/oauth/tokens")).await
+}
+
+pub(crate) async fn authenticate_client_at(
+    db: &D1Database,
+    client_id: &str,
+    fields: &BTreeMap<String, String>,
+    audience: &str,
 ) -> Result<repo::OAuthClient> {
     let client = repo::client(db, client_id)
         .await?
@@ -1111,7 +1324,7 @@ async fn authenticate_client(
         .ok_or_else(|| Error::RustError("missing jti".into()))?;
     if c.get("iss").and_then(Value::as_str) != Some(client_id)
         || c.get("sub").and_then(Value::as_str) != Some(client_id)
-        || !aud_contains(c, &format!("{issuer}/v1/oauth/tokens"))
+        || !aud_contains(c, audience)
         || exp <= now
         || exp > now + 300
         || iat > now + 60
@@ -1181,7 +1394,7 @@ pub(crate) fn is_enabled(env: &Env) -> bool {
     issuance_config(env).is_some()
 }
 
-fn issuance_config(env: &Env) -> Option<(String, String, String, Value)> {
+pub(crate) fn issuance_config(env: &Env) -> Option<(String, String, String, Value)> {
     if env.var("OAUTH_ENABLED").ok()?.to_string() != "true" {
         return None;
     }
@@ -1205,7 +1418,7 @@ fn publishable_jwk(key: &Value, kid: &str) -> bool {
             .iter()
             .all(|name| key.get(name).is_none())
 }
-async fn authenticated_session(
+pub(crate) async fn authenticated_session(
     request: &Request,
     env: &Env,
 ) -> Result<Option<repository::CurrentSession>> {
@@ -1215,7 +1428,7 @@ async fn authenticated_session(
     let digest = SecretDigest::hmac(secret(env, "SESSION_PEPPER")?.as_bytes(), wire.as_bytes());
     repository::current_session(&env.d1("DB")?, &digest.0, now_seconds()).await
 }
-async fn read_form(
+pub(crate) async fn read_form(
     request: &mut Request,
 ) -> std::result::Result<BTreeMap<String, String>, &'static str> {
     let content = guard::header(request.headers(), "content-type").unwrap_or_default();
@@ -1252,7 +1465,7 @@ fn unique_fields(input: &str, max: usize) -> std::result::Result<BTreeMap<String
     }
     Ok(out)
 }
-fn only_fields(fields: &BTreeMap<String, String>, allowed: &[&str]) -> bool {
+pub(crate) fn only_fields(fields: &BTreeMap<String, String>, allowed: &[&str]) -> bool {
     fields.keys().all(|name| allowed.contains(&name.as_str()))
 }
 
@@ -1296,7 +1509,7 @@ fn loopback_uri_tail(uri: &str) -> Option<&str> {
     let path = authority.find('/')?;
     Some(&authority[path..])
 }
-fn canonical_scopes(input: &str) -> Option<String> {
+pub(crate) fn canonical_scopes(input: &str) -> Option<String> {
     if input.len() > 1024 {
         return None;
     }
@@ -1347,7 +1560,7 @@ fn audience_one(claims: &Value) -> Option<&str> {
         _ => None,
     }
 }
-fn secret(env: &Env, name: &str) -> Result<String> {
+pub(crate) fn secret(env: &Env, name: &str) -> Result<String> {
     env.secret(name)
         .map(|v| v.to_string())
         .map_err(|_| Error::RustError(format!("missing secret binding: {name}")))
@@ -1363,7 +1576,7 @@ pub(crate) fn issuer(env: &Env) -> String {
 pub(crate) fn authorization_resume_uri(issuer: &str, id: &str) -> String {
     format!("{issuer}/v1/oauth/authorization-transactions/{id}/resume")
 }
-fn login_origin(env: &Env) -> String {
+pub(crate) fn login_origin(env: &Env) -> String {
     env.var("LOGIN_ORIGIN")
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "https://login.moesegfault.dev".into())
@@ -1375,21 +1588,21 @@ fn config_seconds(env: &Env, name: &str, default: i64, max: i64) -> i64 {
         .filter(|v| *v > 0 && *v <= max)
         .unwrap_or(default)
 }
-fn now_seconds() -> i64 {
+pub(crate) fn now_seconds() -> i64 {
     (worker::Date::now().as_millis() / 1000) as i64
 }
-fn random_secret() -> String {
+pub(crate) fn random_secret() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
-fn correlation_id() -> String {
+pub(crate) fn correlation_id() -> String {
     correlation_id_at(worker::Date::now().as_millis())
 }
 fn correlation_id_at(unix_millis: u64) -> String {
     TransactionId::new_v7(unix_millis).to_string()
 }
-fn append_query(base: &str, items: &[(&str, &str)]) -> Result<String> {
+pub(crate) fn append_query(base: &str, items: &[(&str, &str)]) -> Result<String> {
     let mut url = url::Url::parse(base)
         .map_err(|_| Error::RustError("invalid configured redirect URI".into()))?;
     {
@@ -1432,7 +1645,7 @@ fn protocol_problem(code: &str, title: &str, status: u16, correlation: &str) -> 
         correlation,
     )
 }
-fn oauth_problem(
+pub(crate) fn oauth_problem(
     code: &str,
     description: &str,
     status: u16,
@@ -1459,7 +1672,11 @@ fn empty_ok(correlation: &str) -> Result<Response> {
     h.set("x-moesegfault-correlation-id", correlation)?;
     Ok(Response::empty()?.with_status(200).with_headers(h))
 }
-fn json_response<T: Serialize>(value: &T, status: u16, correlation: &str) -> Result<Response> {
+pub(crate) fn json_response<T: Serialize>(
+    value: &T,
+    status: u16,
+    correlation: &str,
+) -> Result<Response> {
     response_json(
         value,
         status,
@@ -1546,6 +1763,7 @@ mod tests {
             client_id: "native".into(),
             client_type: "native".into(),
             token_endpoint_auth_method: "none".into(),
+            device_authorization_enabled: 0,
         };
         let registrations = [repo::RedirectRegistration {
             redirect_uri: "http://127.0.0.1:49152/callback?channel=desktop".into(),
@@ -1578,6 +1796,7 @@ mod tests {
             client_id: "server".into(),
             client_type: "confidential".into(),
             token_endpoint_auth_method: "private_key_jwt".into(),
+            device_authorization_enabled: 0,
         };
         assert!(!authorization_redirect_allowed(
             &confidential,

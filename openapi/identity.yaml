@@ -797,12 +797,112 @@ paths:
             x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
         '400': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/oauth/device-authorizations:
+    post:
+      tags: [oauth]
+      operationId: createDeviceAuthorization
+      summary: Start an explicitly enabled RFC 8628 device login
+      description: |
+        Native clients send client_id without a secret. Confidential clients use
+        private_key_jwt with this exact device-authorization endpoint as audience.
+        The client must have device_authorization_enabled and the requested scopes.
+        This is human login, not client credentials or a new resource audience.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: '#/components/schemas/DeviceAuthorizationRequest'}
+      responses:
+        '200':
+          description: Expiring device secret and separate human confirmation code
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceAuthorizationResponse'}
+        '400': {$ref: '#/components/responses/OAuthError'}
+        '401': {$ref: '#/components/responses/OAuthError'}
+        '429': {$ref: '#/components/responses/OAuthError'}
+        default: {$ref: '#/components/responses/OAuthError'}
+  /v1/oauth/device-authorizations/lookup:
+    post:
+      tags: [oauth]
+      operationId: lookupDeviceAuthorization
+      summary: Read the pending application's details for human confirmation
+      description: Login UX on the trusted paired first-party browser origins only. Lookup never approves a device. Errors use OAuth JSON, not Problem Details.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Origin'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceAuthorizationLookupRequest'}
+      responses:
+        '200':
+          description: Registered application and code to compare with the initiating device
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeviceAuthorizationDetails'}
+        '400': {$ref: '#/components/responses/OAuthError'}
+        '401': {$ref: '#/components/responses/OAuthError'}
+        '403': {$ref: '#/components/responses/OAuthError'}
+        '429': {$ref: '#/components/responses/OAuthError'}
+        default: {$ref: '#/components/responses/OAuthError'}
+  /v1/oauth/device-authorizations/decision:
+    post:
+      tags: [oauth]
+      operationId: decideDeviceAuthorization
+      summary: Explicitly approve or deny a pending device login
+      description: |
+        Authenticated confirmation on the paired first-party browser origins (Login UX); opening a verification URI
+        never authorizes. The person must compare application and code with their
+        own initiating device. Errors use OAuth JSON, not Problem Details.
+      security: [{identity_cookie: [], csrf_header: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Origin'}
+        - {$ref: '#/components/parameters/CsrfToken'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceAuthorizationDecisionRequest'}
+      responses:
+        '200':
+          description: Recorded terminal decision; not proof of remote token persistence
+          headers:
+            x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [state]
+                properties:
+                  state: {type: string, enum: [approved, denied]}
+        '400': {$ref: '#/components/responses/OAuthError'}
+        '401': {$ref: '#/components/responses/OAuthError'}
+        '403': {$ref: '#/components/responses/OAuthError'}
+        '429': {$ref: '#/components/responses/OAuthError'}
+        default: {$ref: '#/components/responses/OAuthError'}
   /v1/oauth/tokens:
     post:
       tags: [oauth]
       operationId: exchangeToken
-      summary: Exchange authorization code or rotate refresh token
-      description: Confidential clients authenticate with `private_key_jwt`; native clients use `client_id` and PKCE.
+      summary: Exchange authorization/device code or rotate refresh token
+      description: |
+        Confidential clients authenticate with private_key_jwt. Native clients use
+        client_id and, for authorization-code exchange only, PKCE. Device polling
+        uses the RFC 8628 grant URN and no redirect, verifier, or nonce. Wait the
+        returned interval before polling; authorization_pending is nonterminal,
+        slow_down adds five seconds to every subsequent interval, and denial or
+        expiry terminates the attempt. Device ID tokens omit nonce.
       requestBody:
         required: true
         content:
@@ -1478,6 +1578,9 @@ components:
       headers:
         x-moesegfault-correlation-id: {$ref: '#/components/headers/CorrelationId'}
         Cache-Control: {schema: {type: string, const: no-store}}
+        Retry-After:
+          description: Seconds until retry for HTTP 429 device creation or browser verification quotas.
+          schema: {type: integer, minimum: 1}
       content:
         application/json:
           schema: {$ref: '#/components/schemas/OAuthError'}
@@ -1786,10 +1889,11 @@ components:
       type: object
       additionalProperties: false
       description: All absolute endpoint URLs derive from this deployment's exact `ISSUER`; the production server URL above is not a staging or local constant. / 所有端点 URL 均由当前部署的 `ISSUER` 派生。
-      required: [issuer, authorization_endpoint, token_endpoint, revocation_endpoint, userinfo_endpoint, jwks_uri, end_session_endpoint, authorization_response_iss_parameter_supported, response_types_supported, response_modes_supported, grant_types_supported, subject_types_supported, id_token_signing_alg_values_supported, scopes_supported, token_endpoint_auth_methods_supported, code_challenge_methods_supported, claims_supported]
+      required: [issuer, authorization_endpoint, device_authorization_endpoint, token_endpoint, revocation_endpoint, userinfo_endpoint, jwks_uri, end_session_endpoint, authorization_response_iss_parameter_supported, response_types_supported, response_modes_supported, grant_types_supported, subject_types_supported, id_token_signing_alg_values_supported, scopes_supported, token_endpoint_auth_methods_supported, code_challenge_methods_supported, claims_supported]
       properties:
         issuer: {type: string, format: uri}
         authorization_endpoint: {type: string, format: uri}
+        device_authorization_endpoint: {type: string, format: uri}
         token_endpoint: {type: string, format: uri}
         revocation_endpoint: {type: string, format: uri}
         userinfo_endpoint: {type: string, format: uri}
@@ -1798,7 +1902,7 @@ components:
         authorization_response_iss_parameter_supported: {type: boolean, const: true}
         response_types_supported: {type: array, const: [code]}
         response_modes_supported: {type: array, const: [query]}
-        grant_types_supported: {type: array, const: [authorization_code, refresh_token]}
+        grant_types_supported: {type: array, const: [authorization_code, refresh_token, 'urn:ietf:params:oauth:grant-type:device_code']}
         subject_types_supported: {type: array, const: [pairwise]}
         id_token_signing_alg_values_supported: {type: array, const: [RS256]}
         # Discovery advertises only the implemented scope/claim set; optional UserInfo fields are not a capability promise.
@@ -2216,11 +2320,13 @@ components:
       oneOf:
         - {$ref: '#/components/schemas/AuthorizationCodeTokenRequest'}
         - {$ref: '#/components/schemas/RefreshTokenRequest'}
+        - {$ref: '#/components/schemas/DeviceCodeTokenRequest'}
       discriminator:
         propertyName: grant_type
         mapping:
           authorization_code: '#/components/schemas/AuthorizationCodeTokenRequest'
           refresh_token: '#/components/schemas/RefreshTokenRequest'
+          'urn:ietf:params:oauth:grant-type:device_code': '#/components/schemas/DeviceCodeTokenRequest'
     OAuthClientAuthentication:
       type: object
       required: [client_id]
@@ -2250,6 +2356,59 @@ components:
           properties:
             grant_type: {type: string, const: refresh_token}
             refresh_token: {type: string, minLength: 32, maxLength: 2048, writeOnly: true}
+    DeviceAuthorizationRequest:
+      type: object
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/OAuthClientAuthentication'}
+        - type: object
+          properties:
+            scope: {type: string, default: openid, description: 'Allowed registered scopes; must include openid.'}
+    DeviceAuthorizationResponse:
+      type: object
+      additionalProperties: false
+      required: [device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval]
+      properties:
+        device_code: {type: string, readOnly: true, description: 'Private polling capability; never display or log.'}
+        user_code: {type: string, readOnly: true, description: 'Human-readable code to compare on the requesting device and approval browser.'}
+        verification_uri: {type: string, format: uri, readOnly: true}
+        verification_uri_complete: {type: string, format: uri, readOnly: true, description: 'Pre-filled browser URL; opening it never approves.'}
+        expires_in: {type: integer, const: 600}
+        interval: {type: integer, const: 5}
+    DeviceAuthorizationLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [user_code]
+      properties:
+        user_code: {type: string, writeOnly: true}
+    DeviceAuthorizationDetails:
+      type: object
+      additionalProperties: false
+      required: [user_code, client_id, client_name, scope, expires_in, state]
+      properties:
+        user_code: {type: string}
+        client_id: {type: string}
+        client_name: {type: string}
+        scope: {type: string}
+        expires_in: {type: integer, minimum: 1, maximum: 600}
+        state: {type: string, const: pending}
+    DeviceAuthorizationDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [user_code, decision]
+      properties:
+        user_code: {type: string, writeOnly: true}
+        decision: {type: string, enum: [approve, deny]}
+    DeviceCodeTokenRequest:
+      type: object
+      unevaluatedProperties: false
+      allOf:
+        - {$ref: '#/components/schemas/OAuthClientAuthentication'}
+        - type: object
+          required: [grant_type, device_code]
+          properties:
+            grant_type: {type: string, const: 'urn:ietf:params:oauth:grant-type:device_code'}
+            device_code: {type: string, writeOnly: true}
     OAuthTokenResponse:
       type: object
       additionalProperties: false
@@ -2276,7 +2435,7 @@ components:
       additionalProperties: false
       required: [error]
       properties:
-        error: {type: string, enum: [invalid_request, invalid_client, invalid_grant, unauthorized_client, unsupported_grant_type, invalid_scope, temporarily_unavailable, invalid_token, insufficient_scope]}
+        error: {type: string, enum: [invalid_request, invalid_client, invalid_grant, unauthorized_client, unsupported_grant_type, invalid_scope, temporarily_unavailable, invalid_token, insufficient_scope, authorization_pending, slow_down, access_denied, expired_token, login_required]}
         error_description: {type: string, maxLength: 512}
         error_uri: {type: string, format: uri}
     UserClaims:

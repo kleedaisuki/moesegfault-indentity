@@ -1778,6 +1778,7 @@ pub async fn revoke_authorization(request: Request, context: RouteContext<()>) -
         db.prepare("UPDATE oauth_user_authorizations SET revoked_at=?3,revocation_reason='account_revoked',updated_at=?3 WHERE authorization_id=?1 AND principal_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(authorization_id),JsValue::from_str(&session.principal_id),JsValue::from_f64(now as f64)])?,
         db.prepare("UPDATE oauth_refresh_token_families SET revoked_at=?3,revocation_reason='account_revoked' WHERE principal_id=?1 AND client_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&grant.client_id),JsValue::from_f64(now as f64)])?,
         db.prepare("UPDATE oauth_authorization_codes SET revoked_at=?3 WHERE principal_id=?1 AND client_id=?2 AND revoked_at IS NULL").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&grant.client_id),JsValue::from_f64(now as f64)])?,
+        db.prepare("UPDATE oauth_device_authorizations SET state='denied',principal_id=NULL,identity_session_id=NULL WHERE principal_id=?1 AND client_id=?2 AND state='approved'").bind(&[JsValue::from_str(&session.principal_id),JsValue::from_str(&grant.client_id)])?,
     ]).await?;
     no_content(&correlation, &context.env, None)
 }

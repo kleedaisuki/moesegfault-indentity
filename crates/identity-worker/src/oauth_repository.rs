@@ -19,6 +19,7 @@ pub struct OAuthClient {
     pub client_id: String,
     pub client_type: String,
     pub token_endpoint_auth_method: String,
+    pub device_authorization_enabled: i64,
 }
 
 /// 待恢复的授权事务。/ Authorization transaction waiting to be resumed.
@@ -100,7 +101,7 @@ pub struct RedirectRegistration {
 /// 根据 client ID 读取活动配置。/ Reads enabled configuration by client ID.
 pub async fn client(db: &D1Database, client_id: &str) -> Result<Option<OAuthClient>> {
     primary(db)?
-        .prepare("SELECT client_id,client_type,token_endpoint_auth_method FROM oauth_clients WHERE client_id=?1 AND state='enabled'")
+        .prepare("SELECT client_id,client_type,token_endpoint_auth_method,device_authorization_enabled FROM oauth_clients WHERE client_id=?1 AND state='enabled'")
         .bind(&[text(client_id)])?
         .first(None)
         .await
